@@ -1,0 +1,54 @@
+{
+  "manifest_version": 3,
+  "name": "沸点抽卡 · Juejin Pin Gacha",
+  "version": "0.1.0",
+  "description": "实时抓取掘金沸点，一张一张抽卡浏览，每张配一条 AI 犀利点评，可一键贴进评论。",
+  "permissions": ["storage", "alarms", "notifications", "tabs", "scripting", "activeTab"],
+  "host_permissions": [
+    "https://api.juejin.cn/*",
+    "https://*.juejin.cn/*",
+    "https://*/*",
+    "http://localhost/*",
+    "http://127.0.0.1/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["frame.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ],
+  "action": {
+    "default_title": "沸点抽卡 · 点一下在本页弹卡牌",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/16.png",
+      "32": "icons/32.png",
+      "48": "icons/48.png",
+      "128": "icons/128.png"
+    }
+  },
+  "commands": {
+    "_execute_action": {
+      "suggested_key": { "default": "Alt+J" },
+      "description": "在本页弹出沸点卡牌"
+    }
+  },
+  "options_page": "options.html",
+  "web_accessible_resources": [
+    {
+      "resources": ["app.html", "app.css", "app.js"],
+      "matches": ["<all_urls>"]
+    }
+  ],
+  "icons": {
+    "16": "icons/16.png",
+    "32": "icons/32.png",
+    "48": "icons/48.png",
+    "128": "icons/128.png"
+  }
+}

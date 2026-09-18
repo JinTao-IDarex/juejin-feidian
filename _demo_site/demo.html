@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>注入效果演示</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font:15px/1.75 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+    color:#e9ecf1;background:#171a1f;min-height:100vh}
+  .nav{position:sticky;top:0;background:#1b1f25;border-bottom:1px solid #2b3038;padding:14px 28px;
+    display:flex;align-items:center;gap:18px;font-size:14px;color:#9aa3b0;z-index:5}
+  .nav b{color:#e9ecf1;font-size:16px}
+  .nav .sp{flex:1}
+  .page{max-width:760px;margin:0 auto;padding:32px 24px 140px}
+  .bar{margin-bottom:22px;color:#7f8894;font-size:13px}
+  .p{background:#1e2228;border:1px solid #2c3138;border-radius:14px;padding:18px 20px;margin-bottom:14px}
+  .p .u{color:#9aa3b0;font-size:12.5px;margin-bottom:7px}
+  .p .c{color:#d3dae4;font-size:14.5px;margin-bottom:12px}
+  .p .m{display:flex;gap:20px;color:#727b87;font-size:12px}
+  .bar-top{position:fixed;right:20px;top:14px;z-index:9;background:#f2661a;color:#fff;
+    border-radius:10px;padding:11px 20px;font-size:14px;font-weight:600;cursor:pointer;
+    box-shadow:0 10px 26px -12px rgba(242,102,26,.95);font-family:inherit;border:none}
+</style></head>
+<body>
+<div class="nav"><b>掘金</b><span>首页</span><span>沸点</span><span>课程</span><span class="sp"></span><span>仿真页</span></div>
+<div class="page">
+  <div class="bar">沸点 · 最新</div>
+  <div class="p"><div class="u">掘友 A</div><div class="c">内联样式改到第 400 行的时候，我意识到该抽个组件了。</div><div class="m"><span>♥ 8</span><span>评论 0</span><span>2 小时前</span></div></div>
+  <div class="p"><div class="u">掘友 B</div><div class="c">我司的规矩是：能在一个文件里写完的，就别拆成三个。</div><div class="m"><span>♥ 11</span><span>评论 2</span><span>3 小时前</span></div></div>
+  <div class="p"><div class="u">掘友 C</div><div class="c">重构的尽头是重写，重写的尽头是重构。</div><div class="m"><span>♥ 14</span><span>评论 4</span><span>5 小时前</span></div></div>
+  <div class="p"><div class="u">掘友 D</div><div class="c">这周终于把 CI 从 18 分钟压到 4 分钟，老板问我为什么不早点做。</div><div class="m"><span>♥ 17</span><span>评论 6</span><span>今天</span></div></div>
+</div>
+
+<button class="bar-top" id="go">加载牌面（模拟点扩展图标）</button>
+
+<script>
+// 宿主页面 shim：让 frame.js 在演示页里也能跑
+window.chrome = {
+  runtime: {
+    getURL: () => './_frame_app.html?embed=1&t=pin-gacha-frame',
+    sendMessage: (m, cb) => setTimeout(() => cb && cb({ ok: true }), 0),
+  },
+  storage: { local: { get: (k, cb) => cb({}), set: (k, cb) => cb && cb() } },
+};
+document.getElementById('go').onclick = async function () {
+  const src = await (await fetch('./frame.js?v=' + Date.now())).text();
+  const s = document.createElement('script');
+  s.textContent = src;
+  document.body.appendChild(s);
+  window.__INJECTED__ = true;
+};
+
+// 支持 ?auto=1 自动注入 —— 方便用无头浏览器截图验证（那边每次调用都会重置页面状态）
+if (location.search.includes('auto=1')) {
+  setTimeout(() => document.getElementById('go').click(), 120);
+}
+</script>
+</body></html>

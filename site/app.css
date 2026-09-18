@@ -1,0 +1,478 @@
+/* app.css — 沸点抽卡 · 纯白版
+ * 严格对齐 Ardot 设计稿（file 727057985392898，页面帧 3:1）
+ * 设计语言：整页纯白底 + 卡片靠圆角/描边/投影分层 + 双色蓝强调
+ *
+ * 坐标系（设计稿 1440 x 1000 直接映射，零换算）：
+ *   Hero      1440x230  @ (0, 0)
+ *   抽卡舞台   1440x620  @ (0, 226)
+ *     左邻卡   340x480   @ (424, 80)
+ *     主卡     372x520   @ (534, 40)
+ *     左箭头   36x36     @ (448, 282)
+ *     右邻卡   340x480   @ (796, 80)
+ *     右箭头   36x36     @ (956, 282)
+ *     AI 卡    284x360   @ (1156, 100)   ← 紧挨右邻卡右缘 1136 + 20
+ *   进度条     1440x86   @ (0, 862)
+ *
+ * 缩放模型：坐标系固定 1440 x 1000，视口放不下时整组按 --k 等比缩，
+ * transform-origin: center top，版心居中、顶边不动，横向溢出由 .page-wrap 裁掉。
+ */
+
+*{box-sizing:border-box;margin:0;padding:0}
+
+:root{
+  /* —— 双色蓝体系（设计稿唯一强调色）—— */
+  --blue:#1E80FF;          /* 深色：30, 128, 255 */
+  --blue-light:#EAF2FF;    /* 浅色：234, 242, 255 */
+  --blue-mid:#D6E8FF;      /* 徽标底（小字对比度加强） */
+  --blue-ghost:#A8C7FF;    /* 幽灵卡描边 */
+  --blue-deep:#0B4FBF;
+
+  /* —— 中性 —— */
+  --ink:#16181D;
+  --ink-body:#4B5159;
+  --ink-2:#5C636D;
+  --ink-3:#A8AEB8;
+  --hair:#E4E6E9;
+  --hair-2:#E8EAEC;
+  --dash:#E5E7EB;
+
+  /* 设计稿里文字用到的灰阶（保留原值） */
+  --t-title-ghost:#C4CAD2;
+  --t-body-ghost:#CBD1D8;
+
+  --font:"Outfit","Inter",-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+  --font-sans:"Inter",-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+  --font-cn:"Inter","Noto Sans SC","PingFang SC","Microsoft YaHei",var(--font-sans);
+}
+
+html{-webkit-text-size-adjust:100%}
+body{
+  background:#fff;
+  color:var(--ink);
+  font:400 14px/1.6 var(--font-cn);
+  -webkit-font-smoothing:antialiased;
+  -moz-osx-font-smoothing:grayscale;
+  overflow-x:clip;
+}
+button{font:inherit;color:inherit;border:none;background:none;cursor:pointer}
+svg{display:block}
+img{display:block;max-width:100%}
+::selection{background:var(--blue-mid)}
+
+/* ================================================================
+ * 页面坐标系：1440 x 1000
+ * ================================================================ */
+.page-wrap{
+  position:relative;
+  width:100%;
+  /* 布局高度按缩放后的实际高占位，避免下方留白 */
+  height:calc(1000px * var(--k,1));
+  overflow-x:clip;
+}
+.page{
+  position:relative;
+  width:1440px;height:1000px;
+  margin:0 auto;
+  transform:scale(var(--k,1));
+  transform-origin:center top;
+}
+
+/* ---- 纯白底层 ----
+ * 整页统一 #fff。之前的三层蓝色光晕已移除：面板透明度不一致
+ * （.62 / .42 / .62）会让同一片底色透出深浅不同的蓝，看起来割裂。
+ * 现在去掉光晕、所有面板改为不透明纯白，色差归零。 */
+.page{background:#fff}
+
+/* ================================================================
+ * Hero  1440x230 @ (0,0)  — 纯白
+ * ================================================================ */
+.hero{
+  position:absolute;left:0;top:0;
+  width:1440px;height:230px;
+  padding:28px 0 20px;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;
+  background:#fff;
+  overflow:hidden;
+  z-index:2;
+}
+/* Tips 徽标：hug x 26，圆角 99，padding 0 12，gap 5 */
+.chip-tips{
+  display:inline-flex;align-items:center;gap:5px;
+  height:26px;padding:0 12px;border-radius:99px;
+  background:var(--blue-mid);
+  font:600 12px/1 var(--font-sans);color:var(--blue);
+}
+.hero h1{
+  font:700 40px/1.25 var(--font-cn);color:#16181D;
+  letter-spacing:-.5px;text-align:center;
+}
+.hero p{
+  font:400 14.5px/1.6 var(--font-cn);color:#8A9099;
+  text-align:center;
+}
+
+/* ================================================================
+ * 抽卡舞台  1440x620 @ (0,226)  — 纯白（无边界，与页面融为一体）
+ * ================================================================ */
+.stage{
+  position:absolute;left:0;top:226px;
+  width:1440px;height:620px;
+  background:#fff;
+  z-index:1;
+}
+.stage-inner{position:absolute;inset:0}
+
+/* ---- 邻卡（前后张）：340x480 @ y=80，圆角 20 ----
+ * 玻璃 rgba(234,242,255,1) 不透明，LAYER_BLUR 8 用 filter 等价实现。
+ * 它半掩在主卡两侧，只探出 ~110px。 */
+.ghost{
+  position:absolute;top:80px;
+  width:340px;height:480px;
+  padding:32px 34px 0;
+  display:flex;flex-direction:column;gap:8px;
+  background:var(--blue-light);
+  border:1px solid var(--blue-ghost);
+  border-radius:20px;
+  /* 设计稿是 LAYER_BLUR 8。网页里 blur 会把描边一起糊掉，
+   * 直接 8px 会让邻卡退化成一块色斑，所以降到 2.5px：
+   * 保留「虚化」的观感，同时让描边和文案还能读出来。 */
+  filter:blur(2.5px);
+  z-index:2;
+  pointer-events:none;
+}
+.ghost.left{left:424px}
+.ghost.right{left:796px}
+/* 标签 hug x 22，圆角 6，padding 0 8 */
+.ghost .tag{
+  align-self:flex-start;
+  display:inline-flex;align-items:center;
+  height:22px;padding:0 8px;border-radius:6px;
+  background:var(--blue-mid);
+  font:600 12px/1 var(--font-sans);color:#D9DEE5;
+}
+.ghost h3{
+  width:272px;
+  font:700 18px/1.5 var(--font-cn);color:var(--t-title-ghost);
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;
+}
+.ghost p{
+  width:272px;
+  font:400 12.5px/1.75 var(--font-cn);color:var(--t-body-ghost);
+  display:-webkit-box;-webkit-line-clamp:6;-webkit-box-orient:vertical;overflow:hidden;
+}
+/* 无话题短沸点：正文升格为主文案 */
+.ghost h3.asbody{
+  font:600 15px/1.8 var(--font-cn);
+  -webkit-line-clamp:7;
+}
+
+/* ---- 主卡：372x520 @ (534,40)，圆角 20，纸牌比例 1:1.3978 ----
+ * 纯白卡面 + 1px 中性描边 + 蓝调投影，纯白底上靠这两样分层 */
+.main{
+  position:absolute;left:534px;top:40px;
+  width:372px;height:520px;
+  padding:32px 34px 26px;
+  display:flex;flex-direction:column;
+  background:#fff;
+  border:1px solid #E5E7EA;
+  border-radius:20px;
+  box-shadow:0 14px 36px rgba(30,89,191,.14);
+  overflow:hidden;
+  z-index:4;                       /* 压住两侧邻卡 */
+}
+/* 卡头：标签 + 时间，fill_container */
+.main .chead{
+  display:flex;align-items:center;
+  flex:0 0 auto;
+}
+.main .tag{
+  display:inline-flex;align-items:center;gap:5px;
+  height:24px;padding:0 9px;border-radius:7px;
+  background:var(--blue-mid);
+  font:600 12px/1 var(--font-sans);color:var(--blue);
+  flex:0 0 auto;
+}
+.main .time{
+  margin-left:auto;
+  font:400 12.5px/1 var(--font-sans);color:#A8AEB8;
+  white-space:nowrap;
+}
+.main h2{
+  margin-top:16px;flex:0 0 auto;
+  width:304px;
+  font:700 24px/1.4 var(--font-cn);color:#16181D;letter-spacing:-.2px;
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;
+}
+.main .body{
+  margin-top:14px;flex:0 0 auto;
+  width:304px;
+  font:400 13.5px/1.8 var(--font-cn);color:#4B5159;
+  white-space:pre-line;word-break:break-word;
+  display:-webkit-box;-webkit-line-clamp:5;-webkit-box-orient:vertical;overflow:hidden;
+}
+/* 无话题的短沸点：正文升格为主文案 */
+.main .body.lead{
+  font:600 17px/1.75 var(--font-cn);color:#33383F;
+  -webkit-line-clamp:6;
+}
+/* 极短沸点（十几个字）：再抬一档，居中撑住卡片中段，
+ * 否则一句短话贴在标题位、下面一大片空白，卡片看起来像没加载完。 */
+.main .body.lead.xs{
+  align-self:center;
+  margin-top:26px;
+  font:600 22px/1.6 var(--font-cn);color:#2A2F36;
+  text-align:center;
+  -webkit-line-clamp:4;
+}
+/* 线稿插画区：固定 170 高，220x150 画布居中 */
+.main .illus{
+  margin-top:14px;flex:0 0 auto;height:170px;
+  display:flex;align-items:center;justify-content:center;
+}
+.main .illus svg{width:220px;height:150px}
+.main .spacer{flex:1;min-height:6px}
+
+/* 卡底行：01 + 虚线 + 作者信息，gap 14 */
+.main .cfoot{
+  display:flex;align-items:center;gap:14px;flex:0 0 auto;
+}
+.main .bignum{
+  font:700 40px/1 var(--font-sans);color:#E5E7EB;letter-spacing:-1px;
+  flex:0 0 auto;
+}
+.main .dash{
+  flex:1;min-width:20px;height:0;
+  border-bottom:2px dotted #E5E7EB;
+  transform:translateY(-2px);
+}
+.main .who{
+  display:flex;flex-direction:column;gap:6px;align-items:flex-start;
+  flex:0 0 auto;
+}
+.main .who .line1{display:flex;align-items:center;gap:8px}
+.main .who .av{
+  width:22px;height:22px;border-radius:99px;background:#D6DBE1;
+  overflow:hidden;display:grid;place-items:center;flex:0 0 auto;
+}
+.main .who .av img{width:100%;height:100%;object-fit:cover}
+.main .who .name{
+  font:400 12.5px/1 var(--font-sans);color:#6B7280;
+  max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+}
+.main .who .meta{
+  font:400 11.5px/1 var(--font-sans);color:#A8AEB8;
+  padding-left:30px;              /* 与作者名对齐（头像 22 + gap 8） */
+}
+.main.liked{border-color:rgba(30,128,255,.55)}
+
+/* ---- 翻牌箭头：36x36 圆钮 ---- */
+.round{
+  position:absolute;top:282px;
+  width:36px;height:36px;border-radius:99px;
+  background:#fff;border:1px solid #E5E7EB;
+  box-shadow:0 3px 10px rgba(0,0,0,.08);
+  display:grid;place-items:center;
+  z-index:6;
+  transition:box-shadow .16s,transform .16s,opacity .16s;
+}.round.prev{left:448px}
+.round.next{left:956px}
+.round:hover{box-shadow:0 6px 18px rgba(30,89,191,.18)}
+.round:active{transform:scale(.94)}
+.round[disabled]{opacity:.35;cursor:default}
+.round[disabled]:hover{box-shadow:0 3px 10px rgba(0,0,0,.08)}
+
+/* ---- AI 点评卡：284x360 @ (1156,100)，圆角 24，蓝描边 ----
+ * x=1156 = 右邻卡右缘 1136 + 20，紧挨着排；右缘 1440 与画布齐平。
+ * 两个箭头（448 / 956）对称贴在主卡两侧各 50px 的缝隙里，不再被这张卡遮住。 */
+.ai{
+  position:absolute;left:1156px;top:100px;
+  width:284px;height:360px;
+  padding:26px 26px 20px;
+  display:flex;flex-direction:column;gap:12px;
+  background:#fff;
+  border:1px solid var(--blue);
+  border-radius:24px;
+  box-shadow:0 14px 34px rgba(30,89,191,.14);
+  overflow:hidden;
+  z-index:5;
+}
+.ai .badge{
+  align-self:flex-start;
+  display:inline-flex;align-items:center;gap:5px;
+  height:26px;padding:0 10px;border-radius:7px;
+  background:var(--blue);
+  font:600 12px/1 var(--font-sans);color:#fff;
+  flex:0 0 auto;
+}
+.ai .roast{
+  width:228px;flex:1;min-height:0;overflow:auto;
+  font:400 13.5px/1.75 var(--font-cn);color:#33383F;
+  white-space:pre-line;word-break:break-word;
+  padding-right:4px;
+  display:flex;flex-direction:column;
+}
+.ai .roast > span{margin-bottom:auto}
+.ai .roast::-webkit-scrollbar{width:4px}
+.ai .roast::-webkit-scrollbar-thumb{background:#E2E5E8;border-radius:9px}
+.ai .copy{
+  flex:0 0 auto;height:40px;border-radius:10px;
+  background:var(--blue);
+  display:flex;align-items:center;justify-content:center;gap:7px;
+  font:600 13px/1 var(--font-sans);color:#fff;
+  transition:background .16s,transform .16s;
+}
+.ai .copy:hover{background:#0B6FE8}
+.ai .copy:active{transform:translateY(1px)}
+.ai .note{
+  flex:0 0 auto;text-align:center;
+  font:400 11.5px/1.5 var(--font-sans);color:#A8AEB8;
+}
+
+/* ================================================================
+ * 进度条  1440x86 @ (0,862)  — 纯白
+ * ================================================================ */
+.hud{
+  position:absolute;left:0;top:862px;
+  width:1440px;height:86px;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;
+  background:#fff;
+  z-index:2;
+}
+.hud .status{
+  display:inline-flex;align-items:center;gap:10px;
+  font:600 13.5px/1 var(--font-sans);color:#5C636D;
+}
+.ring{
+  width:16px;height:16px;border-radius:99px;flex:0 0 auto;
+  border:2px solid #D8DCE1;border-top-color:var(--blue);
+  animation:spin 1s linear infinite;
+}
+@keyframes spin{to{transform:rotate(360deg)}}
+.hud .keys{
+  font:400 12.5px/1 var(--font-sans);color:#A8AEB8;
+}
+.hud .keys b{
+  font-weight:400;color:#8A9099;
+  background:rgba(255,255,255,.9);
+  border:1px solid var(--hair);border-bottom-width:2px;
+  border-radius:5px;padding:2px 6px;margin:0 1px;
+}
+
+/* ================================================================
+ * 翻牌动效
+ * ================================================================ */
+@keyframes dealIn{
+  0%  {opacity:0;transform:translateX(120px) rotate(6deg) scale(.97)}
+  33% {opacity:.6;transform:translateX(52px) rotate(2.2deg) scale(.985)}
+  71% {opacity:1;transform:translateX(-4px) rotate(-.3deg) scale(1.005)}
+  100%{opacity:1;transform:translateX(0) rotate(0) scale(1)}
+}
+@keyframes ghostInL{0%{transform:translateX(42px)}100%{transform:translateX(0)}}
+@keyframes ghostInR{0%{transform:translateX(-42px)}100%{transform:translateX(0)}}
+.main.anim-in{animation:dealIn 420ms cubic-bezier(.2,.9,.3,1.1) both}
+.ai.anim-in{animation:dealIn 420ms 60ms cubic-bezier(.2,.9,.3,1.1) both}
+.ghost.anim-l{animation:ghostInL 300ms 90ms cubic-bezier(.2,.9,.3,1.05) both}
+.ghost.anim-r{animation:ghostInR 300ms 90ms cubic-bezier(.2,.9,.3,1.05) both}
+
+/* 尊重系统的「减少动态效果」设置：去掉翻牌位移和转圈，只保留状态变化 */
+@media(prefers-reduced-motion:reduce){
+  .main.anim-in,.ai.anim-in,.ghost.anim-l,.ghost.anim-r{animation:none}
+  .ring{animation:none;border-top-color:#D8DCE1}
+  .main,.ai,.round{transition:none}
+}
+
+/* ================================================================
+ * Toast
+ * ================================================================ */
+.toast{
+  position:fixed;left:50%;bottom:34px;transform:translate(-50%,14px);
+  background:#16181D;color:#fff;
+  padding:11px 20px;border-radius:12px;
+  font:500 12.5px/1.5 var(--font-cn);
+  box-shadow:0 14px 34px -14px rgba(16,19,24,.6);
+  opacity:0;pointer-events:none;
+  transition:.24s cubic-bezier(.2,.9,.3,1);
+  z-index:90;max-width:80vw;text-align:center;
+}
+.toast.on{opacity:1;transform:translate(-50%,0)}
+
+/* ================================================================
+ * 空态
+ * ================================================================ */
+.empty{
+  position:absolute;left:534px;top:40px;
+  width:372px;height:520px;border-radius:20px;
+  background:#fff;
+  border:1px solid #E5E7EA;
+  box-shadow:0 14px 36px rgba(30,89,191,.14);
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;
+  text-align:center;padding:40px;z-index:4;
+}
+.empty b{font:600 17px/1.5 var(--font-cn);color:#16181D}
+.empty span{font:400 13.5px/1.8 var(--font-cn);color:#A8AEB8}
+
+/* ================================================================
+ * 响应式
+ * ================================================================ */
+
+/* ≤1120：坐标系整组按 --k 继续缩，但缩到 0.72 以下字就糊了。
+ * 所以 1120 起切换成流式两卡布局，撤掉坐标系。 */
+@media(max-width:1120px){
+  .page-wrap{height:auto}
+  .page{
+    width:100%;height:auto;transform:none;
+    padding:0 24px;
+    display:flex;flex-direction:column;gap:20px;
+  }
+  .hero{
+    position:relative;left:auto;top:auto;
+    width:100%;height:auto;
+    padding:36px 20px 28px;
+    border-radius:0 0 24px 24px;
+    box-shadow:0 1px 0 rgba(30,89,191,.06);
+  }
+  .hero h1{font-size:clamp(26px,5.4vw,40px)}
+  .hero p{font-size:13.5px}
+  .stage{
+    position:relative;left:auto;top:auto;
+    width:100%;height:auto;
+    padding:28px 20px;
+    border-radius:24px;
+  }
+  .stage-inner{
+    position:relative;inset:auto;
+    display:flex;gap:20px;justify-content:center;align-items:flex-start;
+  }
+  .ghost{display:none}
+  .main{
+    position:relative;left:auto;top:auto;
+    flex:0 0 372px;height:520px;
+  }
+  .ai{
+    position:relative;left:auto;top:auto;
+    flex:0 0 284px;height:360px;margin-top:80px;
+  }
+  .round.prev{left:6px;top:272px}
+  .round.next{left:auto;right:6px;top:272px}
+  .empty{position:relative;left:auto;top:auto}
+  .hud{
+    position:relative;left:auto;top:auto;
+    width:100%;height:auto;
+    padding:20px;border-radius:24px;
+  }
+}
+
+/* ≤760：单列 */
+@media(max-width:760px){
+  .page{padding:0 16px;gap:16px}
+  .hero{padding:28px 16px 22px}
+  .hero h1{font-size:26px}
+  .stage{padding:22px 16px}
+  .stage-inner{flex-direction:column;align-items:center;gap:16px}
+  .main{flex:0 1 auto;width:100%;max-width:372px;height:auto;min-height:520px}
+  .main .illus{height:150px}
+  .main .illus svg{width:190px;height:130px}
+  .ai{flex:0 1 auto;width:100%;max-width:372px;height:auto;min-height:300px;margin-top:0}
+  .round{display:none}
+  .empty{width:100%;max-width:372px;height:440px}
+}

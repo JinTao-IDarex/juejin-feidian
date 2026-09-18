@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>掘金沸点 · 毒舌抽卡 0917</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#f4f6fa; --card:#fff; --ink:#1f2329; --ink2:#5b6472; --ink3:#98a1b0;
+  --line:#e8ecf2; --jj:#1e80ff; --hot:#ff7a45; --hot2:#ffb37a; --like:#ff4d6a;
+  --shadow:0 18px 44px -18px rgba(31,35,41,.22),0 2px 8px rgba(31,35,41,.05);
+}
+body{
+  font:15px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+  background:var(--bg); color:var(--ink); min-height:100vh; padding-bottom:132px;
+  background-image:radial-gradient(circle at 12% 8%,#e6efff 0,transparent 42%),
+                   radial-gradient(circle at 88% 4%,#ffeee4 0,transparent 38%);
+  background-attachment:fixed;
+}
+.wrap{max-width:1140px;margin:0 auto;padding:20px 18px 0}
+
+/* header */
+header{display:flex;flex-wrap:wrap;align-items:center;gap:12px;margin-bottom:18px}
+.brand{display:flex;align-items:center;gap:10px;font-weight:800;font-size:19px;letter-spacing:.3px}
+.brand .dot{width:26px;height:26px;border-radius:8px;background:linear-gradient(135deg,var(--jj),#5aa9ff);
+  display:grid;place-items:center;color:#fff;font-size:14px;box-shadow:0 6px 14px -4px var(--jj)}
+.brand small{font-weight:500;color:var(--ink3);font-size:12px;letter-spacing:0}
+.grow{flex:1}
+.search{position:relative}
+.search input{width:210px;padding:9px 12px 9px 32px;border:1px solid var(--line);border-radius:10px;
+  background:#fff;font-size:13px;outline:none;transition:.18s}
+.search input:focus{border-color:var(--jj);box-shadow:0 0 0 3px rgba(30,128,255,.12)}
+.search svg{position:absolute;left:10px;top:9px;opacity:.4}
+.tbtn{border:1px solid var(--line);background:#fff;border-radius:10px;padding:9px 13px;font-size:13px;
+  color:var(--ink2);cursor:pointer;transition:.18s;font-weight:600}
+.tbtn:hover{border-color:var(--jj);color:var(--jj)}
+.tbtn.on{background:var(--jj);border-color:var(--jj);color:#fff}
+
+/* progress */
+.bar{height:5px;border-radius:99px;background:#e6eaf1;overflow:hidden;margin-bottom:16px}
+.bar i{display:block;height:100%;background:linear-gradient(90deg,var(--jj),#7ab6ff);
+  border-radius:99px;transition:width .35s cubic-bezier(.4,0,.2,1)}
+.meta{display:flex;justify-content:space-between;font-size:12px;color:var(--ink3);margin:-10px 0 14px}
+
+/* stage */
+.stage{display:grid;grid-template-columns:1.15fr .85fr;gap:20px;align-items:start}
+@media(max-width:900px){.stage{grid-template-columns:1fr}}
+.slot{position:relative}
+.slot::before,.slot::after{content:"";position:absolute;inset:0;border-radius:20px;background:#fff;
+  border:1px solid var(--line);z-index:0}
+.slot::before{transform:rotate(-1.4deg) translateY(7px);opacity:.55}
+.slot::after{transform:rotate(1.8deg) translateY(11px);opacity:.3}
+.card{position:relative;z-index:1;background:var(--card);border:1px solid var(--line);border-radius:20px;
+  box-shadow:var(--shadow);padding:22px 24px;min-height:340px;animation:dealIn .46s cubic-bezier(.2,.9,.3,1.1) both}
+@keyframes dealIn{
+  0%{opacity:0;transform:translateY(46px) scale(.94) rotateX(-10deg)}
+  60%{opacity:1}
+  100%{opacity:1;transform:none}
+}
+.card.out{animation:dealOut .26s ease-in forwards}
+@keyframes dealOut{to{opacity:0;transform:translateY(-26px) scale(.95)}}
+
+/* author row */
+.au{display:flex;align-items:center;gap:11px;margin-bottom:14px}
+.au img{width:42px;height:42px;border-radius:50%;object-fit:cover;background:#eef1f6;border:1px solid var(--line)}
+.au .nm{font-weight:700;font-size:15px}
+.au .sub{font-size:12px;color:var(--ink3);margin-top:1px}
+.au .tm{margin-left:auto;font-size:12px;color:var(--ink3);white-space:nowrap}
+.body{font-size:16px;line-height:1.85;white-space:pre-wrap;word-break:break-word;color:#252a31}
+.body.long{max-height:340px;overflow:auto;padding-right:6px}
+.body.long::-webkit-scrollbar{width:5px}
+.body.long::-webkit-scrollbar-thumb{background:#d7dde7;border-radius:9px}
+.tags{display:flex;flex-wrap:wrap;gap:7px;margin-top:14px}
+.tag{font-size:12px;color:var(--jj);background:rgba(30,128,255,.08);border-radius:7px;padding:3px 9px}
+.pics{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}
+.pics img{width:104px;height:104px;object-fit:cover;border-radius:12px;border:1px solid var(--line);cursor:zoom-in}
+.stats{display:flex;gap:18px;margin-top:16px;padding-top:14px;border-top:1px dashed var(--line);
+  font-size:13px;color:var(--ink3)}
+.stats b{color:var(--ink2);font-weight:700}
+.src{margin-left:auto;font-size:12px;color:var(--jj);text-decoration:none;font-weight:600}
+
+/* ai card */
+.ai{border-radius:20px;padding:22px 24px;color:#fff;position:relative;overflow:hidden;min-height:340px;
+  background:linear-gradient(155deg,#ff8a4c 0%,#ff6a2c 55%,#f2541b 100%);
+  box-shadow:0 18px 40px -16px rgba(242,84,27,.55);animation:dealIn .46s .07s cubic-bezier(.2,.9,.3,1.1) both}
+.ai::after{content:"";position:absolute;right:-70px;top:-70px;width:210px;height:210px;border-radius:50%;
+  background:rgba(255,255,255,.11)}
+.ai::before{content:"AI";position:absolute;right:22px;bottom:14px;font-size:74px;font-weight:900;
+  color:rgba(255,255,255,.13);letter-spacing:-2px}
+.ai .hd{display:flex;align-items:center;gap:8px;font-size:12.5px;font-weight:700;letter-spacing:1.2px;
+  opacity:.95;margin-bottom:16px}
+.ai .hd span{width:22px;height:22px;border-radius:7px;background:rgba(255,255,255,.22);display:grid;
+  place-items:center;font-size:12px}
+.ai .txt{font-size:19px;line-height:1.85;font-weight:600;text-shadow:0 1px 2px rgba(0,0,0,.08);
+  position:relative;z-index:1}
+.ai .acts{display:flex;gap:9px;margin-top:22px;position:relative;z-index:1;flex-wrap:wrap}
+.ai .acts button{border:none;background:rgba(255,255,255,.2);color:#fff;padding:9px 15px;border-radius:11px;
+  font-size:13px;font-weight:700;cursor:pointer;backdrop-filter:blur(4px);transition:.18s}
+.ai .acts button:hover{background:#fff;color:#f2541b}
+.ai .acts button.solid{background:#fff;color:#f2541b}
+.ai .acts button.solid:hover{background:#fff4ee}
+.mood{margin-top:18px;font-size:12px;opacity:.8;position:relative;z-index:1}
+
+/* dock */
+.dock{position:fixed;left:0;right:0;bottom:0;padding:14px 18px calc(16px + env(safe-area-inset-bottom));
+  display:flex;justify-content:center;gap:11px;flex-wrap:wrap;z-index:40;
+  background:linear-gradient(to top,rgba(244,246,250,.98) 55%,rgba(244,246,250,0))}
+.btn{border:1px solid var(--line);background:#fff;border-radius:14px;padding:13px 20px;font-size:14.5px;
+  font-weight:700;color:var(--ink);cursor:pointer;box-shadow:0 8px 20px -10px rgba(31,35,41,.3);
+  transition:.16s;display:flex;align-items:center;gap:7px}
+.btn:hover{transform:translateY(-2px)}
+.btn:active{transform:translateY(0) scale(.97)}
+.btn.primary{background:var(--jj);border-color:var(--jj);color:#fff;box-shadow:0 10px 24px -10px var(--jj)}
+.btn.like{border-color:#ffd3dc;color:var(--like)}
+.btn.like.on{background:var(--like);border-color:var(--like);color:#fff;
+  box-shadow:0 10px 24px -10px var(--like)}
+.btn:disabled{opacity:.4;cursor:not-allowed;transform:none}
+.pop{animation:pop .42s ease}
+@keyframes pop{0%{transform:scale(1)}35%{transform:scale(1.22)}70%{transform:scale(.94)}100%{transform:scale(1)}}
+
+/* drawer */
+.mask{position:fixed;inset:0;background:rgba(20,24,32,.42);opacity:0;pointer-events:none;transition:.22s;z-index:50;
+  backdrop-filter:blur(2px)}
+.mask.on{opacity:1;pointer-events:auto}
+.sheet{position:fixed;left:50%;bottom:0;transform:translate(-50%,108%);width:min(720px,100%);z-index:60;
+  background:#fff;border-radius:20px 20px 0 0;padding:20px 22px calc(20px + env(safe-area-inset-bottom));
+  box-shadow:0 -18px 50px -18px rgba(0,0,0,.3);transition:transform .28s cubic-bezier(.2,.9,.3,1)}
+.sheet.on{transform:translate(-50%,0)}
+.sheet h3{font-size:16px;margin-bottom:4px}
+.sheet p.hint{font-size:12.5px;color:var(--ink3);margin-bottom:12px}
+.sheet textarea{width:100%;height:118px;border:1px solid var(--line);border-radius:12px;padding:12px;
+  font:15px/1.7 inherit;resize:vertical;outline:none;transition:.18s}
+.sheet textarea:focus{border-color:var(--jj);box-shadow:0 0 0 3px rgba(30,128,255,.12)}
+.sheet .row{display:flex;gap:9px;margin-top:12px;flex-wrap:wrap}
+.sheet .row .btn{padding:11px 16px;font-size:13.5px;box-shadow:none}
+.favs{max-height:60vh;overflow:auto}
+.favs .it{padding:12px 0;border-bottom:1px solid var(--line);cursor:pointer}
+.favs .it:last-child{border-bottom:none}
+.favs .it b{display:block;font-size:13.5px;margin-bottom:3px}
+.favs .it span{font-size:12.5px;color:var(--ink3);display:-webkit-box;-webkit-line-clamp:2;
+  -webkit-box-orient:vertical;overflow:hidden}
+.empty{text-align:center;color:var(--ink3);padding:36px 0;font-size:14px}
+.toast{position:fixed;left:50%;bottom:118px;transform:translate(-50%,16px);background:#1f2329;color:#fff;
+  padding:10px 18px;border-radius:12px;font-size:13.5px;opacity:0;pointer-events:none;transition:.24s;z-index:80}
+.toast.on{opacity:1;transform:translate(-50%,0)}
+.kbd{font-size:11.5px;color:var(--ink3);text-align:center;margin:16px 0 0}
+.kbd i{font-style:normal;background:#fff;border:1px solid var(--line);border-bottom-width:2px;border-radius:5px;
+  padding:1px 6px;margin:0 2px;font-family:inherit}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="brand"><span class="dot">沸</span>沸点毒舌抽卡<small>2026-09-17 · 60 张</small></div>
+    <div class="grow"></div>
+    <div class="search">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4">
+        <circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+      <input id="q" placeholder="搜内容 / 作者 / 话题">
+    </div>
+    <button class="tbtn" id="btnShuffle">洗牌</button>
+    <button class="tbtn" id="btnFav">收藏夹 <b id="favN">0</b></button>
+  </header>
+  <div class="bar"><i id="prog" style="width:0%"></i></div>
+  <div class="meta"><span id="mLeft">第 1 / 60 张</span><span id="mRight">已看 0 · 喜欢 0</span></div>
+
+  <div class="stage" id="stage">
+    <div class="slot"><article class="card" id="pin"></article></div>
+    <aside class="ai" id="ai"></aside>
+  </div>
+  <p class="kbd"><i>←</i><i>→</i> 翻牌 <i>Space</i> 下一张 <i>L</i> 喜欢 <i>C</i> 评论</p>
+</div>
+
+<div class="dock">
+  <button class="btn" id="bPrev">← 上一张</button>
+  <button class="btn like" id="bLike">♥ 喜欢</button>
+  <button class="btn" id="bCmt">💬 评论</button>
+  <button class="btn" id="bOpen">↗ 原文</button>
+  <button class="btn primary" id="bNext">抽下一张 →</button>
+</div>
+
+<div class="mask" id="mask"></div>
+<div class="sheet" id="sheetCmt">
+  <h3>写条评论</h3>
+  <p class="hint">掘金没开放网页端匿名发评，这里生成好内容，复制后去沸点页粘贴即可。</p>
+  <textarea id="ta" placeholder="说点什么…"></textarea>
+  <div class="row">
+    <button class="btn primary" id="bUseAI">✨ 贴入 AI 评价</button>
+    <button class="btn" id="bCopy">复制</button>
+    <button class="btn" id="bGo">复制并打开沸点</button>
+    <button class="btn" id="bSave">标记已评论</button>
+  </div>
+</div>
+<div class="sheet" id="sheetFav">
+  <h3>我喜欢的 <span id="favN2" style="color:var(--ink3);font-weight:500"></span></h3>
+  <p class="hint">点任意一条跳回那张卡。</p>
+  <div class="favs" id="favList"></div>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+const DATA = {"date": "2026-09-17", "cards": [{"id": "7686117720844795923", "content": "整个人都麻了", "user": "大强同学", "company": "", "job": "", "avatar": "https://p26-passport.byteacctimg.com/img/user-avatar/8add5f86c6242451ac7440adb3bb80c4~300x300.image", "ctime": 1789627409, "digg": 0, "cmt": 0, "topics": [], "pics": [], "url": "https://juejin.cn/pin/7686117720844795923", "roast": "开局六个字，信息量为零，情绪浓度拉满。这就是沸点的极简主义：不说是啥，但让你知道他不好过。"}, {"id": "7686327764182695962", "content": "沈鼓这是疯了啊[呲牙]", "user": "专门换个名字来搞耍", "company": "", "job": "", "avatar": "https://p26-passport.byteacctimg.com/img/user-avatar/a4da05a50373ff88b87be2da829de6f5~300x300.image", "ctime": 1789627383, "digg": 1, "cmt": 0, "topics": [], "pics": [], "url": "https://juejin.cn/pin/7686327764182695962", "roast": "没头没尾的一句，懂的都懂，不懂的我也不懂。沸点社交的本质：把朋友圈发给了不相干的人看。"}, {"id": "7686327764182679578", "content": "想起了高中毕业的时候，问同班女同学搞笑问题，被她男朋友骂了，当时真是蠢的不行！！！！", "user": "wuhou123", "company": "前端网（wuhou.fun）", "job": "公众号：互联网关注吧", "avatar": "https://p6-passport.byteacctimg.com/img/user-avatar/b44c42fc694ab614af6a5a0e3179a66e~300x300.image", "ctime": 1789627234, "digg": 3, "cmt": 0, "topics": [], "pics": [], "url": "https://juejin.cn/pin/7686327764182679578", "roast": "青春期社交算法最大的 bug：你以为你在开玩笑，对方的男朋友以为你在开战。"}, {"id": "7686318450944557099", "content": "1、我提建议，你当我在管你\n2、我说事实，你当我在否定你\n3、我指出问题，你觉得我在怪你\n4、我给解决办法，你觉得我高高在上在教育你\n5、我讲道理，你觉得我带着偏见针对你", "user": "努力黑化的小白", "company": "", "job": "前端工程师", "avatar": "https://p26-passport.byteacctimg.com/img/user-avatar/c76f1f86e4fa46e2bc28cf435a7dd4c9~300x300.image", "ctime": 1789627076, "digg": 1, "cmt": 5, "topics": [], "pics": [], "url": "https://juejin.cn/pin/7686318450944557099", "roast": "这五条翻译过来就一句：你说的都对，但你的语气让我想死。沟通从来不是内容问题，是权力问题。"}, {"id": "7686054741464793130", "content": "【再抽一根】迎来重大更新，摸鱼的掘友们赶快去体验，还增加了vip功能[呲牙][呲牙][呲牙]", "user": "风白羽", "company": "", "job": "高级技术顾问", "avatar": "https://p6-passport.byteacctimg.com/img/user-avatar/138423e762a5f5f401cfa2688df9e8f3~300x300.image", "ctime": 1789626876, "digg": 0, "cmt": 7, "topics": [], "pics": [], "url": "https://juejin.cn/pin/7686054741464793130", "roast": "一个摸鱼工具做 VIP，等于给带薪拉屎办了月卡。商业逻辑闭环了属于是。"}, {"id": "7686327615728812082", "content": "来份鸡汤：成功不分大小，只看你是否竭尽所能。", "user": "嘟嘟嘟9527", "company": "", "job": "", "avatar": "https://p26-passport.byteacctimg.com/img/user-avatar/ae9139df7073e6927e77a18f1e5db3c8~300x300.image", "ctime": 1789626472, "digg": 1, "cmt": 0, "topics": [], "pics": [], "url": "https://juejin.cn/pin/7686327615728812082", "roast": "成功不分大小这话，是给还在路上的人留的台阶。等真成了，谁还跟你分大小。"}, {"id": "7686327615728795698", "content": "大家中秋都发了啥？快上图", "user": "用户8473474954371", "company": "", "job": "前端", "avatar": "https://p9-passport.byteacctimg.com/img/user-avatar/bf03c2892dade73357a8031faa541d7a~300x300.image", "ctime": 1789626418, "digg": 1, "cmt": 1, "topics": [], "pics": [], "url": "https://juejin.cn/pin/7686327615728795698", "roast": "中秋福利晒图大赛，本质是公司行政的年度公开处刑。发猕猴桃的那位已经准备好了。"}, {"id": "7686161665788362752", "content": "开源中国马越：Token 要管起来，AI 投入需要一本明白账\n9 月 16 日，在2026 ITValue Summit 数字价值年会上，开源中国董事长马越讲了一件他口中软件历史上都很少出现过的事：去年，一家著名运营商采购了他们 6000 万元的产品，其中没有硬件，全部是软件授权，一共 10.5 万个。“历史上没出现过一个央企愿意为工具掏这…", "user": "科技热点", "company": "", "job": "", "avatar": "https://p26-passport.byteacctimg.com/img/user-avatar/c8d2d7d1e3ac99a02c90a01bcb87d53f~300x300.image", "ctime": 1789626012, "digg": 1, "cmt": 0, "topics": ["每日快讯"], "pics": [], "url": "https://juejin.cn/pin/7686161665788362752", "roast": "央企愿意为软件掏钱是好事。但「明白账」三个字，恰恰说明现在大多数账是不明白的。"}, {"id": "7686304110648279066", "content": "讲的好像很有道理", "user": "胆子越来越大了", "company": "人 有 生 老 三 千 疾 , 唯 有 舔 狗 最 难 医 🐶", "job": "划水摸鱼", "avatar": "https://p9-passport.byteacctimg.com/img/user-avatar/0f69b48db9f5ccb8ae67eb7c957fc1eb~300x300.image", "ctime": 1789626801, "digg": 1, "cmt": 6, "topics": [], "pics": [], "url": "https://juejin.cn/pin/7686304110648279066", "roast": "互联网最高规格的肯定：讲的好像很有道理。「好像」是留的余地，「很」是给的台阶。"}, {"id": "7686047425313603620", "content": "屁多的要死 坐在工位又不敢放\n只能隔一会跑去卫生间咚咚咚", "user": "我不是诸葛", "company": "", "job": "", "avatar": "https://p3-passport.byteacctimg.com/img/user-avatar/2e5542717bd71e39e2848c7aaa1f61ba~300x300.image", "ctime": 1789626964, "digg": 1, "cmt": 4, "topics": [], "pics": [], "url": "https://juejin.cn/pin/7686047425313603620", "roast": "打工人的体面，是憋着一口气跑到三十米外，再毫无顾忌地做回自己。"}, {"id": "7686327615728894002", "content": "抓紧更新沸点呀，AI编码中，我只能无聊的看着[撇嘴]", "user": "黛影", "company": "Today", "job": "With", "avatar": "https://p9-passport.byteacctimg.com/img/user-avatar/458e2cd88307be020e865173b320e56e~300x300.image", "ctime": 1789626965, "digg": 1, "cmt": 0, "topics": [], "pics": [], "url": "https://juejin.cn/pin/7686327615728894002", "roast": "AI 写代码你看着，等 AI 学会写周报，你连看都看不懂。这就叫进步。"}, {"id": "7686066928101490703", "content": "这个纸太薄了。", "user": "user6230139333383", "company": "", "job": "", "avatar": "https://p26-passport.byteacctimg.com/img/mosaic-legacy/3795/3044413937~300x300.image", "ctime": 1789626940, "digg": 1, "cmt": 2, "topics": [], "pics": [], "url": "https://juejin.cn/pin/7686066928101490703", "roast": "五个字，画面感极强，且拒绝解释。沸点文学的一股清流。"}, {"id": "7686327764182646810", "content": "UI很好看，功能很有意思[赞][赞][赞]", "user": "三殇", "company": "摸鱼小分队", "job": "CV实习生", "avatar": "https://p6-passport.byteacctimg.com/img/user-avatar/d7c8962d720e95c2c1788cf30dbdc269~300x300.image", "ctime": 1789626956, "digg": 2, "cmt": 0, "topics": ["作品讨论：AI 桌面氛围伴侣"], "pics": [], "url": "https://juejin.cn/pin/7686327764182646810", "roast": "三个[赞]是社交货币的最小面额，既表达了支持，又没花掉任何真心。"}, {"id": "7686066928101474319", "content": "今天继续喝", "user": "用户874791296353", "company": "", "job": "", "avatar": "https://p26-passport.byteacctimg.com/img/mosaic-legacy/3795/3033762272~300x300.image", "ctime": 1789626883, "digg": 1, "cmt": 4, "topics": [], "pics": [], "url": "https://juejin.cn/pin/7686066928101474319", "roast": "连续剧式发沸点：没有上下文，但透露出一整套生活方式。昨天发生了什么，我不敢问。"}, {"id": "7686161665788542976", "content": "在浏览器上看日志 有哪些工具？  最好是开源的", "user": "刑育森", "company": "六扇门", "job": "捕头", "avatar": "https://p9-passport.byteacctimg.com/img/user-avatar/bb5f51887b387da213643a608dfb6bdd~300x300.image", "ctime": 1789626867, "digg": 1, "cmt": 3, "topics": [], "pics": [], "url": "https://juejin.cn/pin/7686161665788542976", "roast": "要开源的潜台词是：白嫖可以，付费不行。开源社区听了都想给这位兄弟发个奖。"}, {"id": "7686283257302450202", "content": "减少内耗最好办法就是，老板提的需求都是对的。不要反对老板说的话。老板的需求都给AI去实现。", "user": "天机星", "company": "小公司啦", "job": "后端", "avatar": "https://p6-passport.byteacctimg.com/img/user-avatar/ba6bb86cce45aa22c667106947fc9463~300x300.image", "ctime": 1789626834, "digg": 1, "cmt": 3, "topics": [], "pics": [], "url": "https://juejin.cn/pin/7686283257302450202", "roast": "把需求丢给 AI，把锅留给 AI，把自己的情绪摘干净。这哪是减少内耗，这是外包内耗。"}, {"id": "7686055959677059072", "content": "看起来人畜无害的一颗小球，死了我整整100次。我现在看到球就手抖。", "user": "平衡球大作战", "company": "", "job": "", "avatar": "https://p26-passport.byteacctimg.com/img/user-avatar/4e606e78669a26c614acccd7c6d46480~300x300.image", "ctime": 1789625641, "digg": 3, "cmt": 5, "topics": ["作品讨论：平衡球大作战微信小游戏"], "pics": [], "url": "https://juejin.cn/pin/7686055959677059072", "roast": "开发者最想拿到的评价就是这句：一个让人手抖的小球，比一百个「体验流畅」都真实。"}, {"id": "7686303672150016027", "content": "以前呆过一家公司，中秋就发了几个猕猴桃，连个礼盒都没有，拿回去都感觉丢人，真是我见过最抠的公司了", "user": "token终结者", "company": "", "job": "", "avatar": "https://p9-passport.byteacctimg.com/img/user-avatar/e8e71f4dc950724fcecacac8dc9e8734~300x300.image", "ctime": 1789626613, "digg": 1, "cmt": 13, "topics": [], "pics": [], "url": "https://juejin.cn/pin/7686303672150016027", "roast": "猕猴桃没有错，错的是它出现在了本该出现月饼的位置上。"}, {"id": "7686223991561158665", "content": "人真的不能内耗，事情没解决，反倒因为焦虑上火，变成小阳人了（宝娟我的嗓子啊[大哭][大哭][大哭]）", "user": "不知道起什么名字啊", "company": "", "job": "", "avatar": "https://p6-passport.byteacctimg.com/img/user-avatar/0b4116e231716d892343c1cbce10c51f~300x300.image", "ctime": 1789626526, "digg": 1, "cmt": 1, "topics": [], "pics": [], "url": "https://juejin.cn/pin/7686223991561158665", "roast": "焦虑解决不了问题，但一定会先解决你的免疫力。这句不是段子，是医嘱。"}, {"id": "7686047425313521700", "content": "老弟大学毕业去报了个黑马的云服务器运维的培训班，不知道是不是49年入国军[捂脸][捂脸]", "user": "BUG高级开发工程师", "company": "鱼塘🐠🐠🐠🐠", "job": "前端开发", "avatar": "https://p9-passport.byteacctimg.com/img/user-avatar/b60f6a52f17fdcfe7e451bf1130bb259~300x300.image", "ctime": 1789625828, "digg": 1, "cmt": 9, "topics": [], "pics": [], "url": "https://juejin.cn/pin/7686047425313521700", "roast": "培训班教的是怎么上船，教不了的是这条船还在不在航线上。选方向这事，比努力贵。"}, {"id": "7686055959677272064", "content": "动态第二天", "user": "吴老头", "company": "", "job": "", "avatar": "https://p9-passport.byteacctimg.com/img/mosaic-legacy/3792/5112637127~300x300.image", "ctime": 1789626559, "digg": 0, "cmt": 0, "topics": [], "pics": [], "url": "https://juejin.cn/pin/7686055959677272064", "roast": "坚持日更的第二天，是内容创作者流失率最高的第二天。兄弟挺住。"}, {"id": "7686223991561207817", "content": "中午不睡，下午崩溃。[睡]", "user": "阿白_123", "company": "", "job": "", "avatar": "https://p3-passport.byteacctimg.com/img/mosaic-legacy/3795/3047680722~300x300.image", "ctime": 1789626572, "digg": 0, "cmt": 1, "topics": [], "pics": [], "url": "https://juejin.cn/pin/7686223991561207817", "roast": "午休二十分钟，换回一下午的清醒。这是全职场性价比最高的一笔交易。"}, {"id": "7686117720844714003", "content": "jym，你们公司有没有发了月饼礼盒的，有没有不想要或者不需要的，我想要收购2份，有人出的吗", "user": "不想再消费了", "company": "", "job": "", "avatar": "https://p26-passport.byteacctimg.com/img/user-avatar/2e37ef49fc09a4aa594bea5be33c34c7~300x300.image", "ctime": 1789626386, "digg": 0, "cmt": 3, "topics": [], "pics": [], "url": "https://juejin.cn/pin/7686117720844714003", "roast": "中秋月饼的二手市场，是打工人对福利最诚实的一次定价。"}, {"id": "7686305184081035304", "content": "IDC 发布企业级 Agent 评估报告，中国电信 TeleAgent 综合跻身国内第一梯队\n近日，国际数据公司（IDC）发布《中国企业级通用 Agent 产品技术评估》报告，对国内多款主流通用智能体产品开展标准化实测。中国电信星辰超级智能体 TeleAgent 综合得分 6.85 分，成本效率、安全可控、任务表现等多个维度高于行业普遍水平…", "user": "科技热点", "company": "", "job": "", "avatar": "https://p26-passport.byteacctimg.com/img/user-avatar/c8d2d7d1e3ac99a02c90a01bcb87d53f~300x300.image", "ctime": 1789625411, "digg": 0, "cmt": 0, "topics": ["每日快讯"], "pics": [], "url": "https://juejin.cn/pin/7686305184081035304", "roast": "每家都「跻身第一梯队」，那这个梯队大概是按人数算的，不是按分数。"}, {"id": "7686305184081117224", "content": "#AI漫剧推文短视频 批量生成踩坑记\n\n最近在用SDXL批量跑漫剧分镜，踩了几个坑记录一下。\n\n坑一：LoRA切换导致显存碎片化。 12个分镜涉及4个角色，每次切换LoRA都重新加载权重，跑到第8张直接OOM。后来改成按角色分组生成，切换次数从12降到4，稳定了。\n\n坑二：人脸校验阈值一刀切。 所有角色都用0.85，结果正脸多的角色频繁误报。后来改成按角色动态标定，误报率降了一半。\n\n坑三：并发数设太高。 8GB显存设了3个并发，看着利用率高，实际OOM重试浪费的时间比串行还多。降到2才稳定。\n\n坑四：忽略音频时长对账。 分镜时长是预估的，配音实际时长超了，合成后音画不同步。后来加了音频能量检测和DP对齐，单集处理0.5秒，偏差从0.4秒降到0.05秒。\n\n整体跑下来，12分镜单集约8分钟，5集批量约40分钟。瓶颈主要在图像生成，占70%耗时。\n\n后面打算试试LCM-LoRA少步采样，据说能压到3秒/张。有用过的掘友吗，效果怎么样？\n\n另外如果不想自己搭这套流水线，也可以用现成的一体化方案，比如知漫剧（hy.jiaxunai.cn），从剧本到成片全流程覆盖，角色锁定和批量出片都支持，国内直接访问。先跑通流程再决定要不要自建，省得前期踩太多坑", "user": "用户581533781358", "company": "", "job": "", "avatar": "https://p3-passport.byteacctimg.com/img/mosaic-legacy/3792/5112637127~300x300.image", "ctime": 1789625676, "digg": 0, "cmt": 0, "topics": ["新人报道"], "pics": [], "url": "https://juejin.cn/pin/7686305184081117224", "roast": "四个坑写得真诚又实用，最后一句「也可以用现成方案」——原来前面四坑是广告的前摇。"}, {"id": "7686304110648066074", "content": "jym，这下到我了，赞够10个就离职！！！说到做到！！！\n\n\n\n\n\n\n\n骗你的，刚被约谈了，提前一个月通知，赔偿n[流泪]", "user": "人家最听话了啦", "company": "", "job": "", "avatar": "https://p26-passport.byteacctimg.com/img/user-avatar/dea111a991294c7543e3376e83c9fadc~300x300.image", "ctime": 1789625714, "digg": 34, "cmt": 6, "topics": [], "pics": [], "url": "https://juejin.cn/pin/7686304110648066074", "roast": "前半句是玩笑，后半句是现实。能笑着说出赔偿 N 的人，已经把该哭的部分处理完了。"}, {"id": "7686304110648016922", "content": "中午吃饭听同事说，项目经理已经注意到我们这排下班到点就走，说我们工作不饱和，测试阶段没bug，下班不走，坐哪儿干嘛？", "user": "不再180s", "company": "", "job": "", "avatar": "https://p26-passport.byteacctimg.com/img/user-avatar/3a16cd8af8c39498c12439b766051560~300x300.image", "ctime": 1789625473, "digg": 1, "cmt": 7, "topics": [], "pics": [], "url": "https://juejin.cn/pin/7686304110648016922", "roast": "测试阶段没 bug 是团队的功劳，到点下班是员工的原罪。这个逻辑年年更新，从不修订。"}, {"id": "7686283257302220826", "content": "人生多迷惑，何处是清晰。", "user": "兆子龙", "company": "", "job": "AI 工程师", "avatar": "https://p9-passport.byteacctimg.com/img/user-avatar/0ab0057eb8c96e5c8226dcfa4165d5eb~300x300.image", "ctime": 1789625459, "digg": 0, "cmt": 0, "topics": [], "pics": [], "url": "https://juejin.cn/pin/7686283257302220826", "roast": "对仗工整，情绪到位，信息量为零——这是哲学家和废话文学家的共同产区。"}, {"id": "7686164331981619252", "content": "想想这周单休真是要了命了", "user": "莫道桑榆晚hh", "company": "", "job": "", "avatar": "https://p6-passport.byteacctimg.com/img/user-avatar/5a38669ced6be927b5ed46b7bd8dc330~300x300.image", "ctime": 1789625877, "digg": 0, "cmt": 0, "topics": [], "pics": [], "url": "https://juejin.cn/pin/7686164331981619252", "roast": "单休不是少休一天，是把「休息」压缩成了「回血」，还没回满就又上场了。"}, {"id": "7686305184081264680", "content": "jym，你们中秋都发啥了啊，说出来让我羡慕一下[流泪]", "user": "平衡球大作战", "company": "", "job": "", "avatar": "https://p26-passport.byteacctimg.com/img/user-avatar/4e606e78669a26c614acccd7c6d46480~300x300.image", "ctime": 1789626059, "digg": 1, "cmt": 6, "topics": ["作品讨论：平衡球大作战微信小游戏"], "pics": [], "url": "https://juejin.cn/pin/7686305184081264680", "roast": "「让我羡慕一下」是社交场上最体面的自虐：既表达了诉求，又预先认了输。"}, {"id": "7686304110648147994", "content": "杭州桂花新茶大概几月份出来？", "user": "我不叫阿梅", "company": "", "job": "", "avatar": "https://p6-passport.byteacctimg.com/img/user-avatar/a3cbb01583f8e6326f3e03601d2d9c39~300x300.image", "ctime": 1789625981, "digg": 0, "cmt": 0, "topics": [], "pics": [], "url": "https://juejin.cn/pin/7686304110648147994", "roast": "在满屏 AI 和裁员里问一句桂花几月开，是今天沸点里最像生活的一条。"}, {"id": "7686305184081182760", "content": "九月不愧是丹桂飘香，路上都能闻到桂花香", "user": "莫道桑榆晚hh", "company": "", "job": "", "avatar": "https://p6-passport.byteacctimg.com/img/user-avatar/5a38669ced6be927b5ed46b7bd8dc330~300x300.image", "ctime": 1789625903, "digg": 0, "cmt": 4, "topics": [], "pics": [], "url": "https://juejin.cn/pin/7686305184081182760", "roast": "能闻到桂花香，说明你走的是地面不是地铁。这是今天最隐秘的一次炫耀。"}, {"id": "7686318450944393259", "content": "安装codex桌面版，要通过Microsoft Store来装，但是Microsoft Store一直打不开咋办[思考]", "user": "雕狸狮狒", "company": "", "job": "CV工程师", "avatar": "https://p9-passport.byteacctimg.com/img/user-avatar/bfae2c5b363962394210e0089fea5acf~300x300.image", "ctime": 1789625604, "digg": 2, "cmt": 7, "topics": [], "pics": [], "url": "https://juejin.cn/pin/7686318450944393259", "roast": "装 AI 编程工具的第一道门槛，居然是微软商店。人类通往未来的路，堵在一个打不开的窗口上。"}, {"id": "7686055959676977152", "content": "仅仅一年多的时间，工号从我进入到现在已经更新了快1000人[吐血]", "user": "Vettel", "company": "", "job": "CPP开发", "avatar": "https://p9-passport.byteacctimg.com/img/user-avatar/e3c61b24f8e16db95533e51c730d1a16~300x300.image", "ctime": 1789625526, "digg": 1, "cmt": 7, "topics": [], "pics": [], "url": "https://juejin.cn/pin/7686055959676977152", "roast": "工号增长曲线是最诚实的公司体检报告：它不写离职率，但它什么都说了。"}, {"id": "7686117720844648467", "content": "JRM，我们公司连放20天假。。", "user": "阳火锅", "company": "百度第一外包仔", "job": "vue工程师", "avatar": "https://p6-passport.byteacctimg.com/img/user-avatar/9311dcb2ddf33d928db94f47a09b467e~300x300.image", "ctime": 1789625491, "digg": 3, "cmt": 31, "topics": [], "pics": [], "url": "https://juejin.cn/pin/7686117720844648467", "roast": "这条底下三十多条评论，没有一条是祝福。这就是互联网。"}, {"id": "7686305184081002536", "content": "书接上回，在我走到那个同事后面，故意放慢脚步，看他手机好几次后，他今天开始更加往后，并且等我起身就把手机扣过去，等我走过在翻回来继续看，然后等我接水回来，即使我感觉脚步非常轻慢，他还是能捕捉到动静，立马把身子往前，并把手机扣过去，简直了，卧【】，太傻{}了，这种在旁边坐着，故意往后使劲靠的人到底怎么想的，老是在人家背后干嘛，干点活儿天天被人监视", "user": "草原上的土豆", "company": "", "job": "", "avatar": "https://p3-passport.byteacctimg.com/img/mosaic-legacy/3797/2889309425~300x300.image", "ctime": 1789625234, "digg": 0, "cmt": 8, "topics": [], "pics": [], "url": "https://juejin.cn/pin/7686305184081002536", "roast": "两个人互相猜，两个人都累。工位谍战片没有赢家，只有两个正经活都没干的人。"}, {"id": "7686283512920915994", "content": "签到跟矿石解耦后，还有存量矿石73万。", "user": "dora", "company": "阿里巴巴集团", "job": "Android开发", "avatar": "https://p6-passport.byteacctimg.com/img/user-avatar/98f05a29c9a93adc7d39be7247ab8dc9~300x300.image", "ctime": 1789624532, "digg": 8, "cmt": 5, "topics": [], "pics": [], "url": "https://juejin.cn/pin/7686283512920915994", "roast": "73 万矿石，是一个老用户对平台最沉默的表白：我不签到了，但我没走。"}, {"id": "7686055959676796928", "content": "马斯克睡进工地！为AI基建拼了\nAI正火嘛，老马的待遇也算提升了一点：这回至少有房车了（doge）\n鱼羊 发自 凹非寺\n量子位 | 公众号 QbitAI\n马斯克最新「宫殿」曝光——\n一辆位于美国孟菲斯的Airstream拖挂房车。\n△be like\n没错，老马又双叒住进工地里了。这回是为了监工AI数据中心。\n已经并入SpaceX的xAI正在…", "user": "最新鲜的大厂新闻", "company": "机器人", "job": "搜集大厂动态、八卦，求关注/点赞", "avatar": "https://p3-passport.byteacctimg.com/img/user-avatar/6e91652491ea81976cec32856e777756~300x300.image", "ctime": 1789624807, "digg": 1, "cmt": 0, "topics": ["每日快讯"], "pics": [], "url": "https://juejin.cn/pin/7686055959676796928", "roast": "世界首富住拖挂房车监工，不是励志，是提醒你 AI 基建有多缺电，他自己心里最清楚。"}, {"id": "7686305184080887848", "content": "以前年轻不懂事，真没少被骗[流泪]", "user": "稀饭本饭", "company": "", "job": "", "avatar": "https://p6-passport.byteacctimg.com/img/mosaic-legacy/3793/3131589739~300x300.image", "ctime": 1789624906, "digg": 2, "cmt": 5, "topics": [], "pics": [], "url": "https://juejin.cn/pin/7686305184080887848", "roast": "能把被骗说成「年轻不懂事」，说明学费已经付完了。这笔账，贵但结清了。"}, {"id": "7686218976208338950", "content": "社保涨价了，到手的钱更少了，我决定中秋和国庆不消费了，在家躺着。", "user": "有点念想", "company": "无业游民", "job": "前端开发", "avatar": "https://p6-passport.byteacctimg.com/img/user-avatar/9f92c98a91cdd0974012db4a33f78436~300x300.image", "ctime": 1789624765, "digg": 2, "cmt": 1, "topics": [], "pics": [], "url": "https://juejin.cn/pin/7686218976208338950", "roast": "到手的少一点，消费就砍一刀。宏观数据里叫「内需疲软」，在他身上叫「这个假期不出门」。"}, {"id": "7686047891355697186", "content": "ESLint 最坚固的护城河，正被 Rust 和 Go 联手攻破\n作为 Oxlint 背后的类型感知代码检查引擎，tsgolint 已发布稳定版 v7，将 Go 的原生速度带给长期以来由团队通过 ESLint 运行的 TypeScript 代码检查规则。\ntsgolint 负责处理需要 TypeScript 语义分析的规则，这些规则可以回答…", "user": "科技热点", "company": "", "job": "", "avatar": "https://p26-passport.byteacctimg.com/img/user-avatar/c8d2d7d1e3ac99a02c90a01bcb87d53f~300x300.image", "ctime": 1789624811, "digg": 0, "cmt": 0, "topics": ["每日快讯"], "pics": [], "url": "https://juejin.cn/pin/7686047891355697186", "roast": "写了十几年插件的团队，最后被「快 50 倍」三个字劝退。护城河是挖给时间的，不是挖给竞品的。"}, {"id": "7686223991560994825", "content": "5999 元起，豆包手机努比亚 NaviX Ultra 正式发布\n可根据任务自动选择对话或操作模式，通过系统级 Agent 跨多个应用完成搜索、规划、下单等操作\n语音助手支持十多种方言、连续对话和中途打断；已接入出行、地图、汽水音乐及飞书等服务，后台任务可排队并追加需求", "user": "LALALA", "company": "", "job": "", "avatar": "https://p9-passport.byteacctimg.com/img/user-avatar/ab594ec18e267e1280eb52344d3a367f~300x300.image", "ctime": 1789625308, "digg": 0, "cmt": 3, "topics": [], "pics": [], "url": "https://juejin.cn/pin/7686223991560994825", "roast": "5999 买一个能替你点外卖的手机，省下的时间大概够你多搬几块砖，把手机钱挣回来。"}, {"id": "7686085976599773193", "content": "虽然很想ig赢，但是世界赛没有tes，真没意思", "user": "海瑞hare", "company": "", "job": "", "avatar": "https://p26-passport.byteacctimg.com/img/user-avatar/42d577d1baaf034d2ecd43cb01c3c804~300x300.image", "ctime": 1789625306, "digg": 0, "cmt": 9, "topics": [], "pics": [], "url": "https://juejin.cn/pin/7686085976599773193", "roast": "「比赛没意思」的真实意思是：我支持的队伍没来。这很诚实，兄弟。"}, {"id": "7686283257302171674", "content": "扎克伯格开怼Anthropic：AI不需要“集体踩刹车”\n针对阿莫迪提出的行业共同减速建议，扎克伯格明确反对。他认为市场竞争、法律责任和声誉风险已提供足够安全激励，更可行的办法是让独立评估机构持续测试前沿模型，由监管和市场追究具体公司责任。\n他还区分了当前产品研发与递归式自我升级，强调Meta大部分算力用于改善现有产品，并曾以安全为由推迟Muse模型发布。", "user": "LALALA", "company": "", "job": "", "avatar": "https://p9-passport.byteacctimg.com/img/user-avatar/ab594ec18e267e1280eb52344d3a367f~300x300.image", "ctime": 1789625262, "digg": 0, "cmt": 0, "topics": [], "pics": [], "url": "https://juejin.cn/pin/7686283257302171674", "roast": "反对集体减速的人，通常不是觉得不安全，是怕自己不在减速之后的第一梯队里。"}, {"id": "7686164331981455412", "content": "公司中秋礼品终于发了，一盒月饼，一个出风机、一个大容量保温壶，端午发的是一个手持电动风扇、一个电动牙刷，粽子和咸鸭蛋", "user": "逍遥shadow", "company": "", "job": "前端搬砖", "avatar": "https://p9-passport.byteacctimg.com/img/user-avatar/6e8e82fdab6af071d29dbf69948f5067~300x300.image", "ctime": 1789625241, "digg": 7, "cmt": 21, "topics": [], "pics": [], "url": "https://juejin.cn/pin/7686164331981455412", "roast": "贵司的福利清单读起来像家电下乡，但胜在稳定：端午有风扇，中秋有暖壶，四季不落空。"}, {"id": "7686304110647984154", "content": "感觉最近jym都没啥好的，或者有趣的经历分享啊，可能大家生活都比较平淡，或者不分享啥的吗？还是平台凉了，不过我也没啥分享，日常就是上班下班，周末就爬爬山，逛逛商场，没有那种精彩的生活，没有惊喜，一切平常的发展下去，祝大家身体健康吧", "user": "yoga1118", "company": "", "job": "", "avatar": "https://p9-passport.byteacctimg.com/img/user-avatar/786bb9171940ddb1945effa78032eec0~300x300.image", "ctime": 1789625200, "digg": 0, "cmt": 3, "topics": [], "pics": [], "url": "https://juejin.cn/pin/7686304110647984154", "roast": "不是大家没生活，是生活被工作吸收了。最后那句「祝大家身体健康」，才是真话。"}, {"id": "7686283257302155290", "content": "苹果推出 Reference Image，从相机传感器开始验证照片真实性\niPhone 18 Pro主摄新增Reference Image模式，拍照前给原始像素签名，再通过Private Cloud Compute生成带安全时间戳的“参考图”。以后拿它和编辑版对比，就能判断照片是否还反映拍摄当时的画面。还能不暴露身份就撤销异常凭证。\n不过首发仅限两款Pro主摄，超广角和长焦不支持，普通照片默认不启用。", "user": "LALALA", "company": "", "job": "", "avatar": "https://p9-passport.byteacctimg.com/img/user-avatar/ab594ec18e267e1280eb52344d3a367f~300x300.image", "ctime": 1789625169, "digg": 0, "cmt": 0, "topics": [], "pics": [], "url": "https://juejin.cn/pin/7686283257302155290", "roast": "给照片验真的功能，首发只给最贵的机型。真相也要按价位分层，很苹果。"}, {"id": "7686283257302122522", "content": "豆包大模型 2.1 Pro 更新，多 Agent 任务与多模态 Coding 升级\n新版本强化了复杂 Agent 任务中的计划、工具调用与交叉核验能力，可把一个研究任务拆给数百个子 Agent，再通过多轮验证汇总结论，以降低长链路执行中的错误累积。", "user": "LALALA", "company": "", "job": "", "avatar": "https://p9-passport.byteacctimg.com/img/user-avatar/ab594ec18e267e1280eb52344d3a367f~300x300.image", "ctime": 1789625082, "digg": 0, "cmt": 0, "topics": [], "pics": [], "url": "https://juejin.cn/pin/7686283257302122522", "roast": "数百个子 Agent 汇总结论听着壮观，直到你想起：它们算错了，你也不知道错在哪个。"}, {"id": "7686085976599740425", "content": "A社CEO刚喊完“刹车”，呼吁前沿AI公司“放慢模型能力提升”，转头就签了澳洲最大数据中心，昆士兰2.16GW园区，用电量相当于150万户家庭，2027年启用，主要跑推理不跑训练\n[无辜呆]官方解释：减速针对的是“能力提升”，不等于停止部署现有模型，逻辑上没毛病，但身体很诚实", "user": "LALALA", "company": "", "job": "", "avatar": "https://p9-passport.byteacctimg.com/img/user-avatar/ab594ec18e267e1280eb52344d3a367f~300x300.image", "ctime": 1789625057, "digg": 1, "cmt": 3, "topics": [], "pics": [], "url": "https://juejin.cn/pin/7686085976599740425", "roast": "「减速针对能力提升，不等于停止部署」——这句的精彩程度，超过了他们所有的模型。"}, {"id": "7686066928101228559", "content": "每日例行一摸", "user": "用户1344852161881", "company": "", "job": "", "avatar": "https://p3-passport.byteacctimg.com/img/mosaic-legacy/3796/2975850990~300x300.image", "ctime": 1789624958, "digg": 0, "cmt": 2, "topics": [], "pics": [], "url": "https://juejin.cn/pin/7686066928101228559", "roast": "把摸鱼做成日更，是打工人对 KPI 最优雅的一次模仿。"}, {"id": "7686044352167837748", "content": "想换手机了 众筹 每人vivo 50 ，我就可以换X500pro 了[阴险][阴险][阴险][阴险]", "user": "哈哈O哈哈哈", "company": "", "job": "", "avatar": "https://p6-passport.byteacctimg.com/img/user-avatar/accd4b953c653a1ea0077c825dd8463e~300x300.image", "ctime": 1789624957, "digg": 0, "cmt": 3, "topics": [], "pics": [], "url": "https://juejin.cn/pin/7686044352167837748", "roast": "这届网友的众筹从来只有口号没有转账。放心，你的 X500 Pro 很安全。"}, {"id": "7686327615728517170", "content": "天天v50，就没见过真的会v50的", "user": "xiaoChen", "company": "", "job": "前端开发", "avatar": "https://p3-passport.byteacctimg.com/img/user-avatar/63c25b2aadb947b5a7e2e59e4402bc03~300x300.image", "ctime": 1789624958, "digg": 0, "cmt": 3, "topics": [], "pics": [], "url": "https://juejin.cn/pin/7686327615728517170", "roast": "互联网最诚实的经济学观察：所有人都喊着请客，没有一个人真的掏钱。"}, {"id": "7686283257302106138", "content": "曝苹果考虑重返服务器市场，曾与英伟达商谈 NVLink Fusion\n据The Information报道，苹果正评估一款面向AI开发者的推理服务器，搭载自研M8 Ultra芯片，可能提供2颗/4颗配置，最早2029年推出", "user": "LALALA", "company": "", "job": "", "avatar": "https://p9-passport.byteacctimg.com/img/user-avatar/ab594ec18e267e1280eb52344d3a367f~300x300.image", "ctime": 1789624953, "digg": 0, "cmt": 0, "topics": [], "pics": [], "url": "https://juejin.cn/pin/7686283257302106138", "roast": "2029 年的产品今天就开始预热，这叫期货；但苹果叫它「评估中」，这叫体面。"}, {"id": "7686304110647869466", "content": "java转agent开发有成功上岸的吗", "user": "马华藤", "company": "没什么用科技有限公司", "job": "前端@航海家", "avatar": "https://p6-passport.byteacctimg.com/img/user-avatar/4a8e7e04e94e45b6c8f290251fa49f98~300x300.image", "ctime": 1789624679, "digg": 0, "cmt": 5, "topics": [], "pics": [], "url": "https://juejin.cn/pin/7686304110647869466", "roast": "问「有人上岸了吗」，其实想听的是一句「能转」。答案不重要，先转起来的人已经不在这条帖子里了。"}, {"id": "7686223991560896521", "content": "iPhone 18 Pro 首发评测：15 分钟充 50%，苹果快充终于快了起来\nPro Max 电池容量首次进入 5000mAh 级别，配合 USB PD 3.2 的 SPR AVS 协议，实测 18 Pro 可维持 40W 峰值功率长达 13 分钟，15 分钟从 0 充至 57%，半小时到 84%；Pro Max 前 10 分钟稳定输出约 54W，15 分钟充入 50%，半小时 80%", "user": "LALALA", "company": "", "job": "", "avatar": "https://p9-passport.byteacctimg.com/img/user-avatar/ab594ec18e267e1280eb52344d3a367f~300x300.image", "ctime": 1789624855, "digg": 0, "cmt": 2, "topics": [], "pics": [], "url": "https://juejin.cn/pin/7686223991560896521", "roast": "「终于」两个字里，藏着安卓用户七年的沉默。苹果的进步，永远是别人的及格线。"}, {"id": "7686283512920850458", "content": "『漏刻有道』一成不变的日常，是舒适区也是围墙。学会取舍，匀出时间留给突破，才能加速成长。", "user": "漏刻有时", "company": "LOCKDATAV", "job": "数智引擎", "avatar": "https://p9-passport.byteacctimg.com/img/user-avatar/fe27371b1c5f0a46aa2f656325955fe3~300x300.image", "ctime": 1789624305, "digg": 0, "cmt": 0, "topics": ["JUEJIN FRIENDS 好好生活计划"], "pics": [], "url": "https://juejin.cn/pin/7686283512920850458", "roast": "舒适区和围墙用的是同一堵材料，区别只在于你从哪边往上看。"}, {"id": "7686117720844402707", "content": "以前雄心壮志，只要奋斗，自己前途无量，\n现在只想有份工作干着，不失业就行。\n一条小鲨鱼最终变成了一条大咸鱼", "user": "木子枫", "company": "", "job": "开发", "avatar": "https://p3-passport.byteacctimg.com/img/mosaic-legacy/3796/2975850990~300x300.image", "ctime": 1789624168, "digg": 4, "cmt": 1, "topics": [], "pics": [], "url": "https://juejin.cn/pin/7686117720844402707", "roast": "从「前途无量」到「别失业就行」，中间隔的不是躺平，是一段没人替你兜底的成年。"}, {"id": "7686283512920899610", "content": "DeepSeek Harness 0.1.6 增加 Browser Use 与 Computer Use\n前者提供 Playwright MCP、Chrome DevTools MCP 和 Stagehand 三种浏览器后端；后者可通过 Cua Driver MCP 或原生驱动操作本机并获取截图。", "user": "LALALA", "company": "", "job": "", "avatar": "https://p9-passport.byteacctimg.com/img/user-avatar/ab594ec18e267e1280eb52344d3a367f~300x300.image", "ctime": 1789624461, "digg": 2, "cmt": 0, "topics": [], "pics": [], "url": "https://juejin.cn/pin/7686283512920899610", "roast": "装上浏览器和电脑操作，Agent 终于能自己点鼠标了。下一步大概是自己写周报，然后自己放假。"}, {"id": "7686085976599674889", "content": "如果你30，手里有全款房的存款，你会买房吗？", "user": "天元233", "company": "", "job": "", "avatar": "https://p26-passport.byteacctimg.com/img/user-avatar/1a79792b1e1080ce9e366b760b22947f~300x300.image", "ctime": 1789624428, "digg": 1, "cmt": 20, "topics": ["年轻人应该买房吗？ "], "pics": [], "url": "https://juejin.cn/pin/7686085976599674889", "roast": "这个问题真正的难点不在买不买，在于「全款房的存款」几个字。有了它，答案就不重要了。"}, {"id": "7686218976208306182", "content": "我想和jym讨论一个问题，“运气”这个东西你们信吗？ 你们身边有没有一起打游戏中奖最多的人基本就是他，无论什么游戏，只要他和你玩，他总能在某个不经意的瞬间中了一个大奖。你有没有觉得某一段时间你干什么都不顺，某一段时间感觉天都在帮你。运气到底只是一种感觉，还是真的存在", "user": "重案刑事组之虎曹达华", "company": "保密", "job": "龙虾训导员", "avatar": "https://p26-passport.byteacctimg.com/img/user-avatar/01e0673e6d31f7855c422aa1434483a7~300x300.image", "ctime": 1789624428, "digg": 0, "cmt": 5, "topics": [], "pics": [], "url": "https://juejin.cn/pin/7686218976208306182", "roast": "运气大概是真的，但它挑人：越是不停出手的那个，越容易被它砸中。"}]};
+const N = DATA.cards.length;
+const KEY = 'jj-gacha-' + DATA.date;
+const S = Object.assign({liked:[],cmted:[],viewed:[]}, JSON.parse(localStorage.getItem(KEY) || '{}'));
+const save = () => localStorage.setItem(KEY, JSON.stringify(S));
+let order = DATA.cards.map((_, i) => i).sort(() => Math.random() - .5);
+let pos = 0, cur = null;
+
+const $ = s => document.querySelector(s);
+const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const pad = n => n < 10 ? '0' + n : '' + n;
+const fmt = t => { const d = new Date(t * 1000); return pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes()); };
+function toast(m){ const t = $('#toast'); t.textContent = m; t.classList.add('on');
+  clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove('on'), 1900); }
+function copy(txt){
+  if (navigator.clipboard && window.isSecureContext) return navigator.clipboard.writeText(txt);
+  const a = document.createElement('textarea'); a.value = txt; a.style.position = 'fixed'; a.style.opacity = 0;
+  document.body.appendChild(a); a.select(); document.execCommand('copy'); a.remove(); return Promise.resolve();
+}
+
+function render(anim){
+  const idx = order[pos], c = DATA.cards[idx];
+  cur = c; cur._idx = idx;
+  const long = c.content.length > 420;
+  $('#pin').innerHTML = `
+    <div class="au">
+      ${c.avatar ? `<img src="${esc(c.avatar)}" referrerpolicy="no-referrer" onerror="this.remove()">` : ''}
+      <div><div class="nm">${esc(c.user)}</div>
+        <div class="sub">${esc([c.company, c.job].filter(Boolean).join(' · ') || '掘友')}</div></div>
+      <div class="tm">${fmt(c.ctime)}</div>
+    </div>
+    <div class="body${long ? ' long' : ''}">${esc(c.content)}</div>
+    ${c.topics.length ? `<div class="tags">${c.topics.map(t => `<span class="tag"># ${esc(t)}</span>`).join('')}</div>` : ''}
+    ${c.pics.length ? `<div class="pics">${c.pics.map(p => `<img src="${esc(p)}" referrerpolicy="no-referrer" onclick="window.open(this.src)">`).join('')}</div>` : ''}
+    <div class="stats"><span>👍 <b>${c.digg}</b> 赞</span><span>💬 <b>${c.cmt}</b> 评论</span>
+      <a class="src" href="${esc(c.url)}" target="_blank" rel="noreferrer">沸点原文 ↗</a></div>`;
+  $('#ai').innerHTML = `
+    <div class="hd"><span>AI</span>犀利点评</div>
+    <div class="txt" id="roastTxt">${esc(c.roast)}</div>
+    <div class="acts">
+      <button class="solid" id="aUse">✨ 用这句评论</button>
+      <button id="aCopy">复制点评</button>
+    </div>
+    <div class="mood">话是毒了点，说的是现象，不是你。</div>`;
+  $('#aUse').onclick = () => { openCmt(true); };
+  $('#aCopy').onclick = () => copy(c.roast).then(() => toast('点评已复制'));
+
+  if (anim){ const el = $('#pin'); el.classList.remove('out');
+    el.style.animation = 'none'; void el.offsetWidth; el.style.animation = '';
+    const ai = $('#ai'); ai.style.animation = 'none'; void ai.offsetWidth; ai.style.animation = ''; }
+
+  if (!S.viewed.includes(idx)){ S.viewed.push(idx); save(); }
+  $('#bLike').classList.toggle('on', S.liked.includes(idx));
+  $('#bLike').textContent = S.liked.includes(idx) ? '♥ 已喜欢' : '♥ 喜欢';
+  $('#bSave').textContent = S.cmted.includes(idx) ? '✓ 已评论' : '标记已评论';
+  $('#prog').style.width = ((pos + 1) / order.length * 100) + '%';
+  $('#mLeft').textContent = `第 ${pos + 1} / ${order.length} 张 · ${fmt(c.ctime)}`;
+  $('#mRight').textContent = `已看 ${S.viewed.length} · 喜欢 ${S.liked.length} · 已评 ${S.cmted.length}`;
+  $('#favN').textContent = S.liked.length;
+}
+function go(step, anim){
+  const n = pos + step;
+  if (n < 0){ toast('已经是第一张了'); return; }
+  if (n >= order.length){ toast('这波抽完了，点「洗牌」再来一轮'); return; }
+  pos = n; render(anim !== false);
+}
+function next(){ pos + 1 >= order.length ? pos = 0 : pos++; render(true); }
+function toggleLike(){
+  const i = cur._idx, k = S.liked.indexOf(i);
+  k >= 0 ? S.liked.splice(k, 1) : S.liked.push(i);
+  save(); render(false);
+  const b = $('#bLike'); b.classList.add('pop'); setTimeout(() => b.classList.remove('pop'), 420);
+  toast(k >= 0 ? '取消喜欢' : '已加入收藏夹');
+}
+function openSheet(el){ $('#mask').classList.add('on'); el.classList.add('on'); }
+function closeSheet(){ $('#mask').classList.remove('on');
+  $('#sheetCmt').classList.remove('on'); $('#sheetFav').classList.remove('on'); }
+function openCmt(useAI){
+  if (useAI) $('#ta').value = cur.roast;
+  openSheet($('#sheetCmt')); if (useAI) setTimeout(() => $('#ta').focus(), 260);
+}
+function favList(){
+  const box = $('#favList');
+  if (!S.liked.length){ box.innerHTML = '<div class="empty">还没喜欢过任何一张。看到对味的就点个 ♥ 吧。</div>'; return; }
+  box.innerHTML = S.liked.map(i => {
+    const c = DATA.cards[i];
+    return `<div class="it" data-i="${i}"><b>${esc(c.user)} · ${esc(c.roast.slice(0, 0))}${esc(c.content.slice(0, 40))}</b>
+      <span>AI：${esc(c.roast)}</span></div>`;
+  }).join('');
+  box.querySelectorAll('.it').forEach(el => el.onclick = () => {
+    const i = +el.dataset.i; const p = order.indexOf(i);
+    if (p >= 0) pos = p; else { order.unshift(i); pos = 0; }
+    closeSheet(); render(true);
+  });
+  $('#favN2').textContent = S.liked.length + ' 张';
+}
+
+$('#bNext').onclick = next;
+$('#bPrev').onclick = () => go(-1);
+$('#bLike').onclick = toggleLike;
+$('#bCmt').onclick = () => openCmt(false);
+$('#bOpen').onclick = () => window.open(cur.url, '_blank');
+$('#mask').onclick = closeSheet;
+$('#bUseAI').onclick = () => { $('#ta').value = cur.roast; toast('AI 评价已贴入'); };
+$('#bCopy').onclick = () => { const v = $('#ta').value.trim();
+  v ? copy(v).then(() => toast('评论已复制')) : toast('先写点什么吧'); };
+$('#bGo').onclick = () => { const v = $('#ta').value.trim();
+  const done = () => { S.cmted.includes(cur._idx) || S.cmted.push(cur._idx); save();
+    $('#bSave').textContent = '✓ 已评论'; window.open(cur.url, '_blank'); };
+  v ? copy(v).then(() => { toast('已复制，去沸点粘贴'); done(); }) : done(); };
+$('#bSave').onclick = () => { if (!S.cmted.includes(cur._idx)) S.cmted.push(cur._idx); save();
+  $('#bSave').textContent = '✓ 已评论'; toast('已标记为已评论'); closeSheet(); };
+$('#btnFav').onclick = () => { favList(); openSheet($('#sheetFav')); };
+$('#btnShuffle').onclick = () => { order.sort(() => Math.random() - .5); pos = 0; render(true); toast('重新洗牌'); };
+$('#q').oninput = e => {
+  const kw = e.target.value.trim().toLowerCase();
+  if (!kw){ order = DATA.cards.map((_, i) => i); pos = 0; render(true); return; }
+  const hit = DATA.cards.map((c, i) => [c, i]).filter(([c]) =>
+    (c.content + c.user + c.company + c.job + c.topics.join('') + c.roast).toLowerCase().includes(kw));
+  order = hit.map(([, i]) => i); pos = 0;
+  order.length ? render(true) : ($('#pin').innerHTML = '<div class="empty">没搜到，换个词试试。</div>',
+    $('#ai').innerHTML = '<div class="hd"><span>AI</span>没辙</div><div class="txt">这关键词我一张都没捞着，要不换个说法。</div>');
+};
+document.addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+  const ae = document.activeElement;
+  if (ae && ae.tagName === 'BUTTON') ae.blur();
+  if (e.key === 'ArrowRight' || e.key === ' '){ e.preventDefault(); next(); }
+  else if (e.key === 'ArrowLeft') go(-1);
+  else if (e.key.toLowerCase() === 'l') toggleLike();
+  else if (e.key.toLowerCase() === 'c') openCmt(false);
+  else if (e.key === 'Escape') closeSheet();
+});
+render(true);
+</script>
+</body></html>

@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>沸点抽卡</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<div class="wrap">
+
+  <!-- 浮层：只有两张牌；牌外一律是虚化的背景 -->
+  <div class="stage" id="stage">
+    <div class="deck deckL"></div>
+    <div class="deck deckR"></div>
+  </div>
+
+  <!-- 左上角浮标：抓最新 / 洗牌 / 收藏 / 设置 / 关 -->
+  <div class="hud">
+    <span class="logo">沸</span>
+    <button class="tbtn" id="btnRefresh">⟳ 抓最新</button>
+    <button class="tbtn" id="btnShuffle">洗牌</button>
+    <button class="tbtn" id="btnList">♥ <b id="favN">0</b></button>
+    <button class="tbtn" id="btnSettings">⚙</button>
+    <button class="tbtn" id="btnClose">✕</button>
+    <span class="sub" id="subChip">手动刷新</span>
+  </div>
+
+  <!-- 右上角状态 -->
+  <div class="info">
+    <b id="mLeft">—</b>
+    <div id="mRight">喜欢 0 · 已评 0</div>
+    <div class="prog"><i id="prog"></i></div>
+  </div>
+
+  <div class="search">
+    <input id="q" placeholder="搜沸点 / 作者 / 话题 / 点评">
+  </div>
+
+  <!-- 底部浮条：翻牌 + 互动 -->
+  <div class="dock">
+    <div class="row">
+      <button class="btn ghost" id="btnPrev">← 上一张</button>
+      <button class="btn ghost" id="btnComment">评论</button>
+      <button class="btn ghost" id="btnCopyLink">复制</button>
+      <button class="btn ghost liked" id="btnLike">♥ 喜欢</button>
+      <button class="btn primary" id="btnNext">抽下一张 →</button>
+    </div>
+    <div class="hint">← → 翻牌 · 空格下一张 · L 喜欢 · C 评论 · R 抓最新 · Esc 关闭</div>
+  </div>
+</div>
+
+<div class="mask" id="mask"></div>
+
+<div class="sheet" id="sheetCmt">
+  <div class="sheetHead"><b>写条评论</b><span class="grow"></span><span class="sub" id="cmtState"></span></div>
+  <p class="subtle">直接发会用你浏览器里已登录的掘金身份提交；不想直发就复制去原文粘贴。</p>
+  <div class="hotcmts" id="hotCmts"></div>
+  <textarea id="ta" placeholder="说点什么…"></textarea>
+  <div class="sheetActions">
+    <button class="btn ghost" id="btnUseAI">贴入 AI 点评</button>
+    <button class="btn ghost" id="btnCopyCmt">复制</button>
+    <button class="btn ghost" id="btnGoCmt">去原文</button>
+    <button class="btn primary" id="btnSendCmt">发表评论</button>
+  </div>
+</div>
+
+<div class="sheet" id="sheetList">
+  <div class="sheetHead"><b>我的收藏</b><span class="grow"></span><span class="sub" id="listN">0 张</span></div>
+  <p class="subtle">点一条跳回那张牌；× 移除。</p>
+  <div class="favs" id="favs"></div>
+</div>
+
+<div class="toast" id="toast"></div>
+<script src="app.js"></script>
+</body>
+</html>

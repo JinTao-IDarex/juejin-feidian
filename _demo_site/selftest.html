@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>自检：注入链路</title>
+<style>
+  body{font:14px/1.7 Consolas,Menlo,monospace;background:#0f1216;color:#c8d0da;padding:24px;margin:0}
+  h1{font-size:16px;color:#fff;margin-bottom:14px;font-family:system-ui}
+  .r{padding:7px 11px;border-radius:7px;margin-bottom:6px;background:#1a1f26;border-left:3px solid #444}
+  .ok{border-left-color:#2ea86a;color:#8fe0b0}
+  .bad{border-left-color:#d94b4b;color:#ff9f9f}
+  pre{background:#1a1f26;padding:10px;border-radius:7px;font-size:12px;overflow:auto;margin-top:10px}
+</style></head>
+<body>
+<h1>注入链路自检</h1>
+<div id="out"></div>
+<pre id="dump"></pre>
+
+<script>
+const out = document.getElementById('out');
+const log = (ok, msg) => {
+  const d = document.createElement('div');
+  d.className = 'r ' + (ok ? 'ok' : 'bad');
+  d.textContent = (ok ? '✓ ' : '✗ ') + msg;
+  out.appendChild(d);
+};
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+
+(async () => {
+  // 1) 宿主 shim
+  window.chrome = {
+    runtime: {
+      getURL: () => './_frame_app.html?embed=1&t=pin-gacha-frame',
+      sendMessage: (m, cb) => setTimeout(() => cb && cb({ ok: true }), 0),
+    },
+    storage: { local: { get: (k, cb) => cb({}), set: (k, cb) => cb && cb() } },
+  };
+
+  // 2) 注入 frame.js（用 fetch 拿原文，保证测的就是那份代码）
+  let src;
+  try {
+    src = await (await fetch('./frame.js?raw=1')).text();
+    log(true, 'frame.js 已取到 ' + src.length + ' 字节');
+  } catch (e) { log(false, 'frame.js 取不到: ' + e.message); return; }
+
+  const s = document.createElement('script');
+  s.textContent = src;
+  document.body.appendChild(s);
+
+  await wait(900);
+
+  // 掐住 frame.js 内部：把 closed shadow 里的 iframe 抓出来
+  // （closed shadow 外部读不到，但 iframe 是真实 DOM 节点，会被 window.frames 计数）
+  const probeIframes = () => {
+    const all = [];
+    // 遍历所有可能的 shadow root 宿主
+    const walk = (root) => {
+      root.querySelectorAll('*').forEach((el) => {
+        if (el.shadowRoot) { all.push(...el.shadowRoot.querySelectorAll('iframe')); walk(el.shadowRoot); }
+      });
+    };
+    walk(document);
+    return all;
+  };
+
+  // 3) 检查 host
+  const host = document.getElementById('juejin-pin-gacha-host');
+  log(!!host, 'host 元素 ' + (host ? '已注入' : '不存在'));
+  if (host) {
+    const r = host.getBoundingClientRect();
+    log(r.width > 100 && r.height > 100, 'host 尺寸 ' + Math.round(r.width) + '×' + Math.round(r.height));
+    log(!!host.shadowRoot, 'shadowRoot ' + (host.shadowRoot ? '可访问(open)' : '不可访问(closed，正常)'));
+    log(document.documentElement.style.overflow === 'hidden', 'documentElement.overflow = ' + (document.documentElement.style.overflow || '(空)'));
+    log(!!host.style.height || true, 'host inline style: ' + (host.getAttribute('style') || '(无)'));
+  }
+
+  // 4) iframe 实际内容
+  const frames = [...document.querySelectorAll('iframe')];
+  log(frames.length > 0, '页面里 iframe 数 = ' + frames.length);
+
+  // 4b) 深挖 host：为什么 0×0、shadow 里到底有没有东西
+  if (host) {
+    const cs = getComputedStyle(host);
+    document.getElementById('dump').textContent +=
+      '\n\n[host 诊断]' +
+      '\ndisplay=' + cs.display + ' position=' + cs.position +
+      '\nwidth=' + cs.width + ' height=' + cs.height +
+      '\ncontain=' + cs.contain + ' transform=' + cs.transform + ' filter=' + cs.filter +
+      '\nchildNodes=' + host.childNodes.length +
+      '\ninnerHTML.len=' + host.innerHTML.length +
+      '\n⚠ innerHTML 读的是 light DOM；shadow 是 closed，从外部读不到。' +
+      '\n这说明要看 shadow 内容必须让 frame.js 自己报告。';
+  }
+  frames.forEach((f, i) => {
+    const fr = f.getBoundingClientRect();
+    log(fr.width > 100, '  #' + i + ' 尺寸 ' + Math.round(fr.width) + '×' + Math.round(fr.height) + ' src=' + f.getAttribute('src'));
+    try {
+      const d = f.contentDocument;
+      log(!!d, '  #' + i + ' contentDocument ' + (d ? '可访问' : 'null'));
+      if (d) {
+        const stage = d.querySelector('#stage');
+        log(!!stage, '  #' + i + ' #stage ' + (stage ? '存在' : '缺失'));
+        if (stage) {
+          const cards = stage.querySelectorAll('.card');
+          log(cards.length === 2, '  #' + i + ' 牌数 = ' + cards.length);
+          cards.forEach((c) => {
+            const cr = c.getBoundingClientRect();
+            log(cr.width > 100, '    .card.' + c.className.split(' ')[1] + ' ' + Math.round(cr.width) + '×' + Math.round(cr.height));
+          });
+        }
+        const dock = d.querySelector('.dock');
+        if (dock) { const dr = dock.getBoundingClientRect(); log(true, '  #' + i + ' .dock 位置 ' + Math.round(dr.x) + ',' + Math.round(dr.y) + ' ' + Math.round(dr.width) + '×' + Math.round(dr.height)); }
+      }
+    } catch (e) { log(false, '  #' + i + ' 跨域读不到: ' + e.message); }
+  });
+
+  document.getElementById('dump').textContent =
+    'window.innerWidth=' + window.innerWidth + ' innerHeight=' + window.innerHeight + '\n' +
+    'body bg=' + getComputedStyle(document.body).backgroundColor + '\n' +
+    'host html=' + (host ? host.outerHTML.slice(0, 260) : '(none)');
+
+  // 把结论压进 title —— title 在整个页面生命周期里都读得到，不受调用间隔影响
+  const lines = [...document.querySelectorAll('.r')].map((d) => d.textContent);
+  document.title = 'RESULT::' + lines.join(' ;; ');
+  window.__DONE__ = true;
+})();
+</script>
+</body></html>

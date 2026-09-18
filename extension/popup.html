@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>沸点抽卡</title>
+<link rel="stylesheet" href="popup.css">
+</head>
+<body>
+<div class="pop">
+  <div class="hd">
+    <span class="logo">沸</span>
+    <div class="ht">
+      <b>沸点抽卡</b>
+      <small id="sub">实时沸点 · AI 犀利解析</small>
+    </div>
+  </div>
+
+  <div class="stat">
+    <div><span>牌堆</span><b id="nPin">—</b></div>
+    <div><span>已点评</span><b id="nRoast">—</b></div>
+    <div><span>喜欢</span><b id="nLike">—</b></div>
+  </div>
+
+  <div class="preview" id="preview">正在抓取最新沸点…</div>
+
+  <button class="go" id="btnOpen">在本页弹卡牌</button>
+
+  <div class="row">
+    <button class="mini" id="btnOpenTab">独立窗口</button>
+    <button class="mini" id="btnRefresh">⟳ 抓最新</button>
+    <button class="mini" id="btnSettings">⚙ 设置</button>
+  </div>
+
+  <p class="hint" id="hint">在当前页面直接盖出牌面，不用跳转。</p>
+  <div class="toast" id="toast"></div>
+</div>
+<script src="popup.js"></script>
+</body>
+</html>

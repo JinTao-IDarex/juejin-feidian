@@ -1,0 +1,48 @@
+/* popup.css — 工具栏弹窗：状态 + 「弹卡牌」入口（浅色） */
+*{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#f6f7f9; --card:#fff; --ink:#1c1f24; --ink2:#5c636e; --ink3:#98a0ab;
+  --line:#e4e7ec; --line2:#cfd4dc; --hot:#f2661a; --hot-soft:#fff3ea;
+}
+html,body{width:308px}
+body{
+  background:var(--bg);color:var(--ink);
+  font:13.5px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+  -webkit-font-smoothing:antialiased;
+}
+button{font:inherit;color:inherit;border:none;background:none;cursor:pointer}
+.pop{padding:16px;position:relative}
+
+.hd{display:flex;align-items:center;gap:10px;margin-bottom:14px}
+.logo{width:32px;height:32px;border-radius:9px;display:grid;place-items:center;font-weight:700;font-size:14px;
+  color:#fff;background:var(--hot)}
+.ht b{display:block;font-size:14px;font-weight:600}
+.ht small{color:var(--ink3);font-size:11px}
+
+.stat{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:12px}
+.stat>div{background:#fff;border:1px solid var(--line);border-radius:11px;padding:9px 10px}
+.stat span{display:block;font-size:11px;color:var(--ink3)}
+.stat b{display:block;font-size:17px;font-weight:600;margin-top:2px}
+
+.preview{background:#fff;border:1px solid var(--line);border-radius:12px;padding:11px 12px;
+  font-size:12px;line-height:1.7;color:var(--ink2);min-height:64px;
+  display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;margin-bottom:12px}
+.preview .who{color:var(--ink3);font-size:11px;display:block;margin-bottom:3px}
+
+.go{display:block;width:100%;background:var(--hot);color:#fff;border-radius:12px;padding:12px;
+  font-size:14px;font-weight:600;transition:.16s}
+.go:hover{background:#e35c12}
+.go:active{transform:translateY(1px)}
+
+.row{display:flex;gap:8px;margin-top:9px}
+.mini{flex:1;background:#fff;border:1px solid var(--line);border-radius:11px;padding:9px;
+  font-size:12.5px;color:var(--ink2);font-weight:500;transition:.16s}
+.mini:hover{border-color:var(--line2);color:var(--ink)}
+.mini.spin{animation:spin .8s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+.hint{text-align:center;font-size:11px;color:var(--ink3);margin-top:12px}
+.toast{position:absolute;left:50%;bottom:-6px;transform:translate(-50%,10px);background:#22262c;color:#fff;
+  padding:8px 14px;border-radius:10px;font-size:11.5px;opacity:0;pointer-events:none;transition:.22s;
+  white-space:nowrap;z-index:9}
+.toast.on{opacity:1;transform:translate(-50%,0)}

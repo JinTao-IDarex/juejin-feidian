@@ -1,0 +1,259 @@
+/* app.css — 牌面弹窗（只弹两张牌）
+ * 设计前提：这一页被当作浮层用（网页右下角 iframe / 独立小窗）。
+ * 牌以外不留任何页面装饰，只有四角浮标提供必要操作。
+ */
+*{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:transparent;
+  --card:#ffffff;
+  --ink:#1c1f24;
+  --ink2:#5c636e;
+  --ink3:#98a0ab;
+  --line:#e4e7ec;
+  --line2:#cfd4dc;
+  --hot:#f2661a;
+  --hot-soft:#fff3ea;
+  --like:#e8435f;
+  --ok:#1f9d63;
+  --err:#d93636;
+  --red:#d63a3a;
+  --spade:#22262c;
+  --glass:rgba(24,28,34,.52);
+  --glass-line:rgba(255,255,255,.24);
+}
+html,body{height:100%;overflow:hidden;background:transparent}
+body{
+  color:var(--ink);
+  font:14px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+  -webkit-font-smoothing:antialiased;
+  display:grid;place-items:center;
+}
+.grow{flex:1}
+button{font:inherit;color:inherit;border:none;background:none;cursor:pointer}
+a{color:inherit;text-decoration:none}
+
+/* 被 content script 注入网页时：牌层自己铺一层遮罩（网页在内层，遮罩遮不到，所以在这儿补） */
+html.embed body{
+  background:rgba(16,19,24,.5);
+  backdrop-filter:blur(2.5px);
+  animation:veil .18s ease both;
+}
+@keyframes veil{from{background:rgba(16,19,24,0)}to{background:rgba(16,19,24,.5)}}
+
+.wrap{
+  width:100%;height:100%;
+  display:flex;align-items:center;justify-content:center;
+  padding:62px 26px 96px;
+  animation:pop .24s cubic-bezier(.2,.9,.3,1.05) both;
+}
+/* 独立窗口（非注入）且不是被谁嵌着：给自己铺一层浅色底 */
+html:not(.embed) body{ background:#eef1f5 }
+@keyframes pop{0%{opacity:0;transform:translateY(14px) scale(.975)}100%{opacity:1;transform:none}}
+
+/* ---------- 牌桌（只有两张牌） ---------- */
+.stage{position:relative;display:flex;align-items:stretch;justify-content:center;gap:22px}
+.stage::before{ /* 牌后面的一圈柔光，把浮层和网页主体分开 */
+  content:'';position:absolute;inset:-30px -33px;border-radius:26px;z-index:-1;
+  background:radial-gradient(120% 100% at 50% 40%,rgba(255,255,255,.3),rgba(24,28,34,.05) 78%);
+  filter:blur(2px);
+}
+.cardHost{display:flex}
+
+/* ---------- 四角浮标 ---------- */
+.hud{position:fixed;left:14px;top:12px;display:flex;gap:6px;align-items:center;z-index:20}
+.hud .logo{width:26px;height:26px;border-radius:8px;display:grid;place-items:center;font-weight:700;
+  font-size:12px;color:#fff;background:var(--hot);box-shadow:0 4px 12px -4px rgba(242,102,26,.7)}
+.tbtn{border:1px solid var(--glass-line);background:var(--glass);color:#fff;
+  border-radius:9px;padding:5px 10px;font-size:12px;font-weight:500;transition:.16s;white-space:nowrap;
+  backdrop-filter:blur(8px);box-shadow:0 4px 14px -8px rgba(0,0,0,.5)}
+.tbtn:hover{background:rgba(24,28,34,.72);border-color:rgba(255,255,255,.36)}
+.tbtn b{font-weight:600}
+.tbtn.spin{animation:spin .8s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.hud .sub{font-size:10.5px;color:rgba(255,255,255,.62);margin-left:3px;
+  text-shadow:0 1px 3px rgba(0,0,0,.45);white-space:nowrap}
+
+/* ---------- 右上角状态 ---------- */
+.info{position:fixed;right:14px;top:12px;text-align:right;z-index:20;
+  background:var(--glass);border:1px solid var(--glass-line);border-radius:10px;
+  padding:7px 11px;color:rgba(255,255,255,.78);font-size:11px;line-height:1.6;
+  backdrop-filter:blur(8px);pointer-events:none;min-width:132px}
+.info b{color:#fff;font-size:12.5px;font-weight:600;display:block}
+.info .prog{height:3px;background:rgba(255,255,255,.22);border-radius:9px;overflow:hidden;margin-top:6px}
+.info .prog i{display:block;height:100%;width:0;background:var(--hot);border-radius:9px;
+  transition:width .3s cubic-bezier(.4,0,.2,1)}
+
+/* ---------- 搜索 ---------- */
+.search{position:fixed;left:14px;top:48px;z-index:20}
+.search input{width:184px;background:var(--glass);border:1px solid var(--glass-line);border-radius:9px;
+  padding:6px 11px;color:#fff;font:12px/1.5 inherit;outline:none;transition:.16s;backdrop-filter:blur(8px)}
+.search input::placeholder{color:rgba(255,255,255,.55)}
+.search input:focus{border-color:rgba(255,255,255,.5);background:rgba(24,28,34,.7)}
+
+/* ---------- 底部浮条 ---------- */
+.dock{position:fixed;left:50%;bottom:14px;transform:translateX(-50%);z-index:20;
+  display:flex;flex-direction:column;align-items:center;gap:6px;
+  background:var(--glass);border:1px solid var(--glass-line);border-radius:14px;
+  padding:9px 13px;backdrop-filter:blur(10px);
+  box-shadow:0 12px 30px -14px rgba(0,0,0,.55);max-width:calc(100vw - 24px)}
+.dock .row{display:flex;justify-content:center;gap:6px;flex-wrap:wrap}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;border-radius:9px;
+  padding:7px 13px;font-size:12.5px;font-weight:600;transition:.16s;border:1px solid transparent;
+  white-space:nowrap}
+.btn:active{transform:translateY(1px)}
+.btn:disabled{opacity:.45;cursor:default;transform:none}
+.btn.ghost{background:rgba(255,255,255,.14);border-color:rgba(255,255,255,.22);color:#fff}
+.btn.ghost:hover{background:rgba(255,255,255,.26)}
+.btn.primary{background:var(--hot);color:#fff;box-shadow:0 8px 20px -10px rgba(242,102,26,.9)}
+.btn.primary:hover{background:#e35c12}
+.btn.ghost.liked{background:rgba(232,67,95,.92);border-color:transparent;color:#fff}
+.btn.ghost.liked:hover{background:#d63450}
+.btn.wide{padding:7px 24px}
+.hint{font-size:10.5px;color:rgba(255,255,255,.62);white-space:nowrap;overflow:hidden;
+  text-overflow:ellipsis;max-width:100%}
+kbd{font:inherit;font-size:11px;background:#fff;border:1px solid var(--line);border-bottom-width:2px;
+  border-radius:5px;padding:1px 6px;margin:0 2px}
+
+/* ---------- card ---------- */
+.card{
+  position:relative;width:266px;flex:0 0 auto;aspect-ratio:2.5/3.5;background:var(--card);
+  border:1px solid var(--line2);border-radius:12px;padding:15px 16px 14px;
+  display:flex;flex-direction:column;
+  box-shadow:0 18px 42px -18px rgba(18,22,28,.5);
+  transition:transform .18s ease,box-shadow .18s ease;
+}
+.card:hover{transform:translateY(-3px);box-shadow:0 26px 52px -20px rgba(18,22,28,.55)}
+.card.dealL{animation:dealL .46s cubic-bezier(.2,.9,.3,1.1) both}
+.card.dealR{animation:dealR .46s .08s cubic-bezier(.2,.9,.3,1.1) both}
+@keyframes dealL{0%{opacity:0;transform:translate(-42px,26px) rotate(-9deg)}100%{opacity:1;transform:none}}
+@keyframes dealR{0%{opacity:0;transform:translate(42px,26px) rotate(9deg)}100%{opacity:1;transform:none}}
+
+.card .idx{position:absolute;line-height:1;text-align:center;font-weight:600}
+.card .idx .rank{font-size:19px}
+.card .idx .suit{font-size:14px;margin-top:3px;display:block}
+.card .idx.tl{top:11px;left:13px}
+.card .idx.br{bottom:11px;right:13px;transform:rotate(180deg)}
+.rank-red{color:var(--red)}
+.rank-black{color:var(--spade)}
+
+.slotTag{position:absolute;top:9px;right:12px;font-size:10.5px;letter-spacing:1.5px;
+  color:var(--ink3);text-transform:uppercase}
+
+.cHead{margin:24px 0 0;padding-bottom:11px;border-bottom:1px solid var(--line);text-align:center}
+.cHead b{display:block;font-size:13.5px;font-weight:600}
+.cHead span{display:block;font-size:11.5px;color:var(--ink3);margin-top:2px;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+.cBody{flex:1;display:flex;flex-direction:column;justify-content:center;gap:10px;padding:13px 2px;min-height:0}
+.cBody .txt{font-size:12.5px;line-height:1.78;color:#2b3038;word-break:break-word;white-space:pre-wrap}
+.cBody .txt.scroll{max-height:206px;overflow:auto;padding-right:4px}
+.cBody .txt.scroll::-webkit-scrollbar{width:4px}
+.cBody .txt.scroll::-webkit-scrollbar-thumb{background:#dfe3ea;border-radius:9px}
+.cBody .pics{display:flex;gap:6px;justify-content:center;flex-wrap:wrap}
+.cBody .pics img{width:58px;height:58px;object-fit:cover;border-radius:8px;border:1px solid var(--line)}
+
+.cFoot{padding-top:11px;border-top:1px solid var(--line)}
+.cFoot .row{display:flex;justify-content:center;flex-wrap:wrap;gap:11px;font-size:11px;color:var(--ink3)}
+.cFoot .row a{color:var(--hot);font-weight:500}
+.cFoot .row a:hover{text-decoration:underline}
+
+.tags{display:flex;justify-content:center;gap:5px;flex-wrap:wrap}
+.tag{font-size:10.5px;color:var(--ink2);background:#f2f4f7;border-radius:6px;padding:2px 8px}
+.tag.hot{color:var(--hot);background:var(--hot-soft)}
+
+/* ---------- 解析牌 ---------- */
+.card.ai{border-color:#f0d6c2}
+.card.ai .cHead{border-bottom-color:#f4e3d6}
+.card.ai .cHead b{color:var(--hot)}
+.ornament{text-align:center;font-size:10.5px;color:#e0c3ac;letter-spacing:5px}
+.cBody .roast{font-size:14px;line-height:1.92;text-align:center;color:#22262d;font-weight:500;
+  word-break:break-word}
+.personas{display:flex;justify-content:center;gap:5px;flex-wrap:wrap}
+.persona{font-size:10.5px;color:var(--ink2);border:1px solid var(--line);border-radius:6px;
+  padding:2px 8px;background:#fff;transition:.16s}
+.persona:hover{border-color:var(--hot);color:var(--hot)}
+.persona.on{background:var(--hot-soft);border-color:#f5c39f;color:var(--hot);font-weight:600}
+.persona.tagpill{cursor:default;opacity:.7;border-style:dashed}
+.cardActs{display:flex;justify-content:center;gap:6px;flex-wrap:wrap;margin-top:9px}
+.cardActs button{font-size:11px;color:var(--ink2);border:1px solid var(--line);border-radius:7px;
+  padding:3px 9px;background:#fff;transition:.16s}
+.cardActs button:hover{border-color:var(--hot);color:var(--hot)}
+.cardActs button:disabled{opacity:.45;cursor:default}
+.aiState{position:absolute;top:9px;right:12px;font-size:10.5px;color:var(--ink3);letter-spacing:1px;
+  text-transform:uppercase}
+.aiState.ok{color:var(--ok)}
+.aiState.err{color:var(--err)}
+.ph{font-size:12px;line-height:1.8;color:var(--ink3);text-align:center}
+.spinner{display:inline-block;width:10px;height:10px;border:2px solid #e2e6ec;border-top-color:var(--hot);
+  border-radius:50%;animation:spin .7s linear infinite;vertical-align:-1px;margin-right:5px}
+
+/* ---------- empty ---------- */
+.boardEmpty{width:558px;min-height:220px;display:grid;place-items:center;text-align:center;
+  color:var(--ink2);font-size:13px;background:rgba(255,255,255,.94);border:1px solid var(--line);
+  border-radius:16px;box-shadow:0 18px 42px -18px rgba(18,22,28,.5)}
+.boardEmpty b{display:block;font-size:14px;color:var(--ink);margin-bottom:6px;font-weight:600}
+
+/* ---------- sheets ---------- */
+.mask{position:fixed;inset:0;background:rgba(16,19,24,.46);opacity:0;pointer-events:none;transition:.2s;z-index:40}
+.mask.on{opacity:1;pointer-events:auto}
+.sheet{position:fixed;top:50%;left:50%;transform:translate(-50%,-46%) scale(.97);width:min(500px,92vw);
+  max-height:84vh;overflow:auto;z-index:50;background:#fff;border:1px solid var(--line);border-radius:18px;
+  padding:20px 22px;box-shadow:0 28px 60px -24px rgba(16,19,24,.5);
+  opacity:0;pointer-events:none;transition:.22s cubic-bezier(.2,.9,.3,1)}
+.sheet.on{opacity:1;pointer-events:auto;transform:translate(-50%,-50%) scale(1)}
+.sheetHead{display:flex;align-items:center;gap:8px;margin-bottom:5px}
+.sheetHead b{font-size:15px;font-weight:600}
+.sub{font-size:11.5px;color:var(--ink3)}
+.subtle{font-size:11.5px;color:var(--ink3);margin-bottom:12px}
+.sheet textarea{width:100%;height:104px;background:#fbfcfd;border:1px solid var(--line);border-radius:12px;
+  padding:11px 13px;color:var(--ink);font:14px/1.7 inherit;resize:vertical;outline:none;transition:.16s}
+.sheet textarea:focus{border-color:var(--hot);box-shadow:0 0 0 3px rgba(242,102,26,.13)}
+.sheetActions{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap}
+.sheetActions .btn{padding:8px 15px;font-size:12.5px}
+.sheetActions .btn.ghost{background:#fff;border-color:var(--line);color:var(--ink2);backdrop-filter:none}
+.sheetActions .btn.ghost:hover{background:#fff;border-color:var(--line2);color:var(--ink)}
+.hotcmts{max-height:78px;overflow:auto;margin-bottom:10px;display:flex;flex-direction:column;gap:5px}
+.hotcmts:empty{display:none}
+.hotcmts .hc{font-size:11.5px;color:var(--ink3);line-height:1.55}
+.hotcmts .hc b{color:var(--ink2);font-weight:600}
+.favs{max-height:60vh;overflow:auto}
+.favs .it{display:flex;gap:10px;align-items:flex-start;padding:12px 0;border-bottom:1px solid var(--line);cursor:pointer}
+.favs .it:last-child{border-bottom:none}
+.favs .it:hover b{color:var(--hot)}
+.favs .it b{font-size:12.5px;font-weight:600;display:block;margin-bottom:3px;transition:.16s}
+.favs .it span{font-size:11.5px;color:var(--ink3);display:-webkit-box;-webkit-line-clamp:2;
+  -webkit-box-orient:vertical;overflow:hidden}
+.favs .rm{margin-left:auto;color:var(--ink3);font-size:15px;padding:0 4px;flex:0 0 auto}
+.favs .rm:hover{color:var(--err)}
+.empty{text-align:center;color:var(--ink3);padding:30px 0;font-size:12.5px}
+
+/* ---------- toast ---------- */
+.toast{position:fixed;left:50%;bottom:calc(100% - 62px);transform:translate(-50%,12px);background:#22262c;
+  color:#fff;padding:9px 18px;border-radius:11px;font-size:12.5px;z-index:60;opacity:0;
+  pointer-events:none;transition:.24s;max-width:80vw;text-align:center;
+  box-shadow:0 14px 32px -14px rgba(0,0,0,.6)}
+.toast.on{opacity:1;transform:translate(-50%,0)}
+
+/* ---------- 响应式：牌宽同时受「高度」和「宽度」约束 ----------
+   两张牌 = 2×w + 22px gap，必须塞进 (100vw - 52px)；
+   牌高 = w×3.5/2.5 也塞进 (100vh - 158px)。
+   取两者的小值，牌才不会溢出或被底栏/顶栏压住。 */
+@media(max-height:820px){
+  .card{width:min(266px, calc((100vh - 158px) * 2.5 / 3.5))}
+}
+@media(max-width:900px){
+  .stage{gap:14px}
+  .card{width:min(266px, calc((100vw - 56px) / 2 - 7px))}
+  .search{display:none}
+  .info{min-width:0;padding:6px 9px}
+}
+@media(max-height:620px){
+  .wrap{padding:48px 20px 82px}
+  .card{padding:12px 13px 11px}
+  .card .idx .rank{font-size:16px}
+  .card .idx .suit{font-size:12px}
+  .cHead{margin-top:21px}
+  .cBody .txt{font-size:11.5px}
+  .cBody .roast{font-size:12.5px}
+  .hint{display:none}
+}
