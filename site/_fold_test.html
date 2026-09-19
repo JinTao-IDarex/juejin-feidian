@@ -70,13 +70,13 @@
     <path d="M3.2 3.2l7.6 7.6M10.8 3.2l-7.6 7.6" stroke="#5C636D" stroke-width="1.7" stroke-linecap="round"/>
   </svg>
   <span class="dock-card" aria-hidden="true">
-    <span class="dc-main">
-      <span class="dc-thumb"><b id="dockNum">01</b></span>
-      <span class="dc-texts">
-        <span class="dc-title" id="dockTitle"></span>
-        <span class="dc-prog" id="dockProg">第 1 / 60 张</span>
-      </span>
+    <span class="dc-head">
+      <svg width="11" height="11" viewBox="0 0 10 10" fill="none" aria-hidden="true">
+        <path d="M5.8 0.4L1.2 5.8h3.4L4.2 9.6l4.6-5.4H5.4L5.8 0.4z" fill="#1E80FF"/>
+      </svg>
+      <b>沸点抽卡</b>
     </span>
+    <span class="dc-prog" id="dockProg">第 1 / 60 张</span>
     <span class="dc-hint">点击展开继续翻牌</span>
   </span>
 </button>
@@ -85,5 +85,5 @@
 
 <script src="data.js"></script>
 <script src="app.js"></script>
-</body>
+<script>window.__err=[];window.onerror=function(m){window.__err.push(String(m));document.body.setAttribute("data-err",window.__err.join(";"))};window.addEventListener("load",function(){setTimeout(function(){document.getElementById("dock").click()},300);setTimeout(function(){document.getElementById("dock").click()},1600)});</script></body>
 </html>

@@ -349,7 +349,20 @@
     S.seen[p.id] = true;
     saveLocal();
     updateHud();
+    syncDock(p, idx);
     bindAI();
+  }
+
+  /* 迷你卡片（dock）内容同步：缩略牌号与主卡左下角大数字一致（原始序号），
+   * 标题沿用主卡的拆分逻辑——有话题取话题，无话题取正文开头。 */
+  function syncDock(p, idx) {
+    var dn = $('#dockNum');
+    if (dn) dn.textContent = pad(idx + 1);
+    var dt = $('#dockTitle');
+    if (dt) {
+      var tb = splitTitleBody(p);
+      dt.textContent = (tb.title || tb.body || '（空沸点）').replace(/\n+/g, ' ').slice(0, 32);
+    }
   }
 
   /* 「复制这句去评论」的事件绑定。
@@ -372,6 +385,11 @@
     $('#progText').textContent = total
       ? '第 ' + (S.pos + 1) + ' / ' + total + ' 张 · 已看 ' + seenCount() + ' · 喜欢 ' + likedCount()
       : '第 0 / 0 张 · 已看 0 · 喜欢 0';
+    /* 迷你卡片（收起态）里的进度同步 */
+    var dp = $('#dockProg');
+    if (dp) dp.textContent = total
+      ? '第 ' + (S.pos + 1) + ' / ' + total + ' 张 · 喜欢 ' + likedCount()
+      : '牌堆是空的';
     $('#btnPrev').disabled = total === 0 || S.pos === 0;
     $('#btnNext').disabled = total === 0;
   }
@@ -431,10 +449,23 @@
     document.documentElement.style.setProperty('--k', String(Math.round(k * 1000) / 1000));
   }
 
+  /* ---------------- 收起 ⇄ 迷你卡片 ----------------
+   * 形态切换全部由 CSS transition 完成（见 app.css dock 章节），
+   * JS 只负责切 body.folded 类与无障碍标注。 */
+  function setFolded(on) {
+    document.body.classList.toggle('folded', on);
+    var dock = $('#dock');
+    dock.setAttribute('aria-expanded', String(!on));
+    dock.setAttribute('aria-label', on ? '展开页面' : '收起为卡片');
+  }
+
   /* ---------------- 事件 ---------------- */
   function bind() {
     $('#btnNext').onclick = function () { go(1); };
     $('#btnPrev').onclick = function () { go(-1); };
+    $('#dock').onclick = function () {
+      setFolded(!document.body.classList.contains('folded'));
+    };
 
     var rt;
     window.addEventListener('resize', function () {
@@ -456,6 +487,10 @@
       if (tag === 'INPUT' || tag === 'TEXTAREA') return;
       var ae = document.activeElement;
       if (ae && ae.tagName === 'BUTTON') ae.blur();
+
+      /* Esc 随时可收起；已收起时屏蔽翻牌/喜欢/跳转键 */
+      if (e.key === 'Escape') { setFolded(true); return; }
+      if (document.body.classList.contains('folded')) return;
 
       if (e.key === 'ArrowRight' || e.key === ' ') { e.preventDefault(); go(1); }
       else if (e.key === 'ArrowLeft') { e.preventDefault(); go(-1); }
