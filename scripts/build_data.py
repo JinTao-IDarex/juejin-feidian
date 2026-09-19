@@ -12,13 +12,13 @@ import os
 
 from pinshape import load
 
-BASE = os.path.dirname(os.path.abspath(__file__))
+BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DAY = "0917"
 OUT = os.path.join(BASE, "site", "data.js")
 
 
 def main():
-    pins, cmts = load(BASE, DAY)
+    pins, cmts = load(os.path.join(BASE, "data"), DAY)
     for p, c in zip(pins, cmts):
         p.pop("topics", None)
         p.pop("pics", None)

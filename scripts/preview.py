@@ -10,7 +10,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from pinshape import load, make_roasts   # noqa: E402
 
-BASE = r"D:\2workspace\codex\juejin-boom"
+BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 EXT = os.path.join(BASE, "extension")
 
 pins, cmts = load(BASE)
@@ -50,6 +50,6 @@ window.chrome = {
 html = html.replace('<link rel="stylesheet" href="app.css">', "<style>\n" + css + "\n</style>")
 html = html.replace('<script src="app.js"></script>', "<script>\n" + mock + "\n" + js + "\n</script>")
 
-out = os.path.join(BASE, "_preview.html")
+out = os.path.join(BASE, "previews", "_preview.html")
 open(out, "w", encoding="utf-8").write(html)
 print("preview -> %s (%d KB)" % (out, len(html) // 1024))

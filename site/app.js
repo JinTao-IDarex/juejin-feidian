@@ -26,6 +26,14 @@
 
   var S = { order: [], pos: 0, liked: {}, seen: {} };
 
+  /* 预览覆写：?motion=full 时忽略系统的「减少动态效果」设置。
+   * 用途：作者预览/调试动画——有的预览环境（或系统级开了减动效的机器）
+   * 会让 prefers-reduced-motion 命中，整站只剩 130ms 淡入，看不出动效。
+   * 默认（不带参数）仍完整尊重 prefers-reduced-motion。 */
+  if (/[?&]motion=full\b/.test(location.search)) {
+    document.documentElement.classList.add('motion-full');
+  }
+
   /* ---------------- 本地进度 ---------------- */
   function loadLocal() {
     try {
@@ -44,6 +52,8 @@
 
   /* ---------------- 工具 ---------------- */
   var toastTimer;
+  /* 离场层的兜底移除定时器（见 render()） */
+  var outTimer;
   function toast(msg) {
     var t = $('#toast');
     t.textContent = msg;
@@ -116,12 +126,57 @@
     return { title: '', body: raw };
   }
 
-  /* 主卡线稿插画：牌叠 + 蓝色点缀 + 对话气泡
-   * 对齐设计稿 7:2（220x150 画布）：
-   *   背牌 92x62 旋转 -9°、描边；正牌 92x62 旋转 7°、填充浅蓝、三条横线；
-   *   左上蓝色四角星；右下白色对话泡 + 两条蓝线。
+  /* 主卡线稿插画：土星虫（掘金宠物）坐在散开的牌堆上 —— 220x150 画布。
+   * 变体 A · 土星虫主视角，与 pets/illustrations.py 的 saturn_hero() 同源：
+   *   底：三张散开的牌（-8° / 4° / 14°），中间那张填充浅蓝并带两条书写线；
+   *   上：土星虫（身体 + 四条细腿 + 横幅光环 + 眯眼）+ 三颗大小不一的蓝色四角星。
+   * 光环的遮挡顺序必须是「后半整椭圆 → 身体 → 腿 → 前半下弧」，
+   * 这样才有"环穿过身体"的正确层次；只画一段弧会看成张开双臂。
    */
-  var ILLUS =
+  /* 主卡线稿插画 —— 220x150 画布，两版随机展示。
+   *
+   * ILLUS_A  · 变体 A「土星虫主视角」，与 pets/illustrations.py 的 saturn_hero() 同源：
+   *   底：三张散开的牌（-8° / 4° / 14°），中间那张填充浅蓝并带两条书写线；
+   *   上：土星虫（身体 + 四条细腿 + 横幅光环 + 眯眼）+ 三颗大小不一的蓝色四角星。
+   *   光环的遮挡顺序必须是「后半整椭圆 → 身体 → 腿 → 前半下弧」，
+   *   这样才有"环穿过身体"的正确层次；只画一段弧会看成张开双臂。
+   *
+   * ILLUS_V1 · 初版：两张斜叠的牌（后牌空心描边、前牌浅蓝底 + 三条书写线）
+   *   + 左上蓝色四角星 + 右下白描边对话泡（内含两条蓝线）。
+   *
+   * 选取规则见 pickIllus()：每次渲染主卡时独立随机，用 Math.random() < 0.5 抛硬币。
+   * 不做「本次页面只用一个」的缓存 —— 翻一张换一次，才有开盲盒的手感。
+   */
+  var ILLUS_A =
+    '<svg viewBox="0 0 220 150" fill="none" aria-hidden="true">' +
+      // 底：三张散开的牌
+      '<g stroke="#1A1D21" stroke-width="2.1">' +
+        '<rect x="30" y="94" width="84" height="52" rx="8" fill="#FFFFFF" transform="rotate(-8 72 120)"/>' +
+        '<rect x="52" y="94" width="84" height="52" rx="8" fill="#EAF2FF" transform="rotate(4 94 120)"/>' +
+        '<rect x="74" y="94" width="84" height="52" rx="8" fill="#FFFFFF" transform="rotate(14 116 120)"/>' +
+      '</g>' +
+      '<path d="M92 112h40M92 124h24" stroke="#1A1D21" stroke-width="2.1" ' +
+        'stroke-linecap="round" transform="rotate(14 116 120)" opacity="0.45"/>' +
+      // 土星虫：光环后半 → 身体 → 腿 → 光环前半 → 眼睛
+      '<g>' +
+        '<ellipse cx="108" cy="77.4" rx="55.1" ry="10.2" fill="none" stroke="#EFC21E" stroke-width="10.2"/>' +
+        '<path d="M74 73C74 32.4 85.6 13.8 108 13.8C130.4 13.8 142 32.4 142 73' +
+          'L142 91.6C142 103.1 130.4 108.4 108 108.4C85.6 108.4 74 103.1 74 91.6Z" ' +
+          'fill="#FF7A1A" stroke="#1A1D21" stroke-width="1.9"/>' +
+        '<path d="M86.6 103.1v24.5M100.9 103.1v24.5M115.1 103.1v24.5M129.4 103.1v24.5" ' +
+          'stroke="#FF7A1A" stroke-width="7.5" stroke-linecap="round"/>' +
+        '<path d="M52.9 77.4A55.1 10.2 0 0 0 163.1 77.4" fill="none" ' +
+          'stroke="#FFD93B" stroke-width="10.2" stroke-linecap="round"/>' +
+        '<path d="M95.4 47.4v9.5M95.4 47.4h6.8v9.5M113.8 47.4v9.5M113.8 47.4h6.8v9.5" ' +
+          'stroke="#3A1F00" stroke-width="4.4" stroke-linecap="round" stroke-linejoin="round" fill="none"/>' +
+      '</g>' +
+      // 蓝色四角星点缀
+      '<path d="M170 35l4.2 8.8 8.8 4.2-8.8 4.2-4.2 8.8-4.2-8.8-8.8-4.2 8.8-4.2z" fill="#1E80FF"/>' +
+      '<path d="M190 76l2.6 5.4 5.4 2.6-5.4 2.6-2.6 5.4-2.6-5.4-5.4-2.6 5.4-2.6z" fill="#A8C7FF"/>' +
+      '<path d="M30 53l2.2 4.8 4.8 2.2-4.8 2.2-2.2 4.8-2.2-4.8-4.8-2.2 4.8-2.2z" fill="#A8C7FF"/>' +
+    '</svg>';
+
+  var ILLUS_V1 =
     '<svg viewBox="0 0 220 150" fill="none" aria-hidden="true">' +
       '<rect x="40" y="34" width="92" height="62" rx="9" transform="rotate(-9 86 65)" ' +
         'stroke="#1A1D21" stroke-width="2.4"/>' +
@@ -138,6 +193,9 @@
       '<line x1="172" y1="110" x2="184" y2="110" stroke="#1E80FF" stroke-width="2.4" stroke-linecap="round"/>' +
       '<line x1="172" y1="117" x2="181" y2="117" stroke="#1E80FF" stroke-width="2.4" stroke-linecap="round"/>' +
     '</svg>';
+
+  /* 主卡插画随机选取：每次渲染主卡独立抛硬币，翻一张换一次。 */
+  function pickIllus() { return Math.random() < 0.5 ? ILLUS_A : ILLUS_V1; }
 
   var ICON_USER =
     '<svg width="17" height="17" viewBox="0 0 17 17" fill="none" aria-hidden="true">' +
@@ -198,7 +256,7 @@
         '</div>' +
         (tb.title ? '<h2>' + esc(tb.title) + '</h2>' : '') +
         bodyHTML +
-        '<div class="illus">' + ILLUS + '</div>' +
+        '<div class="illus">' + pickIllus() + '</div>' +
         '<div class="spacer"></div>' +
         '<div class="cfoot">' +
           '<span class="bignum">' + pad(idx + 1) + '</span>' +
@@ -226,8 +284,15 @@
       '<div class="note">毒的是现象，不是你。</div>';
   }
 
-  /* ---------------- 渲染 ---------------- */
-  function render(anim) {
+  /* ---------------- 渲染 ----------------
+   * 离场层交叉淡化模型（见 app.css 动效章节）：
+   * dir 只在翻页时有意义：+1 前进、−1 后退，落到 #cards 的 .fwd/.bwd 类上。
+   * 翻页时先把当前三张卡原样搬进 .out-layer（旧主卡滑向行进后侧的邻卡位
+   * 并淡出，旧邻卡快速淡出），再写入新卡；新主卡从对应侧邻卡位滑入、
+   * 焦点由糊到清，新邻卡在卡位上淡入。新旧在交接点交叉淡化，
+   * 掩盖「邻卡版式 → 主卡版式」的内容跳变。首屏渲染传 (false, 0)，不播动画。
+   */
+  function render(anim, dir) {
     var host = $('#cards');
     var ai = $('#ai');
     if (!S.order.length) {
@@ -238,6 +303,9 @@
       return;
     }
 
+    host.classList.toggle('fwd', dir > 0);
+    host.classList.toggle('bwd', dir < 0);
+
     var idx = S.order[S.pos];
     var p = PINS[idx];
     var prev = S.order[S.pos - 1] != null ? PINS[S.order[S.pos - 1]] : null;
@@ -245,16 +313,37 @@
     if (!prev && S.order.length > 1) prev = PINS[S.order[S.order.length - 1]];
     if (!next && S.order.length > 1) next = PINS[S.order[0]];
 
-    host.innerHTML = ghostCard(prev, 'left', anim) + mainCard(p, idx, anim) + ghostCard(next, 'right', anim);
-    if (ai) {
-      ai.innerHTML = aiCard(p);
-      ai.classList.toggle('anim-in', !!anim);
+    /* 离场层：必须先移动节点再写 innerHTML，否则旧卡随 innerHTML 一起销毁。
+     * 快速连翻时先清掉上一轮还没播完的离场层，避免无限堆叠。 */
+    clearTimeout(outTimer);
+    var stale = host.querySelector('.out-layer');
+    if (stale) stale.remove();
+    var out = null;
+    if (anim && host.querySelector('.main')) {
+      out = document.createElement('div');
+      out.className = 'out-layer';
+      Array.prototype.slice.call(host.children).forEach(function (el) {
+        /* 摘掉上一轮的入场类：其动画停在结束帧（fill:both），
+         * 不摘会与 .out-layer 的离场动画争抢同一属性。 */
+        el.classList.remove('anim-in', 'anim-l', 'anim-r');
+        out.appendChild(el);
+      });
     }
 
-    if (anim) {
-      [host.querySelector('.main'), ai,
-       host.querySelector('.ghost.left'), host.querySelector('.ghost.right')]
-        .forEach(function (el) { if (el) void el.offsetWidth; });
+    host.innerHTML = ghostCard(prev, 'left', anim) + mainCard(p, idx, anim) + ghostCard(next, 'right', anim);
+    if (out) {
+      host.appendChild(out);
+      /* 离场动画最长 440ms；定时器兜底移除，不依赖 animationend（连翻时可能漏事件） */
+      outTimer = setTimeout(function () { out.remove(); }, 700);
+    }
+    if (ai) {
+      ai.innerHTML = aiCard(p);
+      /* #ai 是常驻元素（不是像卡片那样随 innerHTML 重建），
+       * 如果只是 classList.toggle('anim-in', true)，类名已经在身上，
+       * 动画不会被重新触发——从第二次翻页开始 AI 卡就静止了。
+       * 必须先摘掉类、强制 reflow、再加回，才能让动画每次都重新起跑。 */
+      ai.classList.remove('anim-in');
+      if (anim) { void ai.offsetWidth; ai.classList.add('anim-in'); }
     }
 
     S.seen[p.id] = true;
@@ -293,12 +382,12 @@
     var n = S.pos + delta;
     if (n < 0) { toast('已经是第一张了'); return; }
     if (n >= S.order.length) {
-      shuffleOrder(); S.pos = 0; render(true);
+      shuffleOrder(); S.pos = 0; render(true, 1);
       toast('这副牌抽完了，重新洗一副');
       return;
     }
     S.pos = n;
-    render(true);
+    render(true, delta);
   }
 
   function toggleLike() {
@@ -318,17 +407,26 @@
    * 坐标系固定 1440 宽，版心放不下时整组按 --k 缩，
    * transform-origin: center top（版心居中，顶边不动），横向溢出由 .page-wrap 裁掉。
    * 只负责写 --k；布局切换（两卡 / 单列）由 CSS 断点接管，这里不插手。
+   *
+   * 断点 760 必须与 app.css 的 @media(max-width:760px) 保持一致：
+   * 1440~760 之间走等比缩放（1080 视口 → k=0.75，字仍清晰），
+   * 760 以下才交给流式布局。旧版这里写的是 1120，与 CSS 断点虽同步
+   * 但时机太早，会让 1080 视口白白丢掉坐标系。
    */
   var DESIGN_W = 1440;
+  var FLOW_BREAKPOINT = 760;
   function fitStage() {
     var wrap = document.querySelector('.page-wrap');
     if (!wrap) return;
-    if (window.matchMedia && window.matchMedia('(max-width:1120px)').matches) {
+    if (window.matchMedia &&
+        window.matchMedia('(max-width:' + FLOW_BREAKPOINT + 'px)').matches) {
       document.documentElement.style.setProperty('--k', '1');
       return;
     }
-    var avail = wrap.clientWidth;
-    if (!avail) return;
+    /* 扣除 .page-wrap 两侧的 24px 安全边距（见 app.css），
+     * 否则 k<1 时缩放画布恰好撑满视口，AI 卡右缘会贴死窗口边缘 */
+    var avail = wrap.clientWidth - 48;
+    if (!avail || avail < 0) return;
     var k = Math.min(1, avail / DESIGN_W);
     document.documentElement.style.setProperty('--k', String(Math.round(k * 1000) / 1000));
   }
@@ -343,7 +441,9 @@
       clearTimeout(rt);
       rt = setTimeout(fitStage, 80);
     });
-    var mq = window.matchMedia ? window.matchMedia('(max-width:1120px)') : null;
+    var mq = window.matchMedia
+      ? window.matchMedia('(max-width:' + FLOW_BREAKPOINT + 'px)')
+      : null;
     if (mq) {
       var onmq = function () { fitStage(); };
       if (mq.addEventListener) mq.addEventListener('change', onmq);
@@ -391,7 +491,10 @@
       return;
     }
     rebuild();
-    render(true);
+    /* 首屏传 false：不播入场动画。
+     * 相邻位交换模型下，首屏没有「从上一张翻过来」的语义，
+     * 静止呈现更稳，动画只留给真正的翻页动作（go() 里始终传 true）。 */
+    render(false, 0);
   }
 
   bind();

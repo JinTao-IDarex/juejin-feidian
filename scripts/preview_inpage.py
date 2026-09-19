@@ -7,13 +7,13 @@ frame.js 除了 chrome.* 之外一行不改，改的只是宿主页面提供的 
 import os
 import re
 
-BASE = r"D:\2workspace\codex\juejin-boom"
+BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SITE = os.path.join(BASE, "_demo_site")
 EXT = os.path.join(BASE, "extension")
 
-pins = open(os.path.join(BASE, "pins_raw_0917.json"), encoding="utf-8").read()
+pins = open(os.path.join(BASE, "data", "pins_raw_0917.json"), encoding="utf-8").read()
 cmts = __import__("json").loads(
-    open(os.path.join(BASE, "comments_0917.json"), encoding="utf-8").read())["comments"]
+    open(os.path.join(BASE, "data", "comments_0917.json"), encoding="utf-8").read())["comments"]
 plist = __import__("json").loads(pins)
 
 # 关键：pins_raw_*.json 是「抓取脚本的原始形状」（user_name / digg_count / comment_count / job_title），

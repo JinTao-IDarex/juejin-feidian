@@ -3,3 +3,8 @@ _gitscan.txt
 __pycache__/
 .DS_Store
 Thumbs.db
+
+# 生成产物
+output/
+data/align.txt
+data/_view.txt

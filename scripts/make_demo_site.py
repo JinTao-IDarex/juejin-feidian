@@ -7,7 +7,7 @@
 """
 import os
 
-BASE = r"D:\2workspace\codex\juejin-boom"
+BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SITE = os.path.join(BASE, "_demo_site")
 os.makedirs(SITE, exist_ok=True)
 

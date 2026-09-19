@@ -4,8 +4,8 @@
 """
 import os
 
-BASE = r"D:\2workspace\codex\juejin-boom"
-OUT = os.path.join(BASE, "_preview_demo.html")
+BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+OUT = os.path.join(BASE, "previews", "_preview_demo.html")
 
 DEMO = """<!DOCTYPE html>
 <html lang="zh-CN"><head><meta charset="utf-8"><title>沸点抽卡 · 弹窗效果预览</title>

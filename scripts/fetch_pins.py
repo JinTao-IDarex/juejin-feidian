@@ -1,10 +1,14 @@
 # -*- coding: utf-8 -*-
 """Fetch juejin.cn pins (short_msg) via the recommend API."""
 import json
+import os
 import re
 import sys
 import time
 import urllib.request
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DATA = os.path.join(ROOT, "data")
 
 API = "https://api.juejin.cn/recommend_api/v1/short_msg/recommend?aid=2608&spider=0"
 HEADERS = {
@@ -98,7 +102,7 @@ def main():
             break
         time.sleep(0.6)
     items = items[:want]
-    out = "pins_raw_%s.json" % day
+    out = os.path.join(DATA, "pins_raw_%s.json" % day)
     with open(out, "w", encoding="utf-8") as f:
         json.dump(items, f, ensure_ascii=False, indent=1)
     print("saved %d -> %s" % (len(items), out))

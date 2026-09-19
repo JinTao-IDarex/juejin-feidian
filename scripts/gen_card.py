@@ -1,11 +1,16 @@
 # -*- coding: utf-8 -*-
 """Generate the gacha-style single-file page: juejin_pins_gacha_<day>.html"""
 import json
+import os
 import sys
 
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DATA = os.path.join(ROOT, "data")
+PREVIEWS = os.path.join(ROOT, "previews")
+
 day = sys.argv[1]
-pins = json.load(open("pins_raw_%s.json" % day, encoding="utf-8"))
-cmts = json.load(open("comments_%s.json" % day, encoding="utf-8"))
+pins = json.load(open(os.path.join(DATA, "pins_raw_%s.json" % day), encoding="utf-8"))
+cmts = json.load(open(os.path.join(DATA, "comments_%s.json" % day), encoding="utf-8"))
 date = cmts["date"]
 comments = cmts["comments"]
 assert len(pins) == len(comments), "count mismatch %d vs %d" % (len(pins), len(comments))
@@ -373,6 +378,6 @@ render(true);
 HTML = (HTML.replace("__DAY__", day).replace("__DATE__", date)
             .replace("__N__", str(len(cards))).replace("__PAYLOAD__", payload))
 
-out = "juejin_pins_gacha_%s.html" % day
+out = os.path.join(PREVIEWS, "juejin_pins_gacha_%s.html" % day)
 open(out, "w", encoding="utf-8").write(HTML)
 print("saved " + out)

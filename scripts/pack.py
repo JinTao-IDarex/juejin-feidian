@@ -5,9 +5,9 @@ import os
 import subprocess
 import zipfile
 
-BASE = r"D:\2workspace\codex\juejin-boom"
+BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 EXT = os.path.join(BASE, "extension")
-OUT = os.path.join(BASE, "juejin-pin-gacha-extension.zip")
+OUT = os.path.join(BASE, "dist", "juejin-pin-gacha-extension.zip")
 NODE = r"C:\Users\apple\.workbuddy\binaries\node\versions\22.22.2-3\node.exe"
 
 report = []

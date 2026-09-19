@@ -5,7 +5,7 @@ import os
 import re
 import subprocess
 
-EXT = r"D:\2workspace\codex\juejin-boom\extension"
+EXT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "extension")
 NODE = r"C:\Users\apple\.workbuddy\binaries\node\versions\22.22.2-3\node.exe"
 out = []
 
@@ -142,5 +142,6 @@ for name in ("hero", "card", "body", "st", "ps", "acts", "o", "r"):
 tpl = set(re.findall(r"id=\"([A-Za-z0-9_]+)\"", js))
 out.append("ids created by JS: %s" % sorted(tpl))
 
-open(r"D:\2workspace\codex\juejin-boom\_verify.txt", "w", encoding="utf-8").write("\n".join(out))
+open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "output", "_verify.txt"),
+     "w", encoding="utf-8").write("\n".join(out))
 print("done")

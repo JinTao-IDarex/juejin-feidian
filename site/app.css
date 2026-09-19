@@ -68,13 +68,33 @@ img{display:block;max-width:100%}
   /* 布局高度按缩放后的实际高占位，避免下方留白 */
   height:calc(1000px * var(--k,1));
   overflow-x:clip;
+  /* 两侧 24px 安全边距：k<1 时缩放后的画布恰好等于可用宽度，
+   * 没有边距的话 AI 卡右缘（设计坐标 1440，与画布齐平）会贴死窗口边缘。
+   * fitStage() 计算 k 时会同步扣除这 48px（见 app.js）。 */
+  padding:0 24px;
 }
+/* ---- 缩放模型的正确写法 ----
+ * 关键：布局宽度也要跟着 --k 走（1440 * k），不能写死 1440。
+ *
+ * 写死 1440 的后果：视口 1080 时，这个 1440 宽的盒子依然按 1440 居中
+ * （左右各溢出 180px），再以它的中心为原点 scale(0.75) —— 缩完右边缘
+ * 正好落在 1080，AI 卡（设计稿右缘 1440）就被挤出视口裁掉一条。
+ * 改成 width:calc(1440px * k) 后，盒子本身就只占缩放后的宽度，
+ * margin:auto 的居中是真实居中，缩放后四边都不溢出。 */
 .page{
   position:relative;
-  width:1440px;height:1000px;
+  width:calc(1440px * var(--k,1));
+  height:calc(1000px * var(--k,1));
   margin:0 auto;
+}
+/* 内层固定 1440x1000 承载坐标，整体按 --k 缩，原点左上：
+ * 原点取左上而非 center，是因为外层盒子的尺寸已经等于缩放后尺寸，
+ * 用左上做原点，设计坐标 (x,y) 映射后就是 (x*k, y*k)，不引入额外偏移。 */
+.page-inner{
+  position:absolute;left:0;top:0;
+  width:1440px;height:1000px;
   transform:scale(var(--k,1));
-  transform-origin:center top;
+  transform-origin:left top;
 }
 
 /* ---- 纯白底层 ----
@@ -120,7 +140,12 @@ img{display:block;max-width:100%}
   background:#fff;
   z-index:1;
 }
-.stage-inner{position:absolute;inset:0}
+/* overflow:hidden 仍然必需：邻卡交换模型下卡片起点虽都在舞台内，
+ * 但 ±2 卡位（新邻卡的来处）探到主卡两侧之外，加上左右箭头缝隙，
+ * 不裁的话卡片边缘会探进 Hero / 进度条区域，整页穿帮。
+ * 裁在 .stage-inner 而不是 .stage 上，是因为 .stage-inner 就是 inset:0 的
+ * 内容区，裁它不会影响 .stage 自身背景与相邻区块的堆叠关系。 */
+.stage-inner{position:absolute;inset:0;overflow:hidden}
 
 /* ---- 邻卡（前后张）：340x480 @ y=80，圆角 20 ----
  * 玻璃 rgba(234,242,255,1) 不透明，LAYER_BLUR 8 用 filter 等价实现。
@@ -130,7 +155,9 @@ img{display:block;max-width:100%}
   width:340px;height:480px;
   padding:32px 34px 0;
   display:flex;flex-direction:column;gap:8px;
-  background:var(--blue-light);
+  /* 邻卡底色取设计稿原值 #EBF2FF（比 --blue-light 亮 1/255，
+   * 邻卡是「虚化的下一张」，比主卡插画的浅蓝底再淡一档，层次更干净）。 */
+  background:#EBF2FF;
   border:1px solid var(--blue-ghost);
   border-radius:20px;
   /* 设计稿是 LAYER_BLUR 8。网页里 blur 会把描边一起糊掉，
@@ -141,14 +168,14 @@ img{display:block;max-width:100%}
   pointer-events:none;
 }
 .ghost.left{left:424px}
-.ghost.right{left:796px}
+.ghost.right{left:676px}
 /* 标签 hug x 22，圆角 6，padding 0 8 */
 .ghost .tag{
   align-self:flex-start;
   display:inline-flex;align-items:center;
   height:22px;padding:0 8px;border-radius:6px;
   background:var(--blue-mid);
-  font:600 12px/1 var(--font-sans);color:#D9DEE5;
+  font:600 12px/1 var(--font-sans);color:#D9DEE4;
 }
 .ghost h3{
   width:272px;
@@ -269,7 +296,7 @@ img{display:block;max-width:100%}
 .round{
   position:absolute;top:282px;
   width:36px;height:36px;border-radius:99px;
-  background:#fff;border:1px solid #E5E7EB;
+  background:#fff;border:1px solid #E6E7EA;
   box-shadow:0 3px 10px rgba(0,0,0,.08);
   display:grid;place-items:center;
   z-index:6;
@@ -359,26 +386,124 @@ img{display:block;max-width:100%}
 }
 
 /* ================================================================
- * 翻牌动效
+ * 翻牌动效 —— 离场层交叉淡化模型
+ * ----------------------------------------------------------------
+ * 旧版「相邻位交换」让新卡直接从旧卡位置长出来，但两张卡版式不同
+ * （邻卡只有标题/正文，主卡是完整版式），innerHTML 替换瞬间旧卡消失、
+ * 新卡内容跳变——视觉上就是「生硬」；且三张卡同时做 blur 滤镜动画，
+ * 每帧重绘面积大，容易掉帧。
+ *
+ * 现在的做法（JS 侧见 app.js render()）：
+ *   · 翻页时旧卡原样搬进 .out-layer（指针穿透的绝对定位层）：
+ *     旧主卡滑向行进方向后侧的邻卡位并淡出，旧邻卡 170ms 快速淡出；
+ *   · 新主卡从对应侧邻卡位滑入，blur 2.5→0 焦点吸入——
+ *     全场唯一一段滤镜动画，其余全部是 transform/opacity（可合成）；
+ *   · 新邻卡不再长距离滑行，只在卡位上淡入 + 轻微上浮落定，
+ *     避免与离场旧主卡在同一条路径上形成双重影像；
+ *   · 新旧卡在交接点交叉淡化，内容跳变被掩盖。
+ *
+ * 缓动 cubic-bezier(.22,1,.36,1)（quint-out）：起步比 expo-out 柔和，
+ * 减速段长、落位稳。主行程 480ms。几何数值沿用旧版坐标换算
+ * （右邻卡 340x480@(676,80) → 主卡 372x520@(534,40)：
+ *   142 = 左缘差 676−534，40 = 顶差 80−40，.914 = 340/372）。
  * ================================================================ */
-@keyframes dealIn{
-  0%  {opacity:0;transform:translateX(120px) rotate(6deg) scale(.97)}
-  33% {opacity:.6;transform:translateX(52px) rotate(2.2deg) scale(.985)}
-  71% {opacity:1;transform:translateX(-4px) rotate(-.3deg) scale(1.005)}
-  100%{opacity:1;transform:translateX(0) rotate(0) scale(1)}
-}
-@keyframes ghostInL{0%{transform:translateX(42px)}100%{transform:translateX(0)}}
-@keyframes ghostInR{0%{transform:translateX(-42px)}100%{transform:translateX(0)}}
-.main.anim-in{animation:dealIn 420ms cubic-bezier(.2,.9,.3,1.1) both}
-.ai.anim-in{animation:dealIn 420ms 60ms cubic-bezier(.2,.9,.3,1.1) both}
-.ghost.anim-l{animation:ghostInL 300ms 90ms cubic-bezier(.2,.9,.3,1.05) both}
-.ghost.anim-r{animation:ghostInR 300ms 90ms cubic-bezier(.2,.9,.3,1.05) both}
 
-/* 尊重系统的「减少动态效果」设置：去掉翻牌位移和转圈，只保留状态变化 */
+/* 入场：新主卡从对应侧邻卡位滑入，焦点由糊到清 */
+@keyframes slideMainF{
+  0%  {transform:translate(142px,40px) scale(.914);filter:blur(2.5px)}
+  100%{transform:translate(0,0) scale(1);filter:blur(0)}
+}
+@keyframes slideMainB{
+  0%  {transform:translate(-110px,40px) scale(.914);filter:blur(2.5px)}
+  100%{transform:translate(0,0) scale(1);filter:blur(0)}
+}
+/* 入场：新邻卡在卡位上淡入 + 轻微上浮落定（位移交给离场层的旧主卡） */
+@keyframes ghostIn{
+  0%  {opacity:0;transform:translateY(10px)}
+  100%{opacity:1;transform:translateY(0)}
+}
+/* 离场：旧主卡滑向行进后侧的邻卡位，边滑边淡出（与入场几何镜像：
+ * 前进 → 左邻卡位 (-110,+40)，后退 → 右邻卡位 (+142,+40)） */
+@keyframes outMainF{
+  0%  {transform:translate(0,0) scale(1);opacity:1}
+  55% {opacity:.45}
+  100%{transform:translate(-110px,40px) scale(.914);opacity:0}
+}
+@keyframes outMainB{
+  0%  {transform:translate(0,0) scale(1);opacity:1}
+  55% {opacity:.45}
+  100%{transform:translate(142px,40px) scale(.914);opacity:0}
+}
+/* 离场：旧邻卡快速原地淡出——新卡从它们的卡位上接管，
+ * 170ms 刚好掩盖「同一位置换内容」的跳变，又不留残影 */
+@keyframes outGhost{0%{opacity:1}100%{opacity:0}}
+
+/* AI 卡不是牌面带子的一部分，不做缩放/变焦，只跟位移；
+ * 卡内内容做一次短淡入，掩盖 innerHTML 瞬换 */
+@keyframes slideAiF{0%{transform:translateX(142px)}100%{transform:translateX(0)}}
+@keyframes slideAiB{0%{transform:translateX(-110px)}100%{transform:translateX(0)}}
+@keyframes aiContentIn{0%{opacity:0}100%{opacity:1}}
+
+/* 主卡：从对应侧邻卡位滑入，焦点由糊到清 */
+.main.anim-in{animation:slideMainF 480ms cubic-bezier(.22,1,.36,1) both;will-change:transform,filter}
+.bwd .main.anim-in{animation-name:slideMainB}
+
+/* 邻卡：原地淡入即可，方向无关；70ms 延迟让它在旧主卡离场起步后再落定 */
+.ghost.anim-l,.ghost.anim-r{animation:ghostIn 380ms 70ms cubic-bezier(.2,.7,.3,1) both;will-change:opacity,transform}
+
+/* AI 卡延迟 60ms 起步，读起来像被主卡带着走 */
+.ai.anim-in{animation:slideAiF 480ms 60ms cubic-bezier(.22,1,.36,1) both;will-change:transform}
+.bwd .ai.anim-in{animation-name:slideAiB}
+.ai.anim-in>*{animation:aiContentIn 260ms 100ms ease-out both}
+
+/* 离场层：盖在入场卡之上（z 5，低于箭头 z 6），指针穿透。
+ * 快速连翻时由 JS 先清掉旧层，不会无限堆叠。 */
+.out-layer{position:absolute;inset:0;pointer-events:none;z-index:5}
+.out-layer .main{animation:outMainF 440ms cubic-bezier(.22,1,.36,1) both;will-change:transform,opacity}
+.bwd .out-layer .main{animation-name:outMainB}
+.out-layer .ghost{animation:outGhost 170ms ease-in both;will-change:opacity}
+
+/* 尊重系统的「减少动态效果」设置。
+ * ----------------------------------------------------------------
+ * 这里的目标不是「关掉动画」，而是「去掉会引发不适的运动」：
+ *   · 位移（主卡 142px / 邻卡 110~142px）—— 前庭敏感用户的主要不适源，去掉
+ *   · 缩放（.914 / 1.094）—— 同上，去掉
+ *   · blur 景深 —— 去掉
+ *   · 转圈 spinner —— 改成静态，但保留可区分的颜色
+ * 但【保留一段约 130ms 的纯淡入】。原因：
+ *   原来这里直接写 animation:none，翻页就变成零过渡的瞬变——
+ *   用户看到的是「内容突然变成了另一张」，反而丢失了「刚刚换过卡」
+ *   这件事本身的感知。而「内容切换」是界面的核心状态变化，
+ *   无障碍规范（WCAG 2.3.3）要限制的是「运动」，不是「状态可感知性」。
+ *   所以降级成纯 opacity 过渡：无位移、无缩放、无模糊，不会引起
+ *   前庭不适，同时翻页仍然看得出来是「换了一张」。 */
+@keyframes softFadeIn{from{opacity:0}to{opacity:1}}
+/* 选择器全部挂在 html:not(.motion-full) 下：带 ?motion=full 预览时
+ * 跳过整块降级（见 app.js 顶部说明），默认行为不变。 */
 @media(prefers-reduced-motion:reduce){
-  .main.anim-in,.ai.anim-in,.ghost.anim-l,.ghost.anim-r{animation:none}
-  .ring{animation:none;border-top-color:#D8DCE1}
-  .main,.ai,.round{transition:none}
+  html:not(.motion-full) .main.anim-in,html:not(.motion-full) .bwd .main.anim-in,
+  html:not(.motion-full) .ai.anim-in,html:not(.motion-full) .bwd .ai.anim-in,
+  html:not(.motion-full) .ghost.anim-l,html:not(.motion-full) .ghost.anim-r{
+    animation:softFadeIn 130ms linear both;
+  }
+  /* 离场层不做滑出，直接隐藏——状态变化已由入场淡入表达 */
+  html:not(.motion-full) .out-layer{display:none}
+  html:not(.motion-full) .ai.anim-in>*{animation:none}
+  /* AI 卡与邻卡原本比主卡晚 60~100ms，这里统一去掉延迟，避免出现
+   * 「先换主卡再换点评/邻卡」的错位 */
+  html:not(.motion-full) .main.anim-in,html:not(.motion-full) .bwd .main.anim-in,
+  html:not(.motion-full) .ai.anim-in,html:not(.motion-full) .bwd .ai.anim-in,
+  html:not(.motion-full) .ghost.anim-l,html:not(.motion-full) .ghost.anim-r{
+    animation-delay:0ms;
+  }
+  /* spinner 停止旋转，改用静态色区分 loading 态 */
+  html:not(.motion-full) .ring{animation:none;border-top-color:#B9C0C8}
+  /* 按钮的位移/缩放反馈去掉，仅保留颜色变化 */
+  html:not(.motion-full) .main,html:not(.motion-full) .ai{transition:none}
+  html:not(.motion-full) .round{transition:background .16s,box-shadow .16s,opacity .16s}
+  html:not(.motion-full) .round:active{transform:none}
+  html:not(.motion-full) .ai .copy{transition:background .16s}
+  html:not(.motion-full) .ai .copy:active{transform:none}
 }
 
 /* ================================================================
@@ -415,13 +540,28 @@ img{display:block;max-width:100%}
  * 响应式
  * ================================================================ */
 
-/* ≤1120：坐标系整组按 --k 继续缩，但缩到 0.72 以下字就糊了。
- * 所以 1120 起切换成流式两卡布局，撤掉坐标系。 */
-@media(max-width:1120px){
-  .page-wrap{height:auto}
+/* ≤760：撤掉坐标系，改成流式两卡（主卡 + AI 卡并排），再窄则单列。
+ *
+ * 断点为什么是 760 而不是 1120：
+ *   设计稿是 1440 固定坐标系，视口不足时应当【等比缩小】而不是【换布局】。
+ *   1440 → 1080 只要 k=0.75，40px 标题缩到 30px 依然清晰；
+ *   真正撑不住的是主卡 372 + gap 20 + AI 卡 284 + 左右留白 ≈ 760px。
+ *   旧版把断点设在 1120，导致 1080 这种最常见的笔记本视口直接塌成
+ *   流式布局 —— 邻卡被 display:none、主卡与 AI 卡重叠、进度条压住卡片。
+ *   等比缩放到 0.53（760/1440）字才开始糊，那才是该换布局的时机。
+ */
+@media(max-width:760px){
+  /* 流式布局的左右留白由 .page 自己的 padding 负责，这里归零避免叠加 */
+  .page-wrap{height:auto;padding:0}
   .page{
     width:100%;height:auto;transform:none;
     padding:0 24px;
+  }
+  /* 撤掉坐标系：内层回到普通流，取消固定尺寸与缩放 */
+  .page-inner{
+    position:static;
+    width:100%;height:auto;
+    transform:none;
     display:flex;flex-direction:column;gap:20px;
   }
   .hero{
@@ -462,9 +602,10 @@ img{display:block;max-width:100%}
   }
 }
 
-/* ≤760：单列 */
-@media(max-width:760px){
-  .page{padding:0 16px;gap:16px}
+/* ≤560：单列（主卡与 AI 卡上下堆叠） */
+@media(max-width:560px){
+  .page{padding:0 16px}
+  .page-inner{gap:16px}
   .hero{padding:28px 16px 22px}
   .hero h1{font-size:26px}
   .stage{padding:22px 16px}
