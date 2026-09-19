@@ -64,35 +64,37 @@
   </div>
 </div>
 
+<!-- 音效开关：翻牌「咔哒」声的静音切换（M 键同效） -->
+<button class="mute" id="btnMute" aria-label="静音" aria-pressed="false">
+  <svg class="ic-on" width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+    <path d="M2.6 6v4h2.7L9.5 13.1V2.9L5.3 6H2.6z" fill="#5C636D"/>
+    <path d="M11.4 5.6a3.4 3.4 0 010 4.8" stroke="#5C636D" stroke-width="1.4" stroke-linecap="round"/>
+  </svg>
+  <svg class="ic-off" width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+    <path d="M2.6 6v4h2.7L9.5 13.1V2.9L5.3 6H2.6z" fill="#A8AEB8"/>
+    <path d="M11.2 6.4l3.2 3.2M14.4 6.4l-3.2 3.2" stroke="#A8AEB8" stroke-width="1.4" stroke-linecap="round"/>
+  </svg>
+</button>
+
 <!-- 收起按钮 ⇄ 迷你卡片：同一个按钮在两种形态间变形（见 app.css dock 章节） -->
 <button class="dock" id="dock" aria-label="收起为卡片" aria-expanded="true">
   <svg class="dock-x" width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
     <path d="M3.2 3.2l7.6 7.6M10.8 3.2l-7.6 7.6" stroke="#5C636D" stroke-width="1.7" stroke-linecap="round"/>
   </svg>
   <span class="dock-card" aria-hidden="true">
-    <span class="dc-corner tl">
-      <b class="dc-num">01</b>
-      <svg width="8" height="8" viewBox="0 0 10 10" fill="none" aria-hidden="true">
-        <path d="M5.8 0.4L1.2 5.8h3.4L4.2 9.6l4.6-5.4H5.4L5.8 0.4z" fill="#1E80FF"/>
-      </svg>
-    </span>
-    <span class="dc-center">
+    <span class="dc-head">
       <span class="dc-tag">
         <svg width="9" height="9" viewBox="0 0 10 10" fill="none" aria-hidden="true">
           <path d="M5.8 0.4L1.2 5.8h3.4L4.2 9.6l4.6-5.4H5.4L5.8 0.4z" fill="#1E80FF"/>
         </svg>沸点
       </span>
-      <span class="dc-title" id="dockTitle"></span>
-    </span>
-    <span class="dc-meta">
       <span class="dc-prog" id="dockProg">第 1 / 60 张</span>
-      <span class="dc-hint">点击展开</span>
     </span>
-    <span class="dc-corner br">
-      <b class="dc-num">01</b>
-      <svg width="8" height="8" viewBox="0 0 10 10" fill="none" aria-hidden="true">
-        <path d="M5.8 0.4L1.2 5.8h3.4L4.2 9.6l4.6-5.4H5.4L5.8 0.4z" fill="#1E80FF"/>
-      </svg>
+    <span class="dc-title" id="dockTitle"></span>
+    <span class="dc-foot">
+      <b class="dc-num" id="dockNum">01</b>
+      <span class="dc-dash"></span>
+      <span class="dc-hint">点击展开继续翻牌</span>
     </span>
   </span>
 </button>
@@ -101,5 +103,5 @@
 
 <script src="data.js"></script>
 <script src="app.js"></script>
-</body>
+<script>window.__err=[];window.onerror=function(m){window.__err.push(String(m));document.body.setAttribute("data-err",window.__err.join(";"))};window.addEventListener("load",function(){setTimeout(function(){document.getElementById("btnNext").click()},200);setTimeout(function(){document.getElementById("btnMute").click()},400)});</script></body>
 </html>

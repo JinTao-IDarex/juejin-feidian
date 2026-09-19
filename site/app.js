@@ -24,7 +24,7 @@
 
   var LKEY = 'juejin-gacha-glass';
 
-  var S = { order: [], pos: 0, liked: {}, seen: {} };
+  var S = { order: [], pos: 0, liked: {}, seen: {}, muted: true };
 
   /* 预览覆写：?motion=full 时忽略系统的「减少动态效果」设置。
    * 用途：作者预览/调试动画——有的预览环境（或系统级开了减动效的机器）
@@ -42,11 +42,14 @@
       var v = JSON.parse(raw);
       S.liked = v.liked || {};
       S.seen = v.seen || {};
+      /* 默认静音：只有用户显式按过 M 取消静音（存了 false）才开声音 */
+      S.muted = v.muted !== false;
+      setMuted(S.muted);
     } catch (e) { /* 隐私模式 / 数据损坏：静默降级 */ }
   }
   function saveLocal() {
     try {
-      localStorage.setItem(LKEY, JSON.stringify({ liked: S.liked, seen: S.seen }));
+      localStorage.setItem(LKEY, JSON.stringify({ liked: S.liked, seen: S.seen, muted: S.muted }));
     } catch (e) { /* 配额满：不影响抽卡 */ }
   }
 
@@ -353,15 +356,21 @@
     bindAI();
   }
 
-  /* 迷你卡片（dock）内容同步：缩略牌号与主卡左下角大数字一致（原始序号），
-   * 标题沿用主卡的拆分逻辑——有话题取话题，无话题取正文开头。 */
+  /* 迷你卡片（dock）内容同步：牌号与主卡左下角大数字一致（原始序号），
+   * 纸牌式布局有左上/右下两个牌号角，一起更新；
+   * 标题沿用主卡的拆分逻辑——有话题取话题，无话题取正文开头。
+   * 收起状态下盲翻时给卡面一个短促的 tick 反馈，提示牌面已换。 */
   function syncDock(p, idx) {
-    var dn = $('#dockNum');
-    if (dn) dn.textContent = pad(idx + 1);
+    var nums = document.querySelectorAll('.dock .dc-num');
+    for (var i = 0; i < nums.length; i++) nums[i].textContent = pad(idx + 1);
     var dt = $('#dockTitle');
     if (dt) {
       var tb = splitTitleBody(p);
       dt.textContent = (tb.title || tb.body || '（空沸点）').replace(/\n+/g, ' ').slice(0, 32);
+    }
+    if (document.body.classList.contains('folded')) {
+      var dc = document.querySelector('.dock .dock-card');
+      if (dc) { dc.classList.remove('tick'); void dc.offsetWidth; dc.classList.add('tick'); }
     }
   }
 
@@ -385,13 +394,67 @@
     $('#progText').textContent = total
       ? '第 ' + (S.pos + 1) + ' / ' + total + ' 张 · 已看 ' + seenCount() + ' · 喜欢 ' + likedCount()
       : '第 0 / 0 张 · 已看 0 · 喜欢 0';
-    /* 迷你卡片（收起态）里的进度同步 */
+    /* 迷你卡片（收起态）里的进度同步：竖版纸牌宽度有限，
+     * 只保留「第 N / M 张」，喜欢数由下方 HUD 完整展示 */
     var dp = $('#dockProg');
     if (dp) dp.textContent = total
-      ? '第 ' + (S.pos + 1) + ' / ' + total + ' 张 · 喜欢 ' + likedCount()
+      ? '第 ' + (S.pos + 1) + ' / ' + total + ' 张'
       : '牌堆是空的';
     $('#btnPrev').disabled = total === 0 || S.pos === 0;
     $('#btnNext').disabled = total === 0;
+  }
+
+  /* ---------------- 翻牌音效 ----------------
+   * Web Audio 现场合成纸牌「咔哒」声：带通噪声脉冲（纸面摩擦）
+   * + 三角波低频短促下扫（牌落桌面的"嗒"）。无音频文件、零加载。
+   * 中心频率带随机抖动，连续翻牌不会显得机械。 */
+  var audioCtx = null;
+  function playFlip() {
+    if (S.muted) return;
+    try {
+      if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      if (audioCtx.state === 'suspended') audioCtx.resume();
+      var t = audioCtx.currentTime;
+      var dur = 0.09;
+      var buf = audioCtx.createBuffer(1, Math.floor(audioCtx.sampleRate * dur), audioCtx.sampleRate);
+      var data = buf.getChannelData(0);
+      for (var i = 0; i < data.length; i++) {
+        var x = i / data.length;
+        data[i] = (Math.random() * 2 - 1) * Math.pow(1 - x, 2.2);
+      }
+      var noise = audioCtx.createBufferSource();
+      noise.buffer = buf;
+      var bp = audioCtx.createBiquadFilter();
+      bp.type = 'bandpass';
+      bp.frequency.value = 2200 + Math.random() * 700;
+      bp.Q.value = 0.9;
+      var g = audioCtx.createGain();
+      g.gain.setValueAtTime(0.32, t);
+      g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+      noise.connect(bp); bp.connect(g); g.connect(audioCtx.destination);
+      noise.start(t);
+
+      var osc = audioCtx.createOscillator();
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(320, t);
+      osc.frequency.exponentialRampToValueAtTime(140, t + 0.07);
+      var g2 = audioCtx.createGain();
+      g2.gain.setValueAtTime(0.16, t);
+      g2.gain.exponentialRampToValueAtTime(0.001, t + 0.08);
+      osc.connect(g2); g2.connect(audioCtx.destination);
+      osc.start(t); osc.stop(t + 0.09);
+    } catch (e) { /* 无音频环境：静默降级 */ }
+  }
+
+  function setMuted(on) {
+    S.muted = on;
+    saveLocal();
+    var b = $('#btnMute');
+    if (b) {
+      b.classList.toggle('muted', on);
+      b.setAttribute('aria-label', on ? '取消静音' : '静音');
+      b.setAttribute('aria-pressed', String(on));
+    }
   }
 
   /* ---------------- 翻牌 ---------------- */
@@ -399,6 +462,7 @@
     if (!S.order.length) return;
     var n = S.pos + delta;
     if (n < 0) { toast('已经是第一张了'); return; }
+    playFlip();
     if (n >= S.order.length) {
       shuffleOrder(); S.pos = 0; render(true, 1);
       toast('这副牌抽完了，重新洗一副');
@@ -466,6 +530,8 @@
     $('#dock').onclick = function () {
       setFolded(!document.body.classList.contains('folded'));
     };
+    var mb = $('#btnMute');
+    if (mb) mb.onclick = function () { setMuted(!S.muted); };
 
     var rt;
     window.addEventListener('resize', function () {
@@ -488,9 +554,16 @@
       var ae = document.activeElement;
       if (ae && ae.tagName === 'BUTTON') ae.blur();
 
-      /* Esc 随时可收起；已收起时屏蔽翻牌/喜欢/跳转键 */
+      /* Esc 随时可收起；M 随时可切换静音（含收起状态） */
       if (e.key === 'Escape') { setFolded(true); return; }
-      if (document.body.classList.contains('folded')) return;
+      if (e.key === 'm' || e.key === 'M') { setMuted(!S.muted); return; }
+      /* 收起状态：允许 ← → / 空格 盲翻（只换数据与迷你卡，页面保持隐藏），
+       * 其余键（喜欢 L / 看评论 C）仍然屏蔽 */
+      if (document.body.classList.contains('folded')) {
+        if (e.key === 'ArrowRight' || e.key === ' ') { e.preventDefault(); go(1); }
+        else if (e.key === 'ArrowLeft') { e.preventDefault(); go(-1); }
+        return;
+      }
 
       if (e.key === 'ArrowRight' || e.key === ' ') { e.preventDefault(); go(1); }
       else if (e.key === 'ArrowLeft') { e.preventDefault(); go(-1); }

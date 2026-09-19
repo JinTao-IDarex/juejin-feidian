@@ -517,6 +517,11 @@ img{display:block;max-width:100%}
   html:not(.motion-full) .dock .dock-card{
     transition-duration:.15s;
   }
+  /* hover 上浮位移去掉，仅保留投影加深 */
+  html:not(.motion-full) body.folded .dock:hover,
+  html:not(.motion-full) body.folded .dock:active{
+    transform:none;
+  }
 }
 
 /* ================================================================
@@ -536,7 +541,8 @@ img{display:block;max-width:100%}
   box-shadow:0 3px 10px rgba(0,0,0,.08);
   display:block;overflow:hidden;cursor:pointer;
   transition:width .42s cubic-bezier(.22,1,.36,1),height .42s cubic-bezier(.22,1,.36,1),
-             border-radius .42s cubic-bezier(.22,1,.36,1),box-shadow .2s,border-color .2s;
+             border-radius .42s cubic-bezier(.22,1,.36,1),box-shadow .2s,border-color .2s,
+             transform .18s ease-out;
 }
 .dock:hover{box-shadow:0 6px 18px rgba(30,89,191,.18)}
 .dock:focus-visible{outline:2px solid var(--blue);outline-offset:2px}
@@ -549,34 +555,57 @@ img{display:block;max-width:100%}
 /* 卡片内容：圆形态隐藏，卡片态等外形撑开后延迟淡入 */
 .dock .dock-card{
   position:absolute;inset:0;
-  display:flex;flex-direction:column;justify-content:center;gap:5px;
-  padding:0 16px;
+  display:flex;flex-direction:column;
+  padding:10px 12px;
   opacity:0;transform:translateY(4px);
   transition:opacity .2s,transform .2s;
   pointer-events:none;
 }
-.dock .dc-main{display:flex;align-items:center;gap:10px}
-/* 缩略牌：主卡的迷你版——白底、蓝描边、大序号（牌号与主卡左下角大数字一致） */
-.dock .dc-thumb{
-  flex:0 0 auto;width:44px;height:58px;border-radius:8px;
-  background:#fff;border:1px solid var(--blue-ghost);
-  box-shadow:0 3px 8px rgba(30,89,191,.10);
-  display:grid;place-items:center;
+/* 卡片态 = 一张竖版纸牌（扑克牌式）：
+ * 牌号 + 蓝色闪电花色在左上角，右下角同款旋转 180°；
+ * 中段居中：沸点标签 + 标题；底部居中：进度 + 展开提示。 */
+.dock .dc-corner{position:absolute;display:flex;flex-direction:column;align-items:center;gap:2px}
+.dock .dc-corner.tl{left:9px;top:8px}
+.dock .dc-corner.br{right:9px;bottom:8px;transform:rotate(180deg)}
+.dock .dc-corner b{font:700 15px/1 var(--font-sans);color:#16181D;letter-spacing:-.5px}
+.dock .dc-center{
+  flex:1;min-height:0;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:7px;
 }
-.dock .dc-thumb b{font:700 17px/1 var(--font-sans);color:var(--blue);letter-spacing:-.5px}
-.dock .dc-texts{display:flex;flex-direction:column;gap:4px;min-width:0}
+.dock .dc-tag{
+  display:inline-flex;align-items:center;gap:4px;
+  height:20px;padding:0 7px;border-radius:6px;
+  background:var(--blue-mid);
+  font:600 11px/1 var(--font-sans);color:var(--blue);
+}
 .dock .dc-title{
-  font:600 12.5px/1.4 var(--font-cn);color:#16181D;
-  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;
+  font:600 12.5px/1.5 var(--font-cn);color:#16181D;text-align:center;
+  display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;
 }
-.dock .dc-prog{font:400 11.5px/1 var(--font-sans);color:#A8AEB8;white-space:nowrap}
-.dock .dc-hint{font:600 11.5px/1 var(--font-sans);color:var(--blue)}
+.dock .dc-meta{
+  display:flex;flex-direction:column;align-items:center;gap:3px;
+  margin-bottom:16px;              /* 给右下角牌号让位 */
+}
+.dock .dc-prog{font:400 10.5px/1 var(--font-sans);color:#A8AEB8;white-space:nowrap}
+.dock .dc-hint{font:600 10.5px/1 var(--font-sans);color:var(--blue);white-space:nowrap}
 
 body.folded .dock{
-  width:264px;height:96px;border-radius:18px;
+  /* 竖版纸牌 148x196 ≈ 1:1.32，接近主卡的 1:1.4 纸牌比例 */
+  width:148px;height:196px;border-radius:12px;
   border-color:#E5E7EA;
-  box-shadow:0 14px 34px rgba(30,89,191,.14);
+  box-shadow:0 14px 36px rgba(30,89,191,.14);
 }
+/* 收起状态盲翻时的卡面反馈（见 app.js syncDock） */
+@keyframes dcTick{0%{opacity:.2;transform:translateX(6px)}100%{opacity:1;transform:none}}
+.dock .dock-card.tick{animation:dcTick .22s ease-out}
+
+/* 卡片态 hover：轻微上浮 + 投影加深，像从桌面拾起一张牌；
+ * 只在卡片态生效（圆形 × 按钮态保持原有的投影反馈） */
+body.folded .dock:hover{
+  transform:translateY(-3px);
+  box-shadow:0 20px 44px rgba(30,89,191,.20);
+}
+body.folded .dock:active{transform:translateY(-1px)}
 body.folded .dock .dock-x{opacity:0;transform:translate(-50%,-50%) scale(.4) rotate(90deg)}
 body.folded .dock .dock-card{opacity:1;transform:translateY(0);transition-delay:.18s}
 

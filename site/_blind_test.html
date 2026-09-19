@@ -57,7 +57,7 @@
         <span class="ring"></span>
         <span id="progText">第 1 / 60 张 · 已看 0 · 喜欢 0</span>
       </div>
-      <div class="keys">←→ 翻牌　　空格 抽下一张　　L 喜欢　　C 看评论　　M 音效</div>
+      <div class="keys">←→ 翻牌　　空格 抽下一张　　L 喜欢　　C 看评论</div>
     </footer>
 
    </div>
@@ -70,29 +70,19 @@
     <path d="M3.2 3.2l7.6 7.6M10.8 3.2l-7.6 7.6" stroke="#5C636D" stroke-width="1.7" stroke-linecap="round"/>
   </svg>
   <span class="dock-card" aria-hidden="true">
-    <span class="dc-corner tl">
-      <b class="dc-num">01</b>
-      <svg width="8" height="8" viewBox="0 0 10 10" fill="none" aria-hidden="true">
-        <path d="M5.8 0.4L1.2 5.8h3.4L4.2 9.6l4.6-5.4H5.4L5.8 0.4z" fill="#1E80FF"/>
-      </svg>
-    </span>
-    <span class="dc-center">
+    <span class="dc-head">
       <span class="dc-tag">
         <svg width="9" height="9" viewBox="0 0 10 10" fill="none" aria-hidden="true">
           <path d="M5.8 0.4L1.2 5.8h3.4L4.2 9.6l4.6-5.4H5.4L5.8 0.4z" fill="#1E80FF"/>
         </svg>沸点
       </span>
-      <span class="dc-title" id="dockTitle"></span>
-    </span>
-    <span class="dc-meta">
       <span class="dc-prog" id="dockProg">第 1 / 60 张</span>
-      <span class="dc-hint">点击展开</span>
     </span>
-    <span class="dc-corner br">
-      <b class="dc-num">01</b>
-      <svg width="8" height="8" viewBox="0 0 10 10" fill="none" aria-hidden="true">
-        <path d="M5.8 0.4L1.2 5.8h3.4L4.2 9.6l4.6-5.4H5.4L5.8 0.4z" fill="#1E80FF"/>
-      </svg>
+    <span class="dc-title" id="dockTitle"></span>
+    <span class="dc-foot">
+      <b class="dc-num" id="dockNum">01</b>
+      <span class="dc-dash"></span>
+      <span class="dc-hint">点击展开继续翻牌</span>
     </span>
   </span>
 </button>
@@ -101,5 +91,5 @@
 
 <script src="data.js"></script>
 <script src="app.js"></script>
-</body>
+<script>window.__err=[];window.onerror=function(m){window.__err.push(String(m));document.body.setAttribute("data-err",window.__err.join(";"))};window.addEventListener("load",function(){setTimeout(function(){document.getElementById("dock").click()},300);setTimeout(function(){document.dispatchEvent(new KeyboardEvent("keydown",{key:"ArrowRight"}))},900);setTimeout(function(){document.dispatchEvent(new KeyboardEvent("keydown",{key:"ArrowRight"}))},1200)});</script></body>
 </html>
