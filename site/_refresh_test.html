@@ -56,13 +56,25 @@
       <div class="status">
         <span class="ring"></span>
         <span id="progText">第 1 / 60 张 · 已看 0 · 喜欢 0</span>
+        <button class="shuffle" id="btnShuffle" aria-label="洗牌">
+          <svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <path d="M1.5 4.5h3l6 7h4m0 0l-2.2-2.2m2.2 2.2-2.2 2.2M1.5 11.5h3l1.6-1.9m4.8-3.2 1.6-1.9h2m0 0-2.2-2.2m2.2 2.2-2.2 2.2" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>洗牌
+        </button>
       </div>
-      <div class="keys">←→ 翻牌　　空格 抽下一张　　L 喜欢　　C 看评论</div>
+      <div class="keys">←→ 翻牌　　空格 抽下一张　　S 洗牌　　L 喜欢　　C 看评论　　M 音效</div>
     </footer>
 
    </div>
   </div>
 </div>
+
+<!-- 洗牌（获取最新沸点）：固定在关闭按钮左侧 -->
+<button class="fab" id="btnRefresh" aria-label="洗牌：获取最新沸点">
+  <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+    <path d="M1.5 4.5h3l6 7h4m0 0l-2.2-2.2m2.2 2.2-2.2 2.2M1.5 11.5h3l1.6-1.9m4.8-3.2 1.6-1.9h2m0 0-2.2-2.2m2.2 2.2-2.2 2.2" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+  </svg>
+</button>
 
 <!-- 收起按钮 ⇄ 迷你卡片：同一个按钮在两种形态间变形（见 app.css dock 章节） -->
 <button class="dock" id="dock" aria-label="收起为卡片" aria-expanded="true">
@@ -70,14 +82,30 @@
     <path d="M3.2 3.2l7.6 7.6M10.8 3.2l-7.6 7.6" stroke="#5C636D" stroke-width="1.7" stroke-linecap="round"/>
   </svg>
   <span class="dock-card" aria-hidden="true">
-    <span class="dc-head">
-      <svg width="11" height="11" viewBox="0 0 10 10" fill="none" aria-hidden="true">
+    <span class="dc-corner tl">
+      <b class="dc-num">01</b>
+      <svg width="8" height="8" viewBox="0 0 10 10" fill="none" aria-hidden="true">
         <path d="M5.8 0.4L1.2 5.8h3.4L4.2 9.6l4.6-5.4H5.4L5.8 0.4z" fill="#1E80FF"/>
       </svg>
-      <b>沸点抽卡</b>
     </span>
-    <span class="dc-prog" id="dockProg">第 1 / 60 张</span>
-    <span class="dc-hint">点击展开继续翻牌</span>
+    <span class="dc-center">
+      <span class="dc-tag">
+        <svg width="9" height="9" viewBox="0 0 10 10" fill="none" aria-hidden="true">
+          <path d="M5.8 0.4L1.2 5.8h3.4L4.2 9.6l4.6-5.4H5.4L5.8 0.4z" fill="#1E80FF"/>
+        </svg>沸点
+      </span>
+      <span class="dc-title" id="dockTitle"></span>
+    </span>
+    <span class="dc-meta">
+      <span class="dc-prog" id="dockProg">第 1 / 60 张</span>
+      <span class="dc-hint">点击展开</span>
+    </span>
+    <span class="dc-corner br">
+      <b class="dc-num">01</b>
+      <svg width="8" height="8" viewBox="0 0 10 10" fill="none" aria-hidden="true">
+        <path d="M5.8 0.4L1.2 5.8h3.4L4.2 9.6l4.6-5.4H5.4L5.8 0.4z" fill="#1E80FF"/>
+      </svg>
+    </span>
   </span>
 </button>
 
@@ -85,5 +113,5 @@
 
 <script src="data.js"></script>
 <script src="app.js"></script>
-<script>window.__err=[];window.onerror=function(m){window.__err.push(String(m));document.body.setAttribute("data-err",window.__err.join(";"))};window.addEventListener("load",function(){setTimeout(function(){document.getElementById("dock").click()},300);setTimeout(function(){document.getElementById("dock").click()},1600)});</script></body>
+<script>window.__err=[];window.onerror=function(m){window.__err.push(String(m));document.body.setAttribute("data-err",window.__err.join(";"))};window.addEventListener("load",function(){setTimeout(function(){document.getElementById("btnNext").click()},2500);setTimeout(function(){document.getElementById("btnRefresh").click()},3200)});</script></body>
 </html>

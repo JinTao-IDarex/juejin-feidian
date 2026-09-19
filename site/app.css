@@ -145,7 +145,7 @@ img{display:block;max-width:100%}
  * 不裁的话卡片边缘会探进 Hero / 进度条区域，整页穿帮。
  * 裁在 .stage-inner 而不是 .stage 上，是因为 .stage-inner 就是 inset:0 的
  * 内容区，裁它不会影响 .stage 自身背景与相邻区块的堆叠关系。 */
-.stage-inner{position:absolute;inset:0;overflow:hidden}
+.stage-inner{position:absolute;inset:0;overflow:hidden;perspective:1000px}
 
 /* ---- 邻卡（前后张）：340x480 @ y=80，圆角 20 ----
  * 玻璃 rgba(234,242,255,1) 不透明，LAYER_BLUR 8 用 filter 等价实现。
@@ -308,11 +308,12 @@ img{display:block;max-width:100%}
 .round[disabled]{opacity:.35;cursor:default}
 .round[disabled]:hover{box-shadow:0 3px 10px rgba(0,0,0,.08)}
 
-/* ---- AI 点评卡：284x360 @ (1156,100)，圆角 24，蓝描边 ----
- * x=1156 = 右邻卡右缘 1136 + 20，紧挨着排；右缘 1440 与画布齐平。
+/* ---- AI 点评卡：284x360 @ (1136,100)，圆角 24，蓝描边 ----
+ * x=1136：在右邻卡（静态右缘 1016）右侧留 120px 呼吸位，比原 1156 靠左 20px，
+ * 更贴近牌阵；右缘 1420，距画布右边 20px。
  * 两个箭头（448 / 956）对称贴在主卡两侧各 50px 的缝隙里，不再被这张卡遮住。 */
 .ai{
-  position:absolute;left:1156px;top:100px;
+  position:absolute;left:1136px;top:100px;
   width:284px;height:360px;
   padding:26px 26px 20px;
   display:flex;flex-direction:column;gap:12px;
@@ -378,6 +379,17 @@ img{display:block;max-width:100%}
 .hud .keys{
   font:400 12.5px/1 var(--font-sans);color:#A8AEB8;
 }
+/* 洗牌小圆钮：挂在进度行尾部，弱化存在但可点 */
+.hud .shuffle{
+  display:inline-flex;align-items:center;gap:5px;
+  height:26px;padding:0 12px;border-radius:99px;
+  border:1px solid var(--hair);
+  font:600 12px/1 var(--font-sans);color:#5C636D;
+  transition:border-color .16s,color .16s,transform .16s;
+}
+.hud .shuffle:hover{border-color:var(--blue);color:var(--blue)}
+.hud .shuffle:active{transform:scale(.94)}
+.hud .shuffle:focus-visible{outline:2px solid var(--blue);outline-offset:2px}
 .hud .keys b{
   font-weight:400;color:#8A9099;
   background:rgba(255,255,255,.9);
@@ -438,11 +450,25 @@ img{display:block;max-width:100%}
  * 170ms 刚好掩盖「同一位置换内容」的跳变，又不留残影 */
 @keyframes outGhost{0%{opacity:1}100%{opacity:0}}
 
-/* AI 卡不是牌面带子的一部分，不做缩放/变焦，只跟位移；
- * 卡内内容做一次短淡入，掩盖 innerHTML 瞬换 */
-@keyframes slideAiF{0%{transform:translateX(142px)}100%{transform:translateX(0)}}
-@keyframes slideAiB{0%{transform:translateX(-110px)}100%{transform:translateX(0)}}
-@keyframes aiContentIn{0%{opacity:0}100%{opacity:1}}
+/* AI 卡翻转动画（单元素翻面技巧）：前半程转到 ∓90° 立边（内容不可见），
+ * 50% 处的 opacity:0 窗口遮住 -90°→+90° 的插值跳转，后半程转回 0°；
+ * JS 在 50% 时刻换掉卡内内容（见 app.js render()）。前进/后退镜像。 */
+@keyframes aiFlipF{
+  0%  {transform:rotateY(0);opacity:1}
+  45% {transform:rotateY(-80deg);opacity:1}
+  50% {transform:rotateY(-90deg);opacity:0}
+  50.5%{transform:rotateY(90deg);opacity:0}
+  55% {transform:rotateY(80deg);opacity:1}
+  100%{transform:rotateY(0);opacity:1}
+}
+@keyframes aiFlipB{
+  0%  {transform:rotateY(0);opacity:1}
+  45% {transform:rotateY(80deg);opacity:1}
+  50% {transform:rotateY(90deg);opacity:0}
+  50.5%{transform:rotateY(-90deg);opacity:0}
+  55% {transform:rotateY(-80deg);opacity:1}
+  100%{transform:rotateY(0);opacity:1}
+}
 
 /* 主卡：从对应侧邻卡位滑入，焦点由糊到清 */
 .main.anim-in{animation:slideMainF 480ms cubic-bezier(.22,1,.36,1) both;will-change:transform,filter}
@@ -451,10 +477,9 @@ img{display:block;max-width:100%}
 /* 邻卡：原地淡入即可，方向无关；70ms 延迟让它在旧主卡离场起步后再落定 */
 .ghost.anim-l,.ghost.anim-r{animation:ghostIn 380ms 70ms cubic-bezier(.2,.7,.3,1) both;will-change:opacity,transform}
 
-/* AI 卡延迟 60ms 起步，读起来像被主卡带着走 */
-.ai.anim-in{animation:slideAiF 480ms 60ms cubic-bezier(.22,1,.36,1) both;will-change:transform}
-.bwd .ai.anim-in{animation-name:slideAiB}
-.ai.anim-in>*{animation:aiContentIn 260ms 100ms ease-out both}
+/* AI 卡延迟 60ms 起步，读起来像被主卡带着走；翻转用加速-减速缓动才自然 */
+.ai.anim-in{animation:aiFlipF 480ms 60ms cubic-bezier(.4,0,.2,1) both;will-change:transform}
+.bwd .ai.anim-in{animation-name:aiFlipB}
 
 /* 离场层：盖在入场卡之上（z 5，低于箭头 z 6），指针穿透。
  * 快速连翻时由 JS 先清掉旧层，不会无限堆叠。 */
@@ -488,7 +513,6 @@ img{display:block;max-width:100%}
   }
   /* 离场层不做滑出，直接隐藏——状态变化已由入场淡入表达 */
   html:not(.motion-full) .out-layer{display:none}
-  html:not(.motion-full) .ai.anim-in>*{animation:none}
   /* AI 卡与邻卡原本比主卡晚 60~100ms，这里统一去掉延迟，避免出现
    * 「先换主卡再换点评/邻卡」的错位 */
   html:not(.motion-full) .main.anim-in,html:not(.motion-full) .bwd .main.anim-in,
@@ -534,6 +558,156 @@ img{display:block;max-width:100%}
  * 折叠时 .page-wrap 以 dock 圆心为原点缩小淡出——视觉上是
  * 「页面被吸进按钮、按钮撑开成卡片」；点击卡片反向播放。
  * ================================================================ */
+/* ---- 洗牌（获取最新沸点）圆钮：固定在关闭按钮左侧（右缘 24+40+12=76） ---- */
+.fab{
+  position:fixed;top:20px;right:76px;z-index:100;
+  width:40px;height:40px;border-radius:99px;
+  background:#fff;border:1px solid #E6E7EA;color:#5C636D;
+  box-shadow:0 3px 10px rgba(0,0,0,.08);
+  display:grid;place-items:center;
+  transition:box-shadow .16s,transform .16s,color .16s,border-color .16s,opacity .2s,visibility 0s 0s;
+}
+/* 折叠成迷你卡时，右上角功能钮（洗牌 / AI 配置 / 风格）随页面一起隐藏。
+ * 原来洗牌钮只是恰好被迷你卡盖住，风格钮位置更靠左盖不住——改成显式隐藏，不再依赖碰巧。 */
+body.folded .fab{
+  opacity:0;visibility:hidden;pointer-events:none;
+  transition:box-shadow .16s,transform .16s,color .16s,border-color .16s,opacity .2s,visibility 0s .2s;
+}
+.fab:hover{box-shadow:0 6px 18px rgba(30,89,191,.18);color:var(--blue);border-color:var(--blue)}
+.fab:active{transform:scale(.94)}
+.fab:focus-visible{outline:2px solid var(--blue);outline-offset:2px}
+/* 拉取中：图标持续旋转作为加载反馈（spin 在 HUD 章节已定义） */
+.fab.busy svg{animation:spin 1s linear infinite}
+
+/* ---- AI 点评接口配置圆钮：固定在洗牌钮左侧（右缘 76+40+12=128） ---- */
+.fab.cfg{right:128px}
+/* 已配置接口时给个品牌色描边提示「实时点评已开启」 */
+.fab.cfg.on{color:var(--blue);border-color:var(--blue)}
+
+/* ---- 点评风格胶囊钮：固定在 AI 配置钮左侧（右缘 128+40+12=180） ---- */
+.fab.pill{
+  right:180px;width:auto;padding:0 14px;
+  display:inline-flex;align-items:center;gap:6px;
+  font:600 13px/1 var(--font-cn);
+}
+.fab.pill.on{color:var(--blue);border-color:var(--blue)}
+
+/* ---- AI 配置弹窗 ---- */
+.aicfg-mask{
+  position:fixed;inset:0;z-index:200;
+  background:rgba(23,26,31,.38);
+  display:grid;place-items:center;
+  animation:aicfgMaskIn .18s ease-out both;
+}
+.aicfg-mask[hidden]{display:none}
+@keyframes aicfgMaskIn{from{opacity:0}to{opacity:1}}
+.aicfg{
+  width:380px;max-width:calc(100vw - 48px);
+  background:#fff;border-radius:18px;
+  box-shadow:0 24px 64px rgba(23,26,31,.22);
+  padding:22px 24px 20px;
+  animation:aicfgIn .22s cubic-bezier(.2,.9,.3,1.2) both;
+}
+@keyframes aicfgIn{from{opacity:0;transform:translateY(14px) scale(.96)}to{opacity:1;transform:none}}
+.aicfg-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}
+.aicfg-head b{font:700 16px/1.4 var(--font-cn);color:#1F2329}
+.aicfg-x{
+  width:28px;height:28px;border-radius:8px;
+  display:grid;place-items:center;
+  font:400 18px/1 var(--font-sans);color:#8A919C;
+  transition:background .14s,color .14s;
+}
+.aicfg-x:hover{background:#F2F3F5;color:#1F2329}
+.aicfg-tip{
+  margin:0 0 14px;
+  font:400 12px/1.7 var(--font-cn);color:#8A919C;
+}
+.aicfg-field{display:block;margin-bottom:12px}
+.aicfg-field span{
+  display:block;margin-bottom:5px;
+  font:600 12px/1 var(--font-cn);color:#5C636D;
+}
+.aicfg-field input{
+  width:100%;height:38px;padding:0 12px;
+  border:1px solid #E6E7EA;border-radius:9px;
+  font:400 13px/1 var(--font-sans);color:#1F2329;
+  transition:border-color .14s,box-shadow .14s;
+}
+.aicfg-field input:focus{
+  outline:none;border-color:var(--blue);
+  box-shadow:0 0 0 3px rgba(30,128,255,.12);
+}
+.aicfg-ops{display:flex;justify-content:flex-end;gap:8px;margin-top:16px}
+.aicfg-btn{
+  height:34px;padding:0 14px;border-radius:9px;
+  font:600 12.5px/1 var(--font-cn);
+  transition:background .14s,color .14s,border-color .14s;
+}
+.aicfg-btn.plain{border:1px solid #E6E7EA;color:#5C636D;background:#fff}
+.aicfg-btn.plain:hover{border-color:var(--blue);color:var(--blue)}
+.aicfg-btn.primary{background:var(--blue);color:#fff}
+.aicfg-btn.primary:hover{background:#0B6FE8}
+.aicfg-btn[disabled]{opacity:.5;pointer-events:none}
+
+/* AI 点评生成中的加载态（在 .roast 里） */
+.roast .ai-loading{
+  display:inline-flex;align-items:center;gap:8px;
+  color:#A8AEB8;font-size:13px;
+}
+.roast .ai-loading i{
+  width:5px;height:5px;border-radius:99px;background:var(--blue);
+  animation:aiDot 1s ease-in-out infinite;
+}
+.roast .ai-loading i:nth-child(2){animation-delay:.16s}
+.roast .ai-loading i:nth-child(3){animation-delay:.32s}
+@keyframes aiDot{0%,100%{opacity:.25;transform:translateY(0)}50%{opacity:1;transform:translateY(-3px)}}
+/* 实时生成的点评：左侧留一道蓝条标记，和手写点评区分 */
+.roast .roast-live{
+  border-left:3px solid var(--blue);padding-left:10px;
+}
+
+/* ---- 点评风格弹窗：卡牌式选择 ---- */
+.aicfg.wide{width:560px}
+.style-grid{
+  display:grid;grid-template-columns:1fr 1fr;gap:12px;
+  max-height:min(56vh,430px);overflow:auto;padding:2px;
+}
+.style-card{
+  position:relative;text-align:left;
+  border:1px solid #E6E7EA;border-radius:14px;
+  padding:14px 14px 12px;
+  background:#fff;
+  display:flex;flex-direction:column;gap:7px;
+  transition:border-color .15s,box-shadow .15s,transform .15s;
+}
+.style-card:hover{
+  border-color:var(--blue);
+  box-shadow:0 8px 20px rgba(30,89,191,.12);
+  transform:translateY(-2px);
+}
+.style-card.on{
+  border-color:var(--blue);
+  background:linear-gradient(180deg,#F4F9FF,#fff);
+  box-shadow:0 8px 20px rgba(30,89,191,.14);
+}
+.style-card.on::after{
+  content:'✓';position:absolute;top:10px;right:10px;
+  width:20px;height:20px;border-radius:99px;
+  background:var(--blue);color:#fff;
+  font:700 11px/20px var(--font-sans);text-align:center;
+}
+.style-card b{font:700 14px/1.3 var(--font-cn);color:#1F2329}
+.style-card .demo{
+  font:400 12px/1.6 var(--font-cn);color:#5C636D;
+}
+.style-card .demo::before{content:'「'}
+.style-card .demo::after{content:'」'}
+.style-card .prompt{
+  font:400 11px/1.6 var(--font-cn);color:#A8AEB8;
+  border-top:1px dashed #EBECF0;padding-top:7px;
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;
+}
+
 .dock{
   position:fixed;top:20px;right:24px;z-index:100;
   width:40px;height:40px;border-radius:99px;
@@ -568,6 +742,9 @@ img{display:block;max-width:100%}
 .dock .dc-corner.tl{left:9px;top:8px}
 .dock .dc-corner.br{right:9px;bottom:8px;transform:rotate(180deg)}
 .dock .dc-corner b{font:700 15px/1 var(--font-sans);color:#16181D;letter-spacing:-.5px}
+/* 花色符号：与点数同色；红桃/方块整角转红（纸牌惯例） */
+.dock .dc-suit{font:400 12px/1 var(--font-sans);font-style:normal;color:#16181D}
+.dock .dc-corner.red b,.dock .dc-corner.red .dc-suit{color:#E04A4A}
 .dock .dc-center{
   flex:1;min-height:0;
   display:flex;flex-direction:column;align-items:center;justify-content:center;gap:7px;
