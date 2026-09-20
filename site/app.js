@@ -60,21 +60,35 @@
   var outTimer;
   /* AI 卡翻转动画中点换内容的定时器（见 render()） */
   var aiSwapTimer;
+  /* 实时点评的出发防抖：翻牌后 700ms 内再次翻牌则取消上一个待发请求，
+   * 只有「落定」的牌才真正打 AI 接口——快速翻牌不会给厂商堆并发（见 render()） */
+  var roastKickTimer;
+  /* 批量生成进度：批量请求中为 {id,total,start}；兜底串行时多 done/serial。
+   * null 表示空闲。存在期间单条 maybeRoast 不再发请求，由批量统一驱动。 */
+  var batchCtl = null;
+  var batchSeq = 0;
+  var batchTicker = null;
 
   /* ---------------- AI 实时点评配置 ----------------
    * 配置存在 localStorage（只存本机浏览器）：OpenAI 兼容接口三要素。
    * 配了之后翻牌时经同源 /api/roast（serve.mjs 转发，避免 CORS）实时生成点评；
    * 没配就用 data.js 里的手写点评兜底。 */
   var AI_CFG_KEY = 'juejin-boom:ai-cfg';
+  /* 掘金登录态 Cookie（一键评论用）：可存浏览器 localStorage，
+   * 也可写进服务端 site/.ai-config.json 的 jjCookie 字段（不进浏览器） */
+  var JJ_COOKIE_KEY = 'juejin-boom:jj-cookie';
   var aiCfg = loadAiCfg();
   /* 已生成的点评按沸点 id 缓存，来回翻牌不重复打接口（改配置时清空） */
   var roastCache = {};
+  /* 失败负缓存：30s 内翻回同一张不重复打接口（避免服务商限流时被反复撞击） */
+  var roastFail = {};
   /* 进行中的生成请求：翻下一张时 abort 掉，避免慢响应错配到新卡上 */
   var roastAbort = null;
   function loadAiCfg() {
     try {
       var c = JSON.parse(localStorage.getItem(AI_CFG_KEY) || 'null');
-      return (c && c.baseUrl && c.token && c.model) ? c : null;
+      /* token 允许为空：空 token 时由服务端 .ai-config.json 补上（Key 不进浏览器） */
+      return (c && c.baseUrl && c.model) ? c : null;
     } catch (e) { return null; }
   }
 
@@ -344,12 +358,20 @@
   function aiCard(p) {
     var r = roastFor(p);
     var body = r.loading
-      ? '<span class="ai-loading"><i></i><i></i><i></i>AI 正在看这条沸点…</span>'
+      ? (batchCtl
+        ? (batchCtl.serial
+          ? '<span class="ai-loading"><i class="spin"></i>AI 批量点评中 ' +
+            batchCtl.done + '/' + batchCtl.total +
+            '（' + Math.round(batchCtl.done / batchCtl.total * 100) + '%）</span>'
+          : '<span class="ai-loading"><i class="spin"></i>AI 正在一次性点评 ' +
+            batchCtl.total + ' 条 · 已等 ' +
+            Math.round((Date.now() - batchCtl.start) / 1000) + 's</span>')
+        : '<span class="ai-loading"><i class="dot"></i><i class="dot"></i><i class="dot"></i>AI 正在看这条沸点…</span>')
       : '<span' + (r.live ? ' class="roast-live"' : '') + '>' + esc(r.text) + '</span>';
     return '' +
       '<span class="badge">' + ICON_BOLT + 'AI 点评</span>' +
       '<div class="roast">' + body + '</div>' +
-      '<button class="copy" id="btnCopy">' + ICON_COPY + '复制这句去评论</button>' +
+      '<button class="copy" id="btnCopy">' + ICON_COPY + '一键评论</button>' +
       '<div class="note">毒的是现象，不是你。</div>';
   }
 
@@ -359,15 +381,37 @@
   function roastFor(p) {
     if (aiCfg) {
       if (roastCache[p.id]) return { text: roastCache[p.id], live: true };
+      /* 刚失败过的牌显示回退文案，不无限转圈 */
+      if (roastFail[p.id] && Date.now() - roastFail[p.id] < 30000) {
+        return { text: p.roast || '（生成失败，稍后再翻回来重试）', live: false };
+      }
       return { loading: true };
     }
     return { text: p.roast || '（这条还没配点评）', live: false };
+  }
+
+  /* /api/roast 响应解析：旧版预览服务没有该路由时会返回纯文本 404，
+   * 直接 r.json() 会抛出谁也看不懂的语法错误——转成可操作的提示。 */
+  function parseRoastRes(r) {
+    return r.text().then(function (t) {
+      var d = null;
+      try { d = JSON.parse(t); } catch (e) { /* 非 JSON：多半是旧服务的 404 纯文本 */ }
+      if (!d) {
+        throw new Error(r.status === 404
+          ? '预览服务还是旧版（缺 /api/roast），请关掉预览卡片重新打开'
+          : '服务返回异常（HTTP ' + r.status + '）');
+      }
+      return { ok: r.ok, d: d };
+    });
   }
 
   /* 经 /api/roast 实时生成本条点评。生成回来后若页面还停在这条，
    * 就地重建 AI 卡内容；失败则回退手写点评/占位并提示原因。 */
   function maybeRoast(p) {
     if (!aiCfg || roastCache[p.id]) return;
+    /* 批量进行时不重复发单条，只把卡片刷成进度态 */
+    if (batchCtl) { refreshAiCard(); return; }
+    if (roastFail[p.id] && Date.now() - roastFail[p.id] < 30000) return; // 30s 负缓存
     if (roastAbort) roastAbort.abort();
     var ctl = roastAbort = new AbortController();
     fetch('/api/roast', {
@@ -380,9 +424,7 @@
       }),
       signal: ctl.signal,
     })
-      .then(function (r) {
-        return r.json().then(function (d) { return { ok: r.ok, d: d }; });
-      })
+      .then(parseRoastRes)
       .then(function (res) {
         if (roastAbort === ctl) roastAbort = null;
         if (!res.ok || !res.d.roast) throw new Error((res.d && res.d.error) || 'AI 接口异常');
@@ -396,6 +438,7 @@
       .catch(function (e) {
         if (roastAbort === ctl) roastAbort = null;
         if (e && e.name === 'AbortError') return; // 被更新的翻牌打断，安静丢弃
+        roastFail[p.id] = Date.now(); // 记失败时间，30s 内不再重试
         var cur = PINS[S.order[S.pos]];
         if (cur && cur.id === p.id) {
           var ai = $('#ai');
@@ -406,6 +449,124 @@
           }
         }
         toast('AI 点评生成失败：' + ((e && e.message) || e));
+      });
+  }
+
+  /* ---------------- 批量点评 ----------------
+   * 一次动作把当前所有还没点评过的牌全部生成完（启动 / 洗牌 / 换配置 /
+   * 换风格后自动触发）。主路径是【单次请求】：整副牌打包发给 /api/roast，
+   * 服务端拼成一次上游调用、JSON 数组一次拿回——彻底不触发并发限流。
+   * 批量请求失败时退化为逐条串行（间隔 300ms，限流退避 2.5s）把队列跑完。
+   */
+
+  /* 单条生成的 Promise 版（兜底串行用）：成功写缓存、失败记 30s 负缓存，
+   * 无论成败都 resolve（队列不因一条失败而中断）。
+   * 命中限流类错误时返回 'throttled'，由调用方决定额外退避。 */
+  function roastOne(p) {
+    return fetch('/api/roast', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        baseUrl: aiCfg.baseUrl, token: aiCfg.token, model: aiCfg.model,
+        content: p.content, topic: p.topic,
+        prompt: currentStyle().prompt,
+      }),
+    })
+      .then(parseRoastRes)
+      .then(function (res) {
+        if (!res.ok || !res.d.roast) throw new Error((res.d && res.d.error) || 'AI 接口异常');
+        roastCache[p.id] = res.d.roast;
+        delete roastFail[p.id];
+        return 'ok';
+      })
+      .catch(function (e) {
+        roastFail[p.id] = Date.now();
+        var msg = (e && e.message) || String(e);
+        return /quota|限流|429|concurrency/i.test(msg) ? 'throttled' : 'fail';
+      });
+  }
+
+  /* 就地刷新 AI 卡内容（进度变化 / 当前卡点评已生成时）。
+   * 翻转动画播放期间不动内容：中点换内容由 render 的 aiSwapTimer 负责。 */
+  function refreshAiCard() {
+    var p = PINS[S.order[S.pos]];
+    var ai = $('#ai');
+    if (!p || !ai || ai.classList.contains('anim-in')) return;
+    ai.innerHTML = aiCard(p);
+    bindAI();
+  }
+
+  function stopBatch() {
+    batchCtl = null;
+    if (batchTicker) { clearInterval(batchTicker); batchTicker = null; }
+  }
+
+  /* 兜底：逐条串行把队列跑完（批量请求失败时启用） */
+  function runSerial(queue, myId) {
+    batchCtl = { id: myId, total: queue.length, done: 0, serial: true };
+    refreshAiCard();
+    (function step() {
+      if (!batchCtl || batchCtl.id !== myId || batchCtl.done >= queue.length) {
+        stopBatch();
+        refreshAiCard();
+        return;
+      }
+      roastOne(queue[batchCtl.done]).then(function (r) {
+        if (!batchCtl || batchCtl.id !== myId) return; // 中途被取消
+        batchCtl.done++;
+        refreshAiCard();
+        /* 限流信号：额外退避 2.5s，给上游并发额度回口气 */
+        setTimeout(step, r === 'throttled' ? 2800 : 300);
+      });
+    })();
+  }
+
+  function startBatch() {
+    if (!aiCfg || batchCtl) return;
+    var queue = [];
+    for (var i = 0; i < S.order.length; i++) {
+      var p = PINS[S.order[i]];
+      if (!p || roastCache[p.id]) continue;
+      if (roastFail[p.id] && Date.now() - roastFail[p.id] < 30000) continue;
+      queue.push(p);
+    }
+    if (!queue.length) return;
+    var myId = ++batchSeq;
+    batchCtl = { id: myId, total: queue.length, start: Date.now() };
+    refreshAiCard();
+    /* 单次请求可能等十几秒，每秒刷一次「已等 Xs」让等待可感知 */
+    batchTicker = setInterval(function () {
+      if (batchCtl && batchCtl.id === myId && !batchCtl.serial) refreshAiCard();
+    }, 1000);
+    fetch('/api/roast', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        baseUrl: aiCfg.baseUrl, token: aiCfg.token, model: aiCfg.model,
+        prompt: currentStyle().prompt,
+        items: queue.map(function (p) { return { id: p.id, content: p.content, topic: p.topic }; }),
+      }),
+    })
+      .then(parseRoastRes)
+      .then(function (res) {
+        if (!batchCtl || batchCtl.id !== myId) return; // 已被取消/替换
+        if (!res.ok || !res.d.roasts) throw new Error((res.d && res.d.error) || 'AI 接口异常');
+        var got = res.d.roasts;
+        var okCount = 0;
+        for (var i = 0; i < queue.length; i++) {
+          var p = queue[i];
+          if (got[p.id]) { roastCache[p.id] = got[p.id]; delete roastFail[p.id]; okCount++; }
+          else roastFail[p.id] = Date.now(); // 模型漏答的记负缓存，30s 后可重试
+        }
+        stopBatch();
+        refreshAiCard();
+        toast('AI 批量点评完成 · ' + okCount + '/' + queue.length + ' 条');
+      })
+      .catch(function (e) {
+        if (!batchCtl || batchCtl.id !== myId) return;
+        /* 单次批量失败（超时/模型不吐 JSON 等）→ 退化为逐条串行，仍然跑完 */
+        toast('批量点评未成功（' + ((e && e.message) || e) + '），改为逐条生成');
+        runSerial(queue, myId);
       });
   }
 
@@ -491,8 +652,10 @@
     updateHud();
     syncDock(p, idx);
     /* 配了 AI 接口就实时生成本条点评（未命中缓存时），
-     * 生成回来后由 maybeRoast 自己就地更新卡片 */
-    maybeRoast(p);
+     * 生成回来后由 maybeRoast 自己就地更新卡片。
+     * 700ms 防抖：只有停下来的牌才发请求，翻牌路过的中间卡不打接口。 */
+    clearTimeout(roastKickTimer);
+    roastKickTimer = setTimeout(function () { maybeRoast(p); }, 700);
   }
 
   /* 迷你卡片（dock）内容同步：牌号与主卡左下角大数字一致（原始序号），
@@ -525,20 +688,56 @@
     }
   }
 
-  /* 「复制这句去评论」的事件绑定。
+  /* 「一键评论」：把当前点评直接发到这条沸点的评论区（经 /api/comment 转发）。
    * 关键：render() 每次都把 #ai 的 innerHTML 整个换掉，旧按钮随旧 DOM 一起销毁，
    * 所以必须在每次 render 之后重新绑一次——只绑一次的话，翻第二张按钮就失效了。
-   */
+   * 未配置掘金 Cookie 时自动退化为「复制文案」，按钮任何时候都有用。 */
   function bindAI() {
     var cp = $('#btnCopy');
     if (!cp) return;
     cp.onclick = function () {
       var p = PINS[S.order[S.pos]];
       if (!p) return;
-      /* 优先复制实时生成的点评，其次手写点评 */
+      /* 优先发实时生成的点评，其次手写点评 */
       var text = roastCache[p.id] || p.roast;
       if (!text) { toast(aiCfg ? '点评还在生成中…' : '这条还没配点评'); return; }
-      copyText(text).then(function () { toast('点评已复制，去评论区粘上'); });
+      var btn = this;
+      btn.disabled = true;
+      var oldHtml = btn.innerHTML;
+      btn.textContent = '评论中…';
+      fetch('/api/comment', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          pinId: p.id,
+          content: text,
+          cookie: localStorage.getItem(JJ_COOKIE_KEY) || '',
+        }),
+      })
+        .then(parseRoastRes)
+        .then(function (res) {
+          if (res.ok && res.d.ok) {
+            btn.textContent = '已评论 ✓';
+            toast('已评论到这条沸点 ✓');
+            return;
+          }
+          var msg = (res.d && res.d.error) || '评论失败';
+          /* 没配 Cookie：不报错，退化为复制文案 */
+          if (/未配置掘金 Cookie/.test(msg)) {
+            copyText(text).then(function () {
+              toast('未配置掘金 Cookie，已复制文案，去评论区粘贴即可');
+            });
+          } else {
+            toast('评论失败：' + msg);
+          }
+          btn.innerHTML = oldHtml;
+          btn.disabled = false;
+        })
+        .catch(function (e) {
+          toast('评论失败：' + ((e && e.message) || e));
+          btn.innerHTML = oldHtml;
+          btn.disabled = false;
+        });
     };
   }
 
@@ -658,6 +857,7 @@
         rebuild();
         render(true, 1);
         toast('已获取最新沸点 · ' + pins.length + ' 条');
+        startBatch(); // 新牌堆逐张补齐点评
       } else {
         shuffleDeck('没拉到新数据，先洗一遍手头的');
       }
@@ -742,17 +942,33 @@
       $('#aiCfgBase').value = aiCfg ? aiCfg.baseUrl : '';
       $('#aiCfgToken').value = aiCfg ? aiCfg.token : '';
       $('#aiCfgModel').value = aiCfg ? aiCfg.model : '';
+      $('#aiCfgCookie').value = localStorage.getItem(JJ_COOKIE_KEY) || '';
+      /* 探测服务端 .ai-config.json：已配 Key / Cookie 则提示「可留空」，并预填地址/模型 */
+      fetch('/api/roast/config').then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (c) {
+          if (!c) return;
+          $('#aiCfgSrvTag').hidden = !c.serverKey;
+          $('#aiCfgCookieTag').hidden = !c.jjCookie;
+          if (c.serverKey) {
+            if (!$('#aiCfgBase').value && c.baseUrl) $('#aiCfgBase').value = c.baseUrl;
+            if (!$('#aiCfgModel').value && c.model) $('#aiCfgModel').value = c.model;
+          }
+        })
+        .catch(function () {});
       cfgMask.hidden = false;
     }
     function closeCfg() { cfgMask.hidden = true; }
     function applyCfg(next) {
       aiCfg = next;
+      stopBatch(); // 换配置/清配置都先停掉进行中的批量
       if (next) localStorage.setItem(AI_CFG_KEY, JSON.stringify(next));
       else localStorage.removeItem(AI_CFG_KEY);
       /* 换接口/模型后旧缓存失效，清空并让当前卡重新生成 */
       roastCache = {};
+      roastFail = {};
       syncCfgBtn();
       render(false, 0);
+      startBatch();
     }
     var cb = $('#btnAiCfg');
     if (cb) cb.onclick = openCfg;
@@ -764,20 +980,25 @@
         token: $('#aiCfgToken').value.trim(),
         model: $('#aiCfgModel').value.trim(),
       };
+      /* 掘金 Cookie 独立保存：不参与「是否配置 AI 接口」的判断 */
+      var ck = $('#aiCfgCookie').value.trim();
+      if (ck) localStorage.setItem(JJ_COOKIE_KEY, ck);
+      else localStorage.removeItem(JJ_COOKIE_KEY);
       if (!next.baseUrl && !next.token && !next.model) {
         applyCfg(null);
         toast('未配置 AI 接口，使用内置点评');
-      } else if (!next.baseUrl || !next.token || !next.model) {
-        toast('接口地址、Key、模型要填就填全');
+      } else if (!next.baseUrl || !next.model) {
+        toast('接口地址和模型必填；Key 可留空（由服务端文件提供）');
         return;
       } else {
         applyCfg(next);
-        toast('已保存，翻牌时实时生成点评');
+        toast(next.token ? '已保存，翻牌时实时生成点评' : '已保存，Key 由服务端文件提供');
       }
       closeCfg();
     };
     $('#aiCfgClear').onclick = function () {
       applyCfg(null);
+      localStorage.removeItem(JJ_COOKIE_KEY);
       closeCfg();
       toast('已清除配置，回到内置点评');
     };
@@ -788,7 +1009,8 @@
         token: $('#aiCfgToken').value.trim(),
         model: $('#aiCfgModel').value.trim(),
       };
-      if (!cfg.baseUrl || !cfg.token || !cfg.model) { toast('先把三项填全再测试'); return; }
+      if (!cfg.baseUrl || !cfg.model) { toast('接口地址和模型必填'); return; }
+      if (!cfg.token) { toast('Key 为空，将使用服务端 .ai-config.json 里的'); }
       btn.disabled = true;
       btn.textContent = '测试中…';
       fetch('/api/roast', {
@@ -799,7 +1021,7 @@
           content: '今天又是周一，感觉人生无望。', topic: '测试',
         }),
       })
-        .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
+        .then(parseRoastRes)
         .then(function (res) {
           if (!res.ok || !res.d.roast) throw new Error((res.d && res.d.error) || 'AI 接口异常');
           toast('测试成功：' + res.d.roast.slice(0, 40));
@@ -833,10 +1055,12 @@
           localStorage.setItem(STYLE_KEY, id);
           /* 换风格后旧点评缓存全部失效，当前卡立即按新风格重新生成 */
           roastCache = {};
+          roastFail = {};
           buildStyleGrid();
           syncStyleBtn();
           render(false, 0);
           toast('已换成「' + currentStyle().name + '」');
+          startBatch(); // 新风格逐张补齐点评
         };
       }
     }
@@ -847,6 +1071,21 @@
     $('#styleClose').onclick = closeStyle;
     styleMask.addEventListener('click', function (e) { if (e.target === styleMask) closeStyle(); });
     syncStyleBtn();
+
+    /* 启动时探测服务端 .ai-config.json：浏览器完全没配过且服务端配全了，
+     * 就直接采用服务端配置——Key 全程不进浏览器（控制台/Network 都看不到）。 */
+    if (!aiCfg) {
+      fetch('/api/roast/config').then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (c) {
+          if (c && c.serverKey && c.baseUrl && c.model && !aiCfg) {
+            aiCfg = { baseUrl: c.baseUrl, token: '', model: c.model };
+            syncCfgBtn();
+            render(false, 0);
+            startBatch();
+          }
+        })
+        .catch(function () { /* 静态服务器无此路由，静默忽略 */ });
+    }
 
     var rt;
     window.addEventListener('resize', function () {
@@ -941,6 +1180,8 @@
      * 首屏没有「从上一张翻过来」的语义，静止呈现更稳，
      * 动画只留给真正的翻页动作（go() 里始终传 true）。 */
     render(false, 0);
+    /* 配了 AI 接口就顺带把整副牌未点评的都批量补齐 */
+    startBatch();
   }
 
   /* ---------------- 启动 ---------------- */

@@ -8,3 +8,6 @@ Thumbs.db
 output/
 data/align.txt
 data/_view.txt
+
+# 本地密钥配置（模板见 site/.ai-config.example.json）
+site/.ai-config.json

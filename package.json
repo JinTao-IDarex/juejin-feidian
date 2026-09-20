@@ -1,0 +1,9 @@
+{
+  "name": "juejin-boom",
+  "version": "1.0.0",
+  "private": true,
+  "description": "沸点抽卡 · 掘金沸点翻牌站（站点本体在 site/）",
+  "scripts": {
+    "dev": "node site/serve.mjs"
+  }
+}

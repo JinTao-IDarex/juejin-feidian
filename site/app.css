@@ -622,6 +622,12 @@ body.folded .fab{
   margin:0 0 14px;
   font:400 12px/1.7 var(--font-cn);color:#8A919C;
 }
+/* 「服务端已配置，可留空」小标记 */
+.srv-tag{
+  font:400 11px/1 var(--font-cn);font-style:normal;color:var(--blue);
+  background:var(--blue-light,#E8F2FF);border-radius:5px;padding:2px 6px;
+  margin-left:4px;vertical-align:1px;
+}
 .aicfg-field{display:block;margin-bottom:12px}
 .aicfg-field span{
   display:block;margin-bottom:5px;
@@ -654,12 +660,18 @@ body.folded .fab{
   display:inline-flex;align-items:center;gap:8px;
   color:#A8AEB8;font-size:13px;
 }
-.roast .ai-loading i{
+.roast .ai-loading i.dot{
   width:5px;height:5px;border-radius:99px;background:var(--blue);
   animation:aiDot 1s ease-in-out infinite;
 }
-.roast .ai-loading i:nth-child(2){animation-delay:.16s}
-.roast .ai-loading i:nth-child(3){animation-delay:.32s}
+.roast .ai-loading i.dot:nth-child(2){animation-delay:.16s}
+.roast .ai-loading i.dot:nth-child(3){animation-delay:.32s}
+/* 批量点评进度态的转圈图标（复用全局 spin 关键帧） */
+.roast .ai-loading i.spin{
+  width:14px;height:14px;border-radius:99px;flex:0 0 auto;
+  border:2px solid #E2E5E8;border-top-color:var(--blue);
+  animation:spin .8s linear infinite;
+}
 @keyframes aiDot{0%,100%{opacity:.25;transform:translateY(0)}50%{opacity:1;transform:translateY(-3px)}}
 /* 实时生成的点评：左侧留一道蓝条标记，和手写点评区分 */
 .roast .roast-live{

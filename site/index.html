@@ -132,19 +132,28 @@
       <button class="aicfg-x" id="aiCfgClose" aria-label="关闭">×</button>
     </div>
     <p class="aicfg-tip">填入任意 OpenAI 兼容接口（Kimi、DeepSeek、通义、OpenAI…），
-      翻牌时就会用它实时生成点评；留空则用内置点评。配置只存在本机浏览器里。</p>
+      翻牌时就会用它实时生成点评；留空则用内置点评。<br>
+      不想让 Key 出现在浏览器控制台？把它写进 site/.ai-config.json（只存本机），
+      这里的 API Key 留空即可。</p>
     <label class="aicfg-field">
       <span>接口地址</span>
       <input id="aiCfgBase" type="text" placeholder="https://api.openai.com/v1" autocomplete="off">
     </label>
     <label class="aicfg-field">
-      <span>API Key</span>
-      <input id="aiCfgToken" type="password" placeholder="sk-..." autocomplete="off">
+      <span>API Key <em class="srv-tag" id="aiCfgSrvTag" hidden>服务端已配置，可留空</em></span>
+      <input id="aiCfgToken" type="password" placeholder="sk-...（可留空，由服务端文件提供）" autocomplete="off">
     </label>
     <label class="aicfg-field">
       <span>模型</span>
       <input id="aiCfgModel" type="text" placeholder="gpt-4o-mini / kimi-k2 / deepseek-chat…" autocomplete="off">
     </label>
+    <label class="aicfg-field">
+      <span>掘金 Cookie <em class="srv-tag" id="aiCfgCookieTag" hidden>服务端已配置，可留空</em></span>
+      <input id="aiCfgCookie" type="password" placeholder="sessionid=...; （「一键评论」用，不评论可留空）" autocomplete="off">
+    </label>
+    <p class="aicfg-tip">「一键评论」需要掘金登录态：浏览器打开 juejin.cn 登录后，
+      F12 → Network 里任意请求的 Cookie 整段复制过来；
+      或写进 site/.ai-config.json 的 jjCookie 字段（只存本机）。</p>
     <div class="aicfg-ops">
       <button class="aicfg-btn plain" id="aiCfgClear">清除配置</button>
       <button class="aicfg-btn plain" id="aiCfgTest">测试一下</button>
