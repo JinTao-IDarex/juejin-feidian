@@ -405,6 +405,76 @@ async function handleApiComment(req, res) {
   }
 }
 
+/* ---------------- /api/comments 沸点评论列表代理 ----------------
+ * 读某条沸点下的一级评论，供右侧卡片栈逐条翻阅。
+ * 掘金接口：POST interact_api/v1/comment/list {item_id, item_type:4, cursor, limit}
+ * 实测（2026-09-20）免登录可读：err_no=0，data[] 里带 comment_info + user_info。
+ *
+ * ⚠️ 这是「一条沸点一次」的读请求。前端只在当前这张牌上按需拉（还带防抖），
+ * 不要改成整副牌预取——60 条沸点就是 60 次上游调用，那正是要避免的限流形态。
+ * 带 10 分钟内存缓存：同一张牌来回翻不会重复打上游。 */
+const JJ_CMT_API = 'https://api.juejin.cn/interact_api/v1/comment/list?aid=2608&spider=0';
+const CMT_TTL = 10 * 60 * 1000;
+const CMT_MAX = 200; // 缓存条数上限，防止长时间挂着无限增长
+const cmtCache = new Map(); // pinId -> { at, payload }
+
+function normalizeComment(c) {
+  const ci = (c && c.comment_info) || {};
+  const u = (c && c.user_info) || {};
+  const pics = (ci.comment_pics || [])
+    .map((x) => (x && (x.pic_url || x.url || x.src)) || '')
+    .filter(Boolean)
+    .slice(0, 4);
+  return {
+    id: String(ci.comment_id || (c && c.comment_id) || ''),
+    content: stripHtml(ci.comment_content || ''),
+    user: String(u.user_name || '掘友'),
+    avatar: String(u.avatar_large || u.avatar_url || ''),
+    digg: Number(ci.digg_count) || 0,
+    reply: Number(ci.reply_count) || 0,
+    ctime: Number(ci.ctime) || 0,
+    author: !!(c && c.is_author),
+    pics,
+  };
+}
+
+async function handleApiComments(res, pinId) {
+  const ok = (payload) => {
+    res.writeHead(200, { 'Content-Type': MIME['.json'], 'Cache-Control': 'no-cache' });
+    res.end(JSON.stringify(payload));
+  };
+  const fail = (code, msg) => {
+    res.writeHead(code, { 'Content-Type': MIME['.json'], 'Cache-Control': 'no-store' });
+    res.end(JSON.stringify({ comments: [], error: msg }));
+  };
+  if (!/^\d{6,}$/.test(pinId || '')) return fail(400, '缺少或非法的沸点 ID');
+  const hit = cmtCache.get(pinId);
+  if (hit && Date.now() - hit.at < CMT_TTL) return ok(hit.payload);
+  try {
+    const upstream = await fetch(JJ_CMT_API, {
+      method: 'POST',
+      headers: JJ_HEADERS,
+      body: JSON.stringify({ item_id: pinId, item_type: 4, cursor: '0', limit: 20 }),
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!upstream.ok) throw new Error('掘金接口 HTTP ' + upstream.status);
+    const data = await upstream.json().catch(() => ({}));
+    if (data.err_no !== 0) throw new Error(data.err_msg || ('err_no=' + data.err_no));
+    const comments = (data.data || []).map(normalizeComment).filter((c) => c.id);
+    const payload = {
+      comments,
+      total: Number(data.count) || comments.length,
+      hasMore: !!data.has_more,
+    };
+    if (cmtCache.size >= CMT_MAX) cmtCache.clear();
+    cmtCache.set(pinId, { at: Date.now(), payload });
+    ok(payload);
+  } catch (e) {
+    const isAbort = e && (e.name === 'AbortError' || e.name === 'TimeoutError');
+    fail(502, isAbort ? '掘金接口超时（15s）' : String((e && e.message) || e));
+  }
+}
+
 createServer(async (req, res) => {
   try {
     const u = new URL(req.url, 'http://x');
@@ -412,6 +482,7 @@ createServer(async (req, res) => {
     if (p === '/api/pins') { await handleApiPins(res, u.searchParams.get('fresh') === '1'); return; }
     if (p === '/api/roast' && req.method === 'POST') { await handleApiRoast(req, res); return; }
     if (p === '/api/comment' && req.method === 'POST') { await handleApiComment(req, res); return; }
+    if (p === '/api/comments') { await handleApiComments(res, u.searchParams.get('pinId') || ''); return; }
     /* 供页面判断服务端是否已配 Key / Cookie（只回非敏感字段，绝不回 token 本体） */
     if (p === '/api/roast/config') {
       const c = (await serverAiCfg()) || {};

@@ -109,6 +109,13 @@
   var outTimer;
   /* AI 卡翻转动画中点换内容的定时器（见 render()） */
   var aiSwapTimer;
+  /* 右侧卡片栈（AI 点评 + 掘金评论）的状态 —— 见文件下半部分的「右侧卡片栈」章节 */
+  var aiIdx = 0;          // 当前显示第几张（0 = AI 点评，1.. = 评论）
+  var aiFlipUntil = 0;    // 翻牌动画窗口的结束时间戳，窗口内不要动 #ai 的内容
+  var aiLateTimer = 0;    // 被动画挡住时的延后重绘定时器
+  var cmtCache = {};      // pinId -> { list, hasMore, err }
+  var cmtLoading = {};    // pinId -> true（请求在途）
+  var cmtTimer = 0;       // 连翻时的防抖定时器
   /* 批量生成进度：非空表示「正有一批点评在跑」，值为 {id,total,start}。
    * null 表示空闲。点评只有「批量」这一条生成路径，见 startBatch()。 */
   var batchCtl = null;
@@ -341,6 +348,20 @@
     '<path d="M2.7 7.3L7.3 2.7M3.9 2.7h3.4v3.4" stroke="currentColor" stroke-width="1.4" ' +
     'stroke-linecap="round" stroke-linejoin="round"/></svg>';
 
+  /* 右侧卡片栈用的小图标：评论气泡（徽标）/ 上一条 / 下一条。
+   * 气泡走 currentColor —— 评论徽标是浅底深字，白色 path 会看不见。 */
+  var ICON_CHAT = '<svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true">' +
+    '<path d="M1.3 4.3c0-1.8 1.7-3.3 3.7-3.3s3.7 1.5 3.7 3.3S7 7.6 5 7.6c-.4 0-.8 0-1.2-.1' +
+    'l-2.1 1.2.4-1.6C1.6 6.5 1.3 5.5 1.3 4.3z" fill="currentColor"/></svg>';
+
+  var ICON_UP = '<svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true">' +
+    '<path d="M2.2 6.2L5 3.4l2.8 2.8" stroke="currentColor" stroke-width="1.5" ' +
+    'stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
+  var ICON_DOWN = '<svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true">' +
+    '<path d="M2.2 3.8L5 6.6l2.8-2.8" stroke="currentColor" stroke-width="1.5" ' +
+    'stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
   /* ---------------- 邻卡 ----------------
    * 设计稿里邻卡只有「标签 + 标题 + 正文」三块，按 272 宽排版。
    * 形状与主卡不同：这里不拆导语档，统一走「标题 + 正文」，
@@ -421,24 +442,310 @@
       close;
   }
 
-  /* ---------------- AI 点评卡 ----------------
-   * 外壳 <aside class="ai"> 写在 index.html 里（它在卡片容器之外、单独定位），
+  /* ================================================================
+   * 右侧卡片栈（AI 点评 + 掘金评论）
+   * ----------------------------------------------------------------
+   * 第 1 张永远是这条沸点的 AI 点评，后面接掘金评论区的一级评论，
+   * 每条评论独占一张卡，↑↓（或键盘 ↑↓）上下翻着看。
+   *
+   * 实现要点：钉住的头 + 裁切窗口 + 钉住的底，窗口里是一条整体上下平移的轨道。
+   * 切换只改轨道的 transform —— 不重建 DOM，所以连点不会错位、
+   * 评论正文的滚动位置也不会被重置。页码/按钮在钉住的那一圈里，动画期间照样能点。
+   *
+   * 外壳 <aside class="ai"> 写在 index.html 里（在卡片容器之外、单独定位），
    * 这里只返回卡内内容。注意别再套一层 .ai——套了会嵌套两层 absolute 直接被推出卡外。
-   */
-  function aiCard(p) {
+   *
+   * 评论是「一条沸点一次」的读请求，只在当前这张牌上按需拉，且带 450ms 防抖
+   * + 10 分钟服务端缓存。绝不整副牌预取，见 ensureComments()。
+   * ================================================================ */
+
+  /* 这条沸点右侧一共几张卡：AI 点评 +（拉取中 / 零条 / 失败 / 每条评论 / 还有更多） */
+  function aiList(p) {
+    var out = [{ kind: 'ai', pin: p }];
+    var c = cmtCache[p.id];
+    if (!c) { out.push({ kind: 'note', mode: 'loading' }); return out; }
+    if (c.err) { out.push({ kind: 'note', mode: 'error' }); return out; }
+    if (!c.list.length) { out.push({ kind: 'note', mode: 'empty' }); return out; }
+    for (var i = 0; i < c.list.length; i++) out.push({ kind: 'cmt', c: c.list[i] });
+    if (c.hasMore) out.push({ kind: 'note', mode: 'more' });
+    return out;
+  }
+
+  /* AI 点评的正文（三种状态：已生成 / 批量进行中 / 内置占位） */
+  function roastBodyHTML(p) {
     var r = roastFor(p);
-    var body = r.loading
-      ? (batchCtl
+    if (r.loading) {
+      return batchCtl
         ? '<span class="ai-loading"><i class="spin"></i>AI 正在一次性点评 ' +
           batchCtl.total + ' 条 · 已等 ' +
           Math.round((Date.now() - batchCtl.start) / 1000) + 's</span>'
-        : '<span class="ai-loading"><i class="dot"></i><i class="dot"></i><i class="dot"></i>AI 正在看这条沸点…</span>')
-      : '<span' + (r.live ? ' class="roast-live"' : '') + '>' + esc(r.text) + '</span>';
+        : '<span class="ai-loading"><i class="dot"></i><i class="dot"></i><i class="dot"></i>AI 正在看这条沸点…</span>';
+    }
+    return '<span' + (r.live ? ' class="roast-live"' : '') + '>' + esc(r.text) + '</span>';
+  }
+
+  function cmtAvatar(c) {
+    return c.avatar
+      ? '<img src="' + esc(c.avatar) + '" alt="" loading="lazy" referrerpolicy="no-referrer">'
+      : ICON_USER;
+  }
+
+  /* 每张卡绝对定位占满窗口，靠自身 translateY(k*100%) 排到第 k 格；
+   * 轨道整体上移 k*100% 时第 k 张正好落进窗口。 */
+  function aiSlideHTML(s, k) {
+    var off = ' style="transform:translateY(' + (k * 100) + '%)"';
+    if (s.kind === 'ai') {
+      return '<div class="ai-slide" data-k="ai"' + off + '>' +
+        '<div class="roast">' + roastBodyHTML(s.pin) + '</div>' +
+        '</div>';
+    }
+    if (s.kind === 'cmt') {
+      var c = s.c;
+      return '<div class="ai-slide cmt"' + off + '>' +
+        '<div class="cmt-head">' +
+          '<span class="cmt-av">' + cmtAvatar(c) + '</span>' +
+          '<span class="cmt-name">' + esc(c.user) + '</span>' +
+          (c.author ? '<span class="cmt-author">作者</span>' : '') +
+        '</div>' +
+        '<div class="cmt-body">' + (c.content ? esc(c.content) : '（图片评论）') + '</div>' +
+        '<div class="cmt-meta">' + c.digg + ' 赞 · ' + c.reply + ' 回复 · ' +
+          esc(fmtTime(c.ctime)) + '</div>' +
+        '</div>';
+    }
+    var msg = s.mode === 'error' ? '评论没拉到'
+      : s.mode === 'empty' ? '这条沸点还没人评论'
+      : s.mode === 'more' ? '还有更多评论'
+      : '正在拉评论…';
+    var sub = s.mode === 'error' ? '多半是网络或接口抖了一下，点下面重试'
+      : s.mode === 'empty' ? '你是第一个说话的人'
+      : s.mode === 'more' ? '去原文翻完整评论区'
+      : '掘金评论区';
+    return '<div class="ai-slide note"' + off + '>' +
+      '<div class="note-box">' +
+        (s.mode === 'loading'
+          ? '<span class="ai-loading"><i class="dot"></i><i class="dot"></i><i class="dot"></i>' + msg + '</span>'
+          : '<b>' + msg + '</b><span>' + sub + '</span>') +
+      '</div>' +
+      '</div>';
+  }
+
+  /* 钉住不动的那一圈：徽标 / 页码 / 上下按钮 / 动作按钮 / 说明。
+   * 只有这里随当前卡片更新，轨道本身不重建。 */
+  function aiSyncChrome(p, list) {
+    var s = list[aiIdx] || list[0];
+    var isAI = s.kind === 'ai';
+    var badge = $('#aiBadge'), num = $('#aiNum'), up = $('#aiUp'), dn = $('#aiDn');
+    var cp = $('#btnCopy'), note = $('#aiNote');
+    if (badge) {
+      badge.className = 'badge' + (isAI ? '' : ' people');
+      badge.innerHTML = isAI
+        ? ICON_BOLT + (aiCfg ? 'AI 点评' : '内置点评')
+        : ICON_CHAT + '评论';
+    }
+    if (num) num.textContent = (aiIdx + 1) + ' / ' + list.length;
+    if (up) up.disabled = aiIdx <= 0;
+    if (dn) dn.disabled = aiIdx >= list.length - 1;
+    var n = 0;
+    for (var i = 1; i < list.length; i++) if (list[i].kind === 'cmt') n++;
+    if (cp) {
+      /* 每张卡都恰好有一个动作 —— 底栏高度恒定，切换时不会跳 */
+      if (isAI) { cp.innerHTML = ICON_COPY + '一键评论'; cp.disabled = false; }
+      else if (s.kind === 'cmt') { cp.innerHTML = ICON_COPY + '复制这条'; cp.disabled = false; }
+      else if (s.mode === 'error') { cp.textContent = '重试'; cp.disabled = false; }
+      else if (s.mode === 'empty') { cp.textContent = '去原文评论'; cp.disabled = false; }
+      else if (s.mode === 'more') { cp.textContent = '去原文看全部'; cp.disabled = false; }
+      else { cp.textContent = '正在拉评论…'; cp.disabled = true; }
+    }
+    if (note) {
+      note.textContent = isAI ? '毒的是现象，不是你。'
+        : s.mode === 'loading' ? '掘金评论区 · 拉取中'
+        : n ? '掘金评论区 · 共 ' + n + ' 条'
+        : '掘金评论区';
+    }
+  }
+
+  /* 只动轨道。animate=false 用于「重建 DOM 之后把位置摆正」——
+   * 不先掐掉过渡的话，插入后第一次设 transform 会演一段没人要的动画。 */
+  function aiApply(i, animate) {
+    var track = $('#aiTrack');
+    if (!track) return;
+    var y = 'translateY(-' + (i * 100) + '%)';
+    if (animate) { track.style.transform = y; return; }
+    track.style.transition = 'none';
+    track.style.transform = y;
+    void track.offsetWidth;   // 让「无过渡 + 新位置」这一帧落地
+    track.style.transition = '';
+  }
+
+  function aiSet(i, animate) {
+    var p = PINS[S.order[S.pos]];
+    if (!p) return;
+    var list = aiList(p);
+    aiIdx = Math.max(0, Math.min(list.length - 1, i));
+    aiApply(aiIdx, animate === true);
+    aiSyncChrome(p, list);
+    /* 轻量动效档没有位移，补一次 130ms 淡入，别让切换变成无感知的瞬变 */
+    if (animate === true && document.documentElement.classList.contains('motion-lite')) {
+      var v = $('#aiView');
+      if (v) { v.classList.remove('fade'); void v.offsetWidth; v.classList.add('fade'); }
+    }
+  }
+
+  function aiStep(d) { aiSet(aiIdx + d, true); }
+
+  function aiHTML() {
+    var p = PINS[S.order[S.pos]];
+    var list = aiList(p);
+    aiIdx = Math.max(0, Math.min(list.length - 1, aiIdx));
+    var slides = '';
+    for (var i = 0; i < list.length; i++) slides += aiSlideHTML(list[i], i);
     return '' +
-      '<span class="badge">' + ICON_BOLT + 'AI 点评</span>' +
-      '<div class="roast">' + body + '</div>' +
-      '<button class="copy" id="btnCopy">' + ICON_COPY + '一键评论</button>' +
-      '<div class="note">毒的是现象，不是你。</div>';
+      '<div class="ai-top">' +
+        '<span class="badge" id="aiBadge"></span>' +
+        '<div class="pager">' +
+          '<button class="pbtn" id="aiUp" type="button" aria-label="上一条">' + ICON_UP + '</button>' +
+          '<span class="pnum" id="aiNum"></span>' +
+          '<button class="pbtn" id="aiDn" type="button" aria-label="下一条">' + ICON_DOWN + '</button>' +
+        '</div>' +
+      '</div>' +
+      '<div class="ai-view" id="aiView">' +
+        '<div class="ai-track" id="aiTrack" style="transform:translateY(-' + (aiIdx * 100) + '%)">' +
+          slides +
+        '</div>' +
+      '</div>' +
+      '<div class="ai-foot">' +
+        '<button class="copy" id="btnCopy" type="button"></button>' +
+        '<div class="note" id="aiNote"></div>' +
+      '</div>';
+  }
+
+  /* 无条件重绘整块面板。调用方自己保证时机（翻牌动画中点那一下就走这里）。 */
+  function paintAI() {
+    var ai = $('#ai');
+    var p = PINS[S.order[S.pos]];
+    if (!ai || !p) return;
+    ai.innerHTML = aiHTML();
+    bindAI();
+    aiSet(aiIdx, false);
+    ensureComments(p);
+  }
+
+  /* 带时机守卫的入口：翻牌动画还在播（rotateY 立边窗口）时不换内容，
+   * 延后到动画结束再画 —— 否则会看到「卡片转到一半内容变了」。 */
+  function renderAI() {
+    if (Date.now() < aiFlipUntil) {
+      clearTimeout(aiLateTimer);
+      aiLateTimer = setTimeout(renderAI, Math.max(60, aiFlipUntil - Date.now() + 40));
+      return;
+    }
+    paintAI();
+  }
+
+  /* ---------------- 评论拉取 ----------------
+   * 一条沸点一次读请求，所以必须防抖：连翻十张不该变成十次上游调用。
+   * 停手 600ms 后才拉当前这张，且已经翻走就直接放弃这次。
+   * 600ms 是实测过的平衡点：连点（间隔 <600ms）一次都不会发，
+   * 而单次翻牌停下后约 1s 内评论就位，不至于让人盯着「正在拉评论…」等。
+   * 再叠加两层缓存（本地按 pinId、服务端 10 分钟），同一张牌一辈子只打一次。 */
+  function ensureComments(p) {
+    if (!p || !p.id || cmtLoading[p.id]) return;
+    var hit = cmtCache[p.id];
+    if (hit && !hit.err) return;   // 已有结果（哪怕是「零条评论」）就不再打
+    clearTimeout(cmtTimer);
+    cmtTimer = setTimeout(function () {
+      var cur = PINS[S.order[S.pos]];
+      if (!cur || cur.id !== p.id) return;   // 已经翻走了，不浪费这次请求
+      fetchComments(cur);
+    }, 600);
+  }
+
+  function fetchComments(p) {
+    if (cmtLoading[p.id]) return;
+    cmtLoading[p.id] = true;
+    fetch('api/comments?pinId=' + encodeURIComponent(p.id))
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        cmtCache[p.id] = {
+          list: (d && d.comments) || [],
+          hasMore: !!(d && d.hasMore),
+          err: (d && d.error) || '',
+        };
+      })
+      .catch(function (e) {
+        /* 失败不静默：留一条 error 卡，底栏给「重试」 */
+        cmtCache[p.id] = { list: [], hasMore: false, err: String((e && e.message) || e) };
+      })
+      .then(function () {
+        cmtLoading[p.id] = false;
+        var cur = PINS[S.order[S.pos]];
+        if (cur && cur.id === p.id) renderAI();   // 只刷新当前这一张
+      });
+  }
+
+  /* 底栏那一个动作按钮干啥，按当前这张卡决定 */
+  function onAiAction() {
+    var p = PINS[S.order[S.pos]];
+    if (!p) return;
+    var s = aiList(p)[aiIdx];
+    if (!s) return;
+    if (s.kind === 'ai') { postRoastComment(p); return; }
+    if (s.kind === 'cmt') {
+      copyText(s.c.content).then(function () { toast('已复制这条评论'); });
+      return;
+    }
+    if (s.mode === 'error') {
+      delete cmtCache[p.id];          // 清掉负缓存，重试一次
+      toast('重新拉取评论…');
+      fetchComments(p);
+      return;
+    }
+    if (p.url) window.open(p.url, '_blank', 'noopener');
+  }
+
+  /* 「一键评论」：把当前点评直接发到这条沸点的评论区（经 /api/comment 转发）。
+   * 未配置掘金 Cookie 时自动退化为「复制文案」，按钮任何时候都有用。
+   * 按钮是常驻元素（只有 paintAI() 重建面板时才换），所以这里不用重新绑定。 */
+  function postRoastComment(p) {
+    var btn = $('#btnCopy');
+    if (!btn) return;
+    /* 优先发实时生成的点评，其次手写点评 */
+    var text = roastCache[p.id] || p.roast;
+    if (!text) { toast(aiCfg ? '点评还在生成中…' : '这条还没配点评'); return; }
+    btn.disabled = true;
+    btn.textContent = '评论中…';
+    var restore = function () { aiSet(aiIdx, false); };
+    fetch('/api/comment', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        pinId: p.id,
+        content: text,
+        cookie: localStorage.getItem(JJ_COOKIE_KEY) || '',
+      }),
+    })
+      .then(parseRoastRes)
+      .then(function (res) {
+        if (res.ok && res.d.ok) {
+          btn.textContent = '已评论 ✓';
+          toast('已评论到这条沸点 ✓');
+          return;                      // 停在成功态，下次切换卡片时自动复位
+        }
+        var msg = (res.d && res.d.error) || '评论失败';
+        /* 没配 Cookie：不报错，退化为复制文案 */
+        if (/未配置掘金 Cookie/.test(msg)) {
+          restore();
+          copyText(text).then(function () {
+            toast('未配置掘金 Cookie，已复制文案，去评论区粘贴即可');
+          });
+        } else {
+          restore();
+          toast('评论失败：' + msg);
+        }
+      })
+      .catch(function (e) {
+        restore();
+        toast('评论失败：' + ((e && e.message) || e));
+      });
   }
 
   /* 当前这条该显示什么点评。配了 AI 接口时三层判定：
@@ -495,14 +802,16 @@
    * 既慢又正好踩在服务商的「短时间请求数」限流上。
    * 现在批量失败就如实失败：提示用户，重试入口是「洗牌」（会重新批量）。 */
 
-  /* 就地刷新 AI 卡内容（进度变化 / 当前卡点评已生成时）。
-   * 翻转动画播放期间不动内容：中点换内容由 render 的 aiSwapTimer 负责。 */
+  /* 就地刷新「AI 点评」那一张的正文（批量进度变化 / 点评已生成时）。
+   * 只动第 1 张的 .roast，【不重建整块面板】—— 重建会把用户正在读的
+   * 评论正文滚动位置一起重置，而批量每秒 tick 一次，那样就全乱了。 */
   function refreshAiCard() {
     var p = PINS[S.order[S.pos]];
     var ai = $('#ai');
-    if (!p || !ai || ai.classList.contains('anim-in')) return;
-    ai.innerHTML = aiCard(p);
-    bindAI();
+    if (!p || !ai || Date.now() < aiFlipUntil) return;
+    var box = ai.querySelector('.ai-slide[data-k="ai"] .roast');
+    if (!box) return;                       // 面板还没建起来
+    box.innerHTML = roastBodyHTML(p);
   }
 
   function stopBatch() {
@@ -639,21 +948,26 @@
        * 必须先摘掉类、强制 reflow、再加回，才能让动画每次都重新起跑。 */
       ai.classList.remove('anim-in');
       clearTimeout(aiSwapTimer);
+      clearTimeout(aiLateTimer);
+      /* 换牌了：右侧卡片栈回到第 1 张（AI 点评） */
+      aiIdx = 0;
       if (anim) {
         void ai.offsetWidth;
         ai.classList.add('anim-in');
         /* 翻转动画在 50%（60ms 延迟 + 480ms×50% ≈ 300ms）处处于立边不可见，
          * 此刻换掉卡内内容，人眼看到的是「翻过去旧点评、翻过来新点评」。
          * lite 档（手选轻量，或 system 档命中 reduce）下动画被降级成
-         * 130ms 淡入，没有「立边不可见」的窗口，必须立刻换内容。 */
+         * 130ms 淡入，没有「立边不可见」的窗口，必须立刻换内容。
+         *
+         * aiFlipUntil 是给别的调用方（评论到了要重绘）用的时机闸：
+         * 动画没播完之前不许动 #ai，只有下面这个中点回调例外。 */
         var reduced = document.documentElement.classList.contains('motion-lite');
-        aiSwapTimer = setTimeout(function () {
-          ai.innerHTML = aiCard(p);
-          bindAI();
-        }, reduced ? 0 : 300);
+        var delay = reduced ? 0 : 300;
+        aiFlipUntil = Date.now() + delay + 240;
+        aiSwapTimer = setTimeout(paintAI, delay);
       } else {
-        ai.innerHTML = aiCard(p);
-        bindAI();
+        aiFlipUntil = 0;
+        paintAI();
       }
     }
 
@@ -696,57 +1010,15 @@
     }
   }
 
-  /* 「一键评论」：把当前点评直接发到这条沸点的评论区（经 /api/comment 转发）。
-   * 关键：render() 每次都把 #ai 的 innerHTML 整个换掉，旧按钮随旧 DOM 一起销毁，
-   * 所以必须在每次 render 之后重新绑一次——只绑一次的话，翻第二张按钮就失效了。
-   * 未配置掘金 Cookie 时自动退化为「复制文案」，按钮任何时候都有用。 */
+  /* 右侧卡片栈的绑定。
+   * 上下按钮与底栏按钮都是「钉住」的常驻元素（只有 paintAI() 重建面板时才换），
+   * 但面板每次重建都会换掉 DOM，所以仍然要在 paintAI() 之后重新绑一次。
+   * 动作本身按「当前这张卡」分派 —— 见 onAiAction()。 */
   function bindAI() {
-    var cp = $('#btnCopy');
-    if (!cp) return;
-    cp.onclick = function () {
-      var p = PINS[S.order[S.pos]];
-      if (!p) return;
-      /* 优先发实时生成的点评，其次手写点评 */
-      var text = roastCache[p.id] || p.roast;
-      if (!text) { toast(aiCfg ? '点评还在生成中…' : '这条还没配点评'); return; }
-      var btn = this;
-      btn.disabled = true;
-      var oldHtml = btn.innerHTML;
-      btn.textContent = '评论中…';
-      fetch('/api/comment', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          pinId: p.id,
-          content: text,
-          cookie: localStorage.getItem(JJ_COOKIE_KEY) || '',
-        }),
-      })
-        .then(parseRoastRes)
-        .then(function (res) {
-          if (res.ok && res.d.ok) {
-            btn.textContent = '已评论 ✓';
-            toast('已评论到这条沸点 ✓');
-            return;
-          }
-          var msg = (res.d && res.d.error) || '评论失败';
-          /* 没配 Cookie：不报错，退化为复制文案 */
-          if (/未配置掘金 Cookie/.test(msg)) {
-            copyText(text).then(function () {
-              toast('未配置掘金 Cookie，已复制文案，去评论区粘贴即可');
-            });
-          } else {
-            toast('评论失败：' + msg);
-          }
-          btn.innerHTML = oldHtml;
-          btn.disabled = false;
-        })
-        .catch(function (e) {
-          toast('评论失败：' + ((e && e.message) || e));
-          btn.innerHTML = oldHtml;
-          btn.disabled = false;
-        });
-    };
+    var up = $('#aiUp'), dn = $('#aiDn'), cp = $('#btnCopy');
+    if (up) up.onclick = function () { aiStep(-1); };
+    if (dn) dn.onclick = function () { aiStep(1); };
+    if (cp) cp.onclick = onAiAction;
   }
 
   function updateHud() {
@@ -1138,6 +1410,9 @@
 
       if (e.key === 'ArrowRight' || e.key === ' ') { e.preventDefault(); go(1); }
       else if (e.key === 'ArrowLeft') { e.preventDefault(); go(-1); }
+      /* ↑↓ 翻右侧卡片栈（AI 点评 / 评论）。必须 preventDefault，否则会滚动页面 */
+      else if (e.key === 'ArrowUp') { e.preventDefault(); aiStep(-1); }
+      else if (e.key === 'ArrowDown') { e.preventDefault(); aiStep(1); }
       else if (e.key === 'l' || e.key === 'L') toggleLike();
       else if (e.key === 'c' || e.key === 'C') {
         var p = PINS[S.order[S.pos]];

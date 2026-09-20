@@ -385,6 +385,94 @@ a.main:hover .go{color:var(--blue);background:var(--blue-mid);border-color:#BFDB
   font:400 11.5px/1.5 var(--font-sans);color:#A8AEB8;
 }
 
+/* ---- 右侧卡片栈：一叠卡上下翻（第 1 张 AI 点评，后面每条评论一张） ----
+ * 结构 = 钉住的头 + 裁切窗口 + 钉住的底：
+ *   .ai-top  徽标 / 页码 / 上下按钮
+ *   .ai-view 裁剪窗口（overflow:hidden）
+ *     .ai-track 整体上下平移的那条轨道
+ *       .ai-slide × N 每张绝对定位占满窗口，自身 translateY(k*100%) 排到第 k 格
+ *   .ai-foot 动作按钮 + 说明
+ * 只动轨道的 transform，不重建 DOM —— 所以连点不会错位，
+ * 评论正文的滚动位置也不会被重置。
+ *
+ * 注意别用 @media 驱动降级：档位由 app.js 决定，CSS 只认 html 上的类名。 */
+.ai .ai-top{display:flex;align-items:center;gap:8px;flex:0 0 auto}
+.ai .pager{margin-left:auto;display:inline-flex;align-items:center;gap:4px}
+.ai .pbtn{
+  width:24px;height:24px;border-radius:99px;
+  display:grid;place-items:center;
+  color:#8A9099;background:#F4F6F9;
+  transition:background .16s,color .16s;
+}
+.ai .pbtn:hover{background:var(--blue-mid);color:var(--blue)}
+.ai .pbtn[disabled]{opacity:.35;pointer-events:none}
+.ai .pnum{
+  min-width:32px;text-align:center;
+  font:500 11px/1 var(--font-sans);color:#A8AEB8;
+  font-variant-numeric:tabular-nums;
+}
+/* 评论用浅底深字的徽标，跟蓝色的「AI 点评」区分开 */
+.ai .badge.people{background:#F2F3F5;color:#5C636D}
+
+.ai .ai-view{flex:1;min-height:0;position:relative;overflow:hidden}
+.ai .ai-track{
+  position:absolute;inset:0;
+  transition:transform .42s cubic-bezier(.22,1,.36,1);
+  will-change:transform;
+}
+.ai .ai-slide{
+  position:absolute;inset:0;
+  display:flex;flex-direction:column;gap:10px;
+  overflow:hidden;
+}
+
+/* 评论卡：作者 → 正文（可滚） → 数据 */
+.ai .cmt-head{display:flex;align-items:center;gap:7px;flex:0 0 auto}
+.ai .cmt-av{
+  width:20px;height:20px;border-radius:99px;background:#D6DBE1;
+  overflow:hidden;display:grid;place-items:center;flex:0 0 auto;
+}
+.ai .cmt-av img{width:100%;height:100%;object-fit:cover}
+.ai .cmt-name{
+  font:600 12px/1 var(--font-sans);color:#33383F;
+  max-width:104px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+}
+.ai .cmt-author{
+  flex:0 0 auto;height:16px;padding:0 5px;border-radius:4px;
+  background:var(--blue-mid);
+  font:600 10px/16px var(--font-sans);color:var(--blue);
+}
+.ai .cmt-body{
+  width:228px;padding-right:4px;
+  flex:1;min-height:0;overflow:auto;
+  font:400 13px/1.8 var(--font-cn);color:#33383F;
+  white-space:pre-line;word-break:break-word;
+}
+.ai .cmt-body::-webkit-scrollbar{width:4px}
+.ai .cmt-body::-webkit-scrollbar-thumb{background:#E2E5E8;border-radius:9px}
+.ai .cmt-meta{
+  flex:0 0 auto;
+  font:400 11px/1 var(--font-sans);color:#A8AEB8;
+  font-variant-numeric:tabular-nums;
+}
+
+/* 占位卡：拉取中 / 一条都没有 / 没拉到 / 还有更多 */
+.ai .note-box{
+  flex:1;min-height:0;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;
+  text-align:center;
+  font:400 12.5px/1.7 var(--font-cn);color:#A8AEB8;
+}
+.ai .note-box b{font:600 13px/1.6 var(--font-cn);color:#5C636D}
+.ai .note-box span{font-size:11.5px;color:#B4B9C1}
+
+.ai .ai-foot{flex:0 0 auto;display:flex;flex-direction:column;gap:12px}
+.ai .copy[disabled]{opacity:.55;pointer-events:none}
+
+/* 轻量动效档：卡片栈没有位移，用一次 130ms 淡入代替「换了一张」的感知 */
+html.motion-lite .ai .ai-track{transition:none}
+html.motion-lite .ai .ai-view.fade{animation:softFadeIn 130ms ease both}
+
 /* ================================================================
  * 进度条  1440x86 @ (0,862)  — 纯白
  * ================================================================ */
