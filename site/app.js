@@ -25,15 +25,60 @@
 
   var LKEY = 'juejin-gacha-glass';
 
-  var S = { order: [], pos: 0, liked: {}, seen: {}, muted: true };
+  var S = { order: [], pos: 0, liked: {}, seen: {}, muted: true, motion: 'full' };
 
-  /* 预览覆写：?motion=full 时忽略系统的「减少动态效果」设置。
-   * 用途：作者预览/调试动画——有的预览环境（或系统级开了减动效的机器）
-   * 会让 prefers-reduced-motion 命中，整站只剩 130ms 淡入，看不出动效。
-   * 默认（不带参数）仍完整尊重 prefers-reduced-motion。 */
-  if (/[?&]motion=full\b/.test(location.search)) {
-    document.documentElement.classList.add('motion-full');
+  /* ---------------- 动效档 ----------------
+   * 三档，持久化在 localStorage（S.motion）：
+   *   'full'   完整    ：翻牌滑动 / 焦点吸入 / 离场层交叉淡化 / AI 卡翻转（默认档）
+   *   'lite'   轻量    ：去掉位移、缩放、blur，只留 130ms 纯淡入（见 app.css）
+   *   'system' 跟随系统：读 prefers-reduced-motion，命中 reduce 时按 lite 走
+   *
+   * 为什么默认是 full 而不是跟随系统：本站的观感主要就靠这套翻牌动效，
+   * 不该因为预览环境/系统设置被静悄悄降级成「看起来没动画」。需要减少
+   * 动效的用户可在底部 HUD 的「动效」钮一键切到轻量或跟随系统，选择会记住。
+   *
+   * CSS 侧只认 html.motion-lite / html.motion-full 两个类，媒体查询由这里解析——
+   * 单一真相，避免 CSS 里再散落 @media(prefers-reduced-motion)。
+   * URL 覆写（临时预览用，不落盘）：?motion=full|lite|system */
+  var MOTION_MODES = ['full', 'lite', 'system'];
+  var MOTION_LABEL = { full: '完整', lite: '轻量', system: '跟随系统' };
+  var motionQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
+  var urlMotion = (function () {
+    var m = /[?&]motion=([a-z]+)/.exec(location.search);
+    return m && MOTION_MODES.indexOf(m[1]) >= 0 ? m[1] : null;
+  })();
+
+  function resolveMotion() {
+    var mode = MOTION_MODES.indexOf(S.motion) >= 0 ? S.motion : 'full';
+    var lite = mode === 'lite' || (mode === 'system' && motionQuery.matches);
+    var root = document.documentElement;
+    root.classList.toggle('motion-lite', lite);
+    root.classList.toggle('motion-full', !lite);
+    var btn = $('#btnMotion');
+    if (btn) {
+      btn.setAttribute('aria-pressed', lite ? 'false' : 'true');
+      btn.setAttribute('aria-label', '动效：' + MOTION_LABEL[mode] + (lite ? '（已降级）' : ''));
+      btn.title = '动效：' + MOTION_LABEL[mode] + ' —— 点击切换';
+    }
+    var lab = $('#motionLabel');
+    if (lab) lab.textContent = '动效 · ' + MOTION_LABEL[mode];
   }
+
+  /* 点一下循环切换 完整 → 轻量 → 跟随系统 → 完整。
+   * 显式选择后 URL 覆写作废，并把选择落盘。 */
+  function cycleMotion() {
+    var i = MOTION_MODES.indexOf(S.motion);
+    S.motion = MOTION_MODES[(i + 1) % MOTION_MODES.length];
+    urlMotion = null;
+    saveLocal();
+    resolveMotion();
+    toast('动效：' + MOTION_LABEL[S.motion] +
+      (S.motion === 'lite' ? '（只保留淡入）' : S.motion === 'system' ? '（随系统设置）' : ''));
+  }
+
+  /* 'system' 档下系统设置变化要实时跟随 */
+  if (motionQuery.addEventListener) motionQuery.addEventListener('change', resolveMotion);
+  else if (motionQuery.addListener) motionQuery.addListener(resolveMotion);
 
   /* ---------------- 本地进度 ---------------- */
   function loadLocal() {
@@ -46,11 +91,15 @@
       /* 默认静音：只有用户显式按过 M 取消静音（存了 false）才开声音 */
       S.muted = v.muted !== false;
       setMuted(S.muted);
+      /* 动效档：没存过就保持默认 'full'（不跟随系统） */
+      if (MOTION_MODES.indexOf(v.motion) >= 0) S.motion = v.motion;
     } catch (e) { /* 隐私模式 / 数据损坏：静默降级 */ }
   }
   function saveLocal() {
     try {
-      localStorage.setItem(LKEY, JSON.stringify({ liked: S.liked, seen: S.seen, muted: S.muted }));
+      localStorage.setItem(LKEY, JSON.stringify({
+        liked: S.liked, seen: S.seen, muted: S.muted, motion: S.motion,
+      }));
     } catch (e) { /* 配额满：不影响抽卡 */ }
   }
 
@@ -60,11 +109,8 @@
   var outTimer;
   /* AI 卡翻转动画中点换内容的定时器（见 render()） */
   var aiSwapTimer;
-  /* 实时点评的出发防抖：翻牌后 700ms 内再次翻牌则取消上一个待发请求，
-   * 只有「落定」的牌才真正打 AI 接口——快速翻牌不会给厂商堆并发（见 render()） */
-  var roastKickTimer;
-  /* 批量生成进度：批量请求中为 {id,total,start}；兜底串行时多 done/serial。
-   * null 表示空闲。存在期间单条 maybeRoast 不再发请求，由批量统一驱动。 */
+  /* 批量生成进度：非空表示「正有一批点评在跑」，值为 {id,total,start}。
+   * null 表示空闲。点评只有「批量」这一条生成路径，见 startBatch()。 */
   var batchCtl = null;
   var batchSeq = 0;
   var batchTicker = null;
@@ -80,10 +126,8 @@
   var aiCfg = loadAiCfg();
   /* 已生成的点评按沸点 id 缓存，来回翻牌不重复打接口（改配置时清空） */
   var roastCache = {};
-  /* 失败负缓存：30s 内翻回同一张不重复打接口（避免服务商限流时被反复撞击） */
+  /* 失败负缓存：批量里「模型漏答」的牌记 30s，避免下一轮批量立刻重试同一批 */
   var roastFail = {};
-  /* 进行中的生成请求：翻下一张时 abort 掉，避免慢响应错配到新卡上 */
-  var roastAbort = null;
   function loadAiCfg() {
     try {
       var c = JSON.parse(localStorage.getItem(AI_CFG_KEY) || 'null');
@@ -292,6 +336,11 @@
     '<rect x="4.2" y="1.2" width="7.6" height="8.4" rx="1.6" stroke="#fff" stroke-width="1.3"/>' +
     '<path d="M8.8 11.8H2.8c-.8 0-1.4-.6-1.4-1.4V4.4" stroke="#fff" stroke-width="1.3" stroke-linecap="round"/></svg>';
 
+  /* 「原文」外链箭头。stroke 走 currentColor，跟着 .go 的 hover 变蓝。 */
+  var ICON_GO = '<svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true">' +
+    '<path d="M2.7 7.3L7.3 2.7M3.9 2.7h3.4v3.4" stroke="currentColor" stroke-width="1.4" ' +
+    'stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
   /* ---------------- 邻卡 ----------------
    * 设计稿里邻卡只有「标签 + 标题 + 正文」三块，按 272 宽排版。
    * 形状与主卡不同：这里不拆导语档，统一走「标题 + 正文」，
@@ -315,7 +364,20 @@
     '</article>';
   }
 
-  /* ---------------- 主卡 ---------------- */
+  /* 只放行 http(s)。data.js 与 /api/pins 的 url 都来自外部，
+   * 万一被写成 javascript:/data: 之类，直接当没有链接处理。 */
+  function safeUrl(u) {
+    u = String(u == null ? '' : u).trim();
+    return /^https?:\/\//i.test(u) ? u : '';
+  }
+
+  /* ---------------- 主卡 ----------------
+   * 整张卡就是链接：点它进掘金这条沸点的原文页。
+   * 用真 <a> 而不是 JS window.open —— 悬停时状态栏给地址预览、中键/⌘点击
+   * 新开标签、右键「复制链接地址」、Tab 可聚焦，这些原生行为自己写补不齐。
+   * 只有一件事原生不管：拖选文字后松手会顺带触发 click，把「想选中一段字」
+   * 变成「跳走了」——那一条在 bind() 里用选区判断拦掉。
+   */
   function mainCard(p, idx, anim) {
     var av = p.avatar
       ? '<img src="' + esc(p.avatar) + '" alt="" loading="lazy" referrerpolicy="no-referrer">'
@@ -327,11 +389,19 @@
     var bodyHTML = tb.body
       ? '<div class="body' + (tb.title ? '' : ' lead') + (short ? ' xs' : '') + '">' + esc(tb.body) + '</div>'
       : '';
+    var url = safeUrl(p.url) || (p.id ? 'https://juejin.cn/pin/' + p.id : '');
+    var cls = 'main' + (anim ? ' anim-in' : '') + (on ? ' liked' : '');
+    var open = url
+      ? '<a class="' + cls + '" href="' + esc(url) + '" target="_blank"' +
+        ' rel="noopener noreferrer" draggable="false" title="在掘金打开这条沸点">'
+      : '<article class="' + cls + '">';
+    var close = url ? '</a>' : '</article>';
     return '' +
-      '<article class="main' + (anim ? ' anim-in' : '') + (on ? ' liked' : '') + '">' +
+      open +
         '<div class="chead">' +
           '<span class="tag">' + ICON_BOLT_BLUE + '沸点</span>' +
           '<span class="time">' + esc(fmtTime(p.ctime)) + '</span>' +
+          (url ? '<span class="go" aria-hidden="true">原文' + ICON_GO + '</span>' : '') +
         '</div>' +
         (tb.title ? '<h2>' + esc(tb.title) + '</h2>' : '') +
         bodyHTML +
@@ -348,7 +418,7 @@
             '<span class="meta">' + (p.digg || 0) + ' 赞 · ' + (p.cmt || 0) + ' 评论</span>' +
           '</div>' +
         '</div>' +
-      '</article>';
+      close;
   }
 
   /* ---------------- AI 点评卡 ----------------
@@ -359,13 +429,9 @@
     var r = roastFor(p);
     var body = r.loading
       ? (batchCtl
-        ? (batchCtl.serial
-          ? '<span class="ai-loading"><i class="spin"></i>AI 批量点评中 ' +
-            batchCtl.done + '/' + batchCtl.total +
-            '（' + Math.round(batchCtl.done / batchCtl.total * 100) + '%）</span>'
-          : '<span class="ai-loading"><i class="spin"></i>AI 正在一次性点评 ' +
-            batchCtl.total + ' 条 · 已等 ' +
-            Math.round((Date.now() - batchCtl.start) / 1000) + 's</span>')
+        ? '<span class="ai-loading"><i class="spin"></i>AI 正在一次性点评 ' +
+          batchCtl.total + ' 条 · 已等 ' +
+          Math.round((Date.now() - batchCtl.start) / 1000) + 's</span>'
         : '<span class="ai-loading"><i class="dot"></i><i class="dot"></i><i class="dot"></i>AI 正在看这条沸点…</span>')
       : '<span' + (r.live ? ' class="roast-live"' : '') + '>' + esc(r.text) + '</span>';
     return '' +
@@ -375,17 +441,17 @@
       '<div class="note">毒的是现象，不是你。</div>';
   }
 
-  /* 当前这条该显示什么点评：
-   * 配了 AI 接口 → 优先实时生成（命中缓存直接用，否则先显示加载态）；
-   * 没配 → 手写点评或占位文案。 */
+  /* 当前这条该显示什么点评。配了 AI 接口时三层判定：
+   *   ① 有缓存           → 直接显示（批量已经评过了）
+   *   ② 有批量在跑       → 进度态转圈，等这一批一次性补齐
+   *   ③ 没有批量在跑     → 回退到内置点评/占位文案，不转圈
+   * 注意：任何情况下都不在这里单独打接口。点评只由 startBatch() 一次性
+   * 批量生成——逐条补点评会按牌数产生 N 次请求，是限流的主要来源。 */
   function roastFor(p) {
     if (aiCfg) {
       if (roastCache[p.id]) return { text: roastCache[p.id], live: true };
-      /* 刚失败过的牌显示回退文案，不无限转圈 */
-      if (roastFail[p.id] && Date.now() - roastFail[p.id] < 30000) {
-        return { text: p.roast || '（生成失败，稍后再翻回来重试）', live: false };
-      }
-      return { loading: true };
+      if (batchCtl) return { loading: true };
+      return { text: p.roast || '（这条暂无 AI 点评，可点「洗牌」重试）', live: false };
     }
     return { text: p.roast || '（这条还没配点评）', live: false };
   }
@@ -405,86 +471,29 @@
     });
   }
 
-  /* 经 /api/roast 实时生成本条点评。生成回来后若页面还停在这条，
-   * 就地重建 AI 卡内容；失败则回退手写点评/占位并提示原因。 */
-  function maybeRoast(p) {
-    if (!aiCfg || roastCache[p.id]) return;
-    /* 批量进行时不重复发单条，只把卡片刷成进度态 */
-    if (batchCtl) { refreshAiCard(); return; }
-    if (roastFail[p.id] && Date.now() - roastFail[p.id] < 30000) return; // 30s 负缓存
-    if (roastAbort) roastAbort.abort();
-    var ctl = roastAbort = new AbortController();
-    fetch('/api/roast', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        baseUrl: aiCfg.baseUrl, token: aiCfg.token, model: aiCfg.model,
-        content: p.content, topic: p.topic,
-        prompt: currentStyle().prompt,
-      }),
-      signal: ctl.signal,
-    })
-      .then(parseRoastRes)
-      .then(function (res) {
-        if (roastAbort === ctl) roastAbort = null;
-        if (!res.ok || !res.d.roast) throw new Error((res.d && res.d.error) || 'AI 接口异常');
-        roastCache[p.id] = res.d.roast;
-        var cur = PINS[S.order[S.pos]];
-        if (cur && cur.id === p.id) {
-          var ai = $('#ai');
-          if (ai) { ai.innerHTML = aiCard(cur); bindAI(); }
-        }
-      })
-      .catch(function (e) {
-        if (roastAbort === ctl) roastAbort = null;
-        if (e && e.name === 'AbortError') return; // 被更新的翻牌打断，安静丢弃
-        roastFail[p.id] = Date.now(); // 记失败时间，30s 内不再重试
-        var cur = PINS[S.order[S.pos]];
-        if (cur && cur.id === p.id) {
-          var ai = $('#ai');
-          var s = ai && ai.querySelector('.roast span');
-          if (s) {
-            s.className = '';
-            s.textContent = p.roast || '（生成失败：' + ((e && e.message) || e) + '）';
-          }
-        }
-        toast('AI 点评生成失败：' + ((e && e.message) || e));
-      });
-  }
+  /* 单条「实时点评」已取消。
+   * ----------------------------------------------------------------
+   * 原实现：翻牌落定 700ms 后为当前这一张单独打一次 /api/roast。
+   * 与「批量点评」并存之后，点评就有了两条来源，于是：
+   *   · 批量没覆盖到的牌（批量进行中洗牌、批量失败、模型漏答）会走单条，
+   *     用户一路翻下去就是 N 次单条请求——正是限流的主要触发点；
+   *   · 单条与批量还会同时打同一批 id，缓存互相踩。
+   * 现在收紧成一句话：【点评只有一个来源 = startBatch() 的一次性批量请求】。
+   * 没评到的牌显示内置点评/占位文案，点「洗牌」即可重新批量补齐。 */
 
-  /* ---------------- 批量点评 ----------------
+  /* ---------------- 批量点评（唯一的点评生成路径） ----------------
    * 一次动作把当前所有还没点评过的牌全部生成完（启动 / 洗牌 / 换配置 /
-   * 换风格后自动触发）。主路径是【单次请求】：整副牌打包发给 /api/roast，
-   * 服务端拼成一次上游调用、JSON 数组一次拿回——彻底不触发并发限流。
-   * 批量请求失败时退化为逐条串行（间隔 300ms，限流退避 2.5s）把队列跑完。
-   */
+   * 换风格后自动触发）。整副牌打包发给 /api/roast，服务端拼成【一次】
+   * 上游调用、JSON 数组一次拿回——请求数与牌数无关，天然避开限流。
+   * 失败或部分失败都不逐条补打，见 startBatch()。 */
 
-  /* 单条生成的 Promise 版（兜底串行用）：成功写缓存、失败记 30s 负缓存，
-   * 无论成败都 resolve（队列不因一条失败而中断）。
-   * 命中限流类错误时返回 'throttled'，由调用方决定额外退避。 */
-  function roastOne(p) {
-    return fetch('/api/roast', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        baseUrl: aiCfg.baseUrl, token: aiCfg.token, model: aiCfg.model,
-        content: p.content, topic: p.topic,
-        prompt: currentStyle().prompt,
-      }),
-    })
-      .then(parseRoastRes)
-      .then(function (res) {
-        if (!res.ok || !res.d.roast) throw new Error((res.d && res.d.error) || 'AI 接口异常');
-        roastCache[p.id] = res.d.roast;
-        delete roastFail[p.id];
-        return 'ok';
-      })
-      .catch(function (e) {
-        roastFail[p.id] = Date.now();
-        var msg = (e && e.message) || String(e);
-        return /quota|限流|429|concurrency/i.test(msg) ? 'throttled' : 'fail';
-      });
-  }
+  /* 逐条兜底已取消。
+   * ----------------------------------------------------------------
+   * 原实现：批量失败后 runSerial() 把队列逐条重打一遍 /api/roast
+   * （间隔 300ms、限流退避 2.8s）。串行虽然不会打爆并发配额，
+   * 但请求数仍然等于牌数——一次洗牌失败就会产生 N 次请求，
+   * 既慢又正好踩在服务商的「短时间请求数」限流上。
+   * 现在批量失败就如实失败：提示用户，重试入口是「洗牌」（会重新批量）。 */
 
   /* 就地刷新 AI 卡内容（进度变化 / 当前卡点评已生成时）。
    * 翻转动画播放期间不动内容：中点换内容由 render 的 aiSwapTimer 负责。 */
@@ -501,28 +510,22 @@
     if (batchTicker) { clearInterval(batchTicker); batchTicker = null; }
   }
 
-  /* 兜底：逐条串行把队列跑完（批量请求失败时启用） */
-  function runSerial(queue, myId) {
-    batchCtl = { id: myId, total: queue.length, done: 0, serial: true };
-    refreshAiCard();
-    (function step() {
-      if (!batchCtl || batchCtl.id !== myId || batchCtl.done >= queue.length) {
-        stopBatch();
-        refreshAiCard();
-        return;
-      }
-      roastOne(queue[batchCtl.done]).then(function (r) {
-        if (!batchCtl || batchCtl.id !== myId) return; // 中途被取消
-        batchCtl.done++;
-        refreshAiCard();
-        /* 限流信号：额外退避 2.5s，给上游并发额度回口气 */
-        setTimeout(step, r === 'throttled' ? 2800 : 300);
-      });
-    })();
-  }
-
-  function startBatch() {
-    if (!aiCfg || batchCtl) return;
+  /* 把整副牌里「还没点评」的牌打包成【一次】请求交给 /api/roast。
+   * ----------------------------------------------------------------
+   * 这是全站唯一的点评生成路径：不逐条、不并发、不重试单条。
+   * 服务端把这一批拼成一次上游调用、JSON 数组一次拿回，
+   * 所以「一次洗牌 = 最多一次 AI 请求」，从根上避开限流。
+   *
+   * force=true —— 抢占：洗牌 / 换配置 / 换风格时必须传。
+   *   否则会被进行中的旧批量挡住（`if (batchCtl) return`），
+   *   新牌堆永远评不上，翻牌时又只能靠单条凑——正是要消除的场景。
+   * force=false —— 幂等：同一批的重复触发直接忽略。 */
+  function startBatch(force) {
+    if (!aiCfg) return;
+    if (batchCtl) {
+      if (!force) return;
+      stopBatch();
+    }
     var queue = [];
     for (var i = 0; i < S.order.length; i++) {
       var p = PINS[S.order[i]];
@@ -536,7 +539,7 @@
     refreshAiCard();
     /* 单次请求可能等十几秒，每秒刷一次「已等 Xs」让等待可感知 */
     batchTicker = setInterval(function () {
-      if (batchCtl && batchCtl.id === myId && !batchCtl.serial) refreshAiCard();
+      if (batchCtl && batchCtl.id === myId) refreshAiCard();
     }, 1000);
     fetch('/api/roast', {
       method: 'POST',
@@ -550,8 +553,10 @@
       .then(parseRoastRes)
       .then(function (res) {
         if (!batchCtl || batchCtl.id !== myId) return; // 已被取消/替换
-        if (!res.ok || !res.d.roasts) throw new Error((res.d && res.d.error) || 'AI 接口异常');
-        var got = res.d.roasts;
+        var d = res.d || {};
+        /* 服务端可能「部分成功」：已算好的 roasts 会连同 error 一起回来 */
+        if (!d.roasts) throw new Error(d.error || 'AI 接口异常');
+        var got = d.roasts;
         var okCount = 0;
         for (var i = 0; i < queue.length; i++) {
           var p = queue[i];
@@ -560,13 +565,18 @@
         }
         stopBatch();
         refreshAiCard();
-        toast('AI 批量点评完成 · ' + okCount + '/' + queue.length + ' 条');
+        if (d.error) {
+          toast('AI 点评完成 ' + okCount + '/' + queue.length + ' 条 · 其余未成功：' + d.error);
+        } else {
+          toast('AI 批量点评完成 · ' + okCount + '/' + queue.length + ' 条');
+        }
       })
       .catch(function (e) {
         if (!batchCtl || batchCtl.id !== myId) return;
-        /* 单次批量失败（超时/模型不吐 JSON 等）→ 退化为逐条串行，仍然跑完 */
-        toast('批量点评未成功（' + ((e && e.message) || e) + '），改为逐条生成');
-        runSerial(queue, myId);
+        /* 整批失败就如实失败，不逐条补打。重试入口 = 再点一次「洗牌」 */
+        stopBatch();
+        refreshAiCard();
+        toast('AI 点评未生成（' + ((e && e.message) || e) + '）· 点「洗牌」可重试');
       });
   }
 
@@ -634,9 +644,9 @@
         ai.classList.add('anim-in');
         /* 翻转动画在 50%（60ms 延迟 + 480ms×50% ≈ 300ms）处处于立边不可见，
          * 此刻换掉卡内内容，人眼看到的是「翻过去旧点评、翻过来新点评」。
-         * 系统开启减少动态且未强制 ?motion=full 时动画被降级，立即换内容。 */
-        var reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches &&
-          !document.documentElement.classList.contains('motion-full');
+         * lite 档（手选轻量，或 system 档命中 reduce）下动画被降级成
+         * 130ms 淡入，没有「立边不可见」的窗口，必须立刻换内容。 */
+        var reduced = document.documentElement.classList.contains('motion-lite');
         aiSwapTimer = setTimeout(function () {
           ai.innerHTML = aiCard(p);
           bindAI();
@@ -651,11 +661,9 @@
     saveLocal();
     updateHud();
     syncDock(p, idx);
-    /* 配了 AI 接口就实时生成本条点评（未命中缓存时），
-     * 生成回来后由 maybeRoast 自己就地更新卡片。
-     * 700ms 防抖：只有停下来的牌才发请求，翻牌路过的中间卡不打接口。 */
-    clearTimeout(roastKickTimer);
-    roastKickTimer = setTimeout(function () { maybeRoast(p); }, 700);
+    /* 这里不再为当前这一张单独发点评请求——点评统一由 startBatch()
+     * 一次性批量生成。该牌若已有缓存，上面的 aiCard()/roastFor() 已经
+     * 渲染出来了；没有则显示内置点评或占位，等下一次批量补齐。 */
   }
 
   /* 迷你卡片（dock）内容同步：牌号与主卡左下角大数字一致（原始序号），
@@ -857,7 +865,7 @@
         rebuild();
         render(true, 1);
         toast('已获取最新沸点 · ' + pins.length + ' 条');
-        startBatch(); // 新牌堆逐张补齐点评
+        startBatch(true); // 新牌堆必须重新批量点评（抢占：不被旧批量挡住）
       } else {
         shuffleDeck('没拉到新数据，先洗一遍手头的');
       }
@@ -931,6 +939,9 @@
     if (sb) sb.onclick = refreshDeck;
     var rf = $('#btnRefresh');
     if (rf) rf.onclick = refreshDeck;
+    /* 动效档开关（完整 / 轻量 / 跟随系统） */
+    var mo = $('#btnMotion');
+    if (mo) mo.onclick = cycleMotion;
 
     /* ---- AI 点评接口配置弹窗 ---- */
     var cfgMask = $('#aiCfgMask');
@@ -968,7 +979,7 @@
       roastFail = {};
       syncCfgBtn();
       render(false, 0);
-      startBatch();
+      startBatch(true); // 换接口/模型后必须重评（抢占）
     }
     var cb = $('#btnAiCfg');
     if (cb) cb.onclick = openCfg;
@@ -1060,7 +1071,7 @@
           syncStyleBtn();
           render(false, 0);
           toast('已换成「' + currentStyle().name + '」');
-          startBatch(); // 新风格逐张补齐点评
+          startBatch(true); // 新风格必须重评（抢占）
         };
       }
     }
@@ -1081,7 +1092,7 @@
             aiCfg = { baseUrl: c.baseUrl, token: '', model: c.model };
             syncCfgBtn();
             render(false, 0);
-            startBatch();
+            startBatch(true);
           }
         })
         .catch(function () { /* 静态服务器无此路由，静默忽略 */ });
@@ -1146,6 +1157,18 @@
       x0 = null;
       if (Math.abs(dx) > 55) go(dx < 0 ? 1 : -1);
     }, { passive: true });
+
+    /* 主卡是 <a>，整卡点进原文页。原生行为之外只补一件事：
+     * 拖选文字后松手，浏览器照样派发 click ——用户本意是选中一段字，
+     * 结果整页跳走。所以有非空选区时把这次 click 拦掉。
+     * （触屏左右滑不会派发 click，交给浏览器自己判定，不在这里处理。） */
+    host.addEventListener('click', function (e) {
+      var t = e.target;
+      var a = t && t.closest ? t.closest('a.main') : null;
+      if (!a) return;
+      var sel = window.getSelection && window.getSelection();
+      if (sel && !sel.isCollapsed && String(sel).length) e.preventDefault();
+    });
   }
 
   /* ---------------- 实时沸点 ----------------
@@ -1187,6 +1210,11 @@
   /* ---------------- 启动 ---------------- */
   function boot() {
     loadLocal();
+    /* URL 覆写优先于本地记住的档位；只影响本次会话，不落盘 */
+    if (urlMotion) S.motion = urlMotion;
+    /* 必须早于首屏 render()：先把 html 的档位类定下来，
+     * 首屏 render(false, 0) 本来就不播动画，不存在闪烁问题 */
+    resolveMotion();
     /* file:// 直开没有代理可用，直接用内置牌堆 */
     if (location.protocol !== 'http:' && location.protocol !== 'https:') {
       startDeck();

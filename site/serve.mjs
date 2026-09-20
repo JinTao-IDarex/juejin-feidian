@@ -238,51 +238,60 @@ async function handleApiRoast(req, res) {
         if (hit && hit.roast) roasts[it.id] = hit.roast;
         else misses.push({ it, key });
       }
+      /* 部分成功也要返回：已经命中缓存的那部分点评，不该因为剩余几条
+       * 失败就整批丢掉（前端拿不到就只能显示失败，白算一遍还推高请求数）。 */
+      let batchErr = null;
       if (misses.length) {
-        if (!(await acquireSlot(10_000))) throw new Error('生成排队超时，稍后再试');
-        slotTaken = true;
-        const listText = misses
-          .map((m, i) => (i + 1) + '. ' + (m.it.topic ? '【' + m.it.topic + '】' : '') + m.it.content)
-          .join('\n');
-        const upstream = await fetch(base + '/chat/completions', {
-          method: 'POST',
-          headers: { 'content-type': 'application/json', 'authorization': 'Bearer ' + token },
-          body: JSON.stringify({
-            model,
-            messages: [
-              { role: 'system', content: sysPrompt +
-                '\n本次给你 ' + misses.length + ' 条沸点（编号 1~' + misses.length + '）。' +
-                '逐条各写一句点评，严格按编号顺序输出一个 JSON 字符串数组，' +
-                '数组长度必须等于 ' + misses.length + '。只输出 JSON 数组本身，' +
-                '不要代码块标记、不要编号、不要任何额外文字。' },
-              { role: 'user', content: listText },
-            ],
-            temperature: 0.9,
-            max_tokens: Math.min(8000, 160 * misses.length + 200),
-          }),
-          signal: AbortSignal.any([clientGone.signal, AbortSignal.timeout(60_000)]),
-        });
-        const data = await upstream.json().catch(() => ({}));
-        if (!upstream.ok) {
-          const msg = (data.error && (data.error.message || data.error.msg)) || ('HTTP ' + upstream.status);
-          throw new Error(msg);
+        try {
+          if (!(await acquireSlot(10_000))) throw new Error('生成排队超时，稍后再试');
+          slotTaken = true;
+          const listText = misses
+            .map((m, i) => (i + 1) + '. ' + (m.it.topic ? '【' + m.it.topic + '】' : '') + m.it.content)
+            .join('\n');
+          const upstream = await fetch(base + '/chat/completions', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json', 'authorization': 'Bearer ' + token },
+            body: JSON.stringify({
+              model,
+              messages: [
+                { role: 'system', content: sysPrompt +
+                  '\n本次给你 ' + misses.length + ' 条沸点（编号 1~' + misses.length + '）。' +
+                  '逐条各写一句点评，严格按编号顺序输出一个 JSON 字符串数组，' +
+                  '数组长度必须等于 ' + misses.length + '。只输出 JSON 数组本身，' +
+                  '不要代码块标记、不要编号、不要任何额外文字。' },
+                { role: 'user', content: listText },
+              ],
+              temperature: 0.9,
+              max_tokens: Math.min(8000, 160 * misses.length + 200),
+            }),
+            signal: AbortSignal.any([clientGone.signal, AbortSignal.timeout(60_000)]),
+          });
+          const data = await upstream.json().catch(() => ({}));
+          if (!upstream.ok) {
+            const msg = (data.error && (data.error.message || data.error.msg)) || ('HTTP ' + upstream.status);
+            throw new Error(msg);
+          }
+          const raw = String(
+            (data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || ''
+          ).trim();
+          /* 容错提取 JSON 数组：有的模型爱包 ```json 代码块或在前后加废话 */
+          const mArr = raw.match(/\[[\s\S]*\]/);
+          if (!mArr) throw new Error('AI 未按要求返回 JSON 数组');
+          let arr;
+          try { arr = JSON.parse(mArr[0]); } catch { throw new Error('AI 返回的 JSON 无法解析'); }
+          if (!Array.isArray(arr)) throw new Error('AI 返回格式异常');
+          misses.forEach((mm, i) => {
+            const t = String(arr[i] || '').trim().replace(/^["「『]+|["」』]+$/g, '');
+            if (t) { roasts[mm.it.id] = t; srvCacheSet(mm.key, { roast: t }); }
+          });
+        } catch (e) {
+          /* 客户端主动断开（翻牌走了）就不回错误了——连接已关闭，写了也写不进去 */
+          if (clientGone.signal.aborted) return;
+          batchErr = String((e && e.message) || e);
         }
-        const raw = String(
-          (data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || ''
-        ).trim();
-        /* 容错提取 JSON 数组：有的模型爱包 ```json 代码块或在前后加废话 */
-        const mArr = raw.match(/\[[\s\S]*\]/);
-        if (!mArr) throw new Error('AI 未按要求返回 JSON 数组');
-        let arr;
-        try { arr = JSON.parse(mArr[0]); } catch { throw new Error('AI 返回的 JSON 无法解析'); }
-        if (!Array.isArray(arr)) throw new Error('AI 返回格式异常');
-        misses.forEach((mm, i) => {
-          const t = String(arr[i] || '').trim().replace(/^["「『]+|["」』]+$/g, '');
-          if (t) { roasts[mm.it.id] = t; srvCacheSet(mm.key, { roast: t }); }
-        });
       }
       res.writeHead(200, { 'Content-Type': MIME['.json'], 'Cache-Control': 'no-store' });
-      res.end(JSON.stringify({ roasts }));
+      res.end(JSON.stringify(batchErr ? { roasts, error: batchErr } : { roasts }));
       return;
     }
 

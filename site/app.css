@@ -292,6 +292,35 @@ img{display:block;max-width:100%}
 }
 .main.liked{border-color:rgba(30,128,255,.55)}
 
+/* ---- 主卡即链接：整张卡点进掘金这条沸点的原文页 ----
+ * 卡面元素本身是 <a>（无链接时退化成 <article>），所以先把 a 的默认样式清零。
+ * 「能点」这件事必须看得见：默认态在卡头右端放一枚「原文 ↗」，
+ * hover 时整卡浮起 + 提示变蓝。
+ *
+ * ⚠️ hover 反馈只能用 box-shadow / border-color，【不能用 transform】：
+ * .main.anim-in 的 animation 带 fill:both，动画结束后动画的 transform 值
+ * 仍然压着普通声明（动画优先于 :hover），写 transform 会看起来"没反应"。
+ */
+a.main{
+  color:inherit;text-decoration:none;cursor:pointer;
+  transition:box-shadow .18s ease,border-color .18s ease;
+}
+a.main:hover{box-shadow:0 20px 46px rgba(30,89,191,.22);border-color:#C9D9F0}
+a.main:active{box-shadow:0 8px 20px rgba(30,89,191,.18)}
+a.main:focus-visible{outline:2px solid var(--blue);outline-offset:3px}
+/* 卡头右端的「原文 ↗」：与时间同一行、和「沸点」标签同为 24px 高，
+ * 默认几乎无底色（不跟正文抢注意力），hover 时整卡浮起、它变蓝并显底。
+ * 给一点底色而不是纯文字，是因为"整卡可点"这件事必须有个可见的抓手。 */
+.main .go{
+  margin-left:8px;flex:0 0 auto;
+  display:inline-flex;align-items:center;gap:4px;
+  height:24px;padding:0 8px;border-radius:7px;
+  background:#F4F6F9;border:1px solid #EBEEF2;
+  font:500 11.5px/1 var(--font-sans);color:#8A9099;
+  transition:color .18s ease,background .18s ease,border-color .18s ease;
+}
+a.main:hover .go{color:var(--blue);background:var(--blue-mid);border-color:#BFDBFF}
+
 /* ---- 翻牌箭头：36x36 圆钮 ---- */
 .round{
   position:absolute;top:282px;
@@ -390,6 +419,15 @@ img{display:block;max-width:100%}
 .hud .shuffle:hover{border-color:var(--blue);color:var(--blue)}
 .hud .shuffle:active{transform:scale(.94)}
 .hud .shuffle:focus-visible{outline:2px solid var(--blue);outline-offset:2px}
+/* 动效档开关：与洗牌同款小圆钮，文字随档位变化（完整 / 轻量 / 跟随系统）。
+ * 定 min-width 避免切换档位时 HUD 整行左右抖动；
+ * 左侧小圆点常驻指示当前是「完整动效(蓝)」还是「已降级(灰)」。 */
+.hud .shuffle.motion{min-width:106px;justify-content:center}
+.hud .shuffle.motion .mo-dot{
+  width:6px;height:6px;border-radius:99px;flex:0 0 auto;
+  background:var(--blue);transition:background .16s;
+}
+.hud .shuffle.motion[aria-pressed="false"] .mo-dot{background:#C2C8D0}
 .hud .keys b{
   font-weight:400;color:#8A9099;
   background:rgba(255,255,255,.9);
@@ -488,9 +526,16 @@ img{display:block;max-width:100%}
 .bwd .out-layer .main{animation-name:outMainB}
 .out-layer .ghost{animation:outGhost 170ms ease-in both;will-change:opacity}
 
-/* 尊重系统的「减少动态效果」设置。
+/* 动效降级档 —— html.motion-lite
  * ----------------------------------------------------------------
- * 这里的目标不是「关掉动画」，而是「去掉会引发不适的运动」：
+ * 档位由 app.js 顶部的「动效档」逻辑决定，CSS 只认最终类名：
+ *   html.motion-full —— 完整动效（默认档）
+ *   html.motion-lite —— 本块规则生效（轻量档）
+ *   「跟随系统」档由 JS 读 prefers-reduced-motion 后落到上面两者之一，
+ *   所以这里不再写 @media(prefers-reduced-motion:reduce)——媒体查询
+ *   只参与 JS 的档位解析，CSS 侧单一真相 = html 上的类名。
+ *
+ * 降级的目标不是「关掉动画」，而是「去掉会引发不适的运动」：
  *   · 位移（主卡 142px / 邻卡 110~142px）—— 前庭敏感用户的主要不适源，去掉
  *   · 缩放（.914 / 1.094）—— 同上，去掉
  *   · blur 景深 —— 去掉
@@ -503,49 +548,40 @@ img{display:block;max-width:100%}
  *   所以降级成纯 opacity 过渡：无位移、无缩放、无模糊，不会引起
  *   前庭不适，同时翻页仍然看得出来是「换了一张」。 */
 @keyframes softFadeIn{from{opacity:0}to{opacity:1}}
-/* 选择器全部挂在 html:not(.motion-full) 下：带 ?motion=full 预览时
- * 跳过整块降级（见 app.js 顶部说明），默认行为不变。 */
-@media(prefers-reduced-motion:reduce){
-  html:not(.motion-full) .main.anim-in,html:not(.motion-full) .bwd .main.anim-in,
-  html:not(.motion-full) .ai.anim-in,html:not(.motion-full) .bwd .ai.anim-in,
-  html:not(.motion-full) .ghost.anim-l,html:not(.motion-full) .ghost.anim-r{
-    animation:softFadeIn 130ms linear both;
-  }
-  /* 离场层不做滑出，直接隐藏——状态变化已由入场淡入表达 */
-  html:not(.motion-full) .out-layer{display:none}
-  /* AI 卡与邻卡原本比主卡晚 60~100ms，这里统一去掉延迟，避免出现
-   * 「先换主卡再换点评/邻卡」的错位 */
-  html:not(.motion-full) .main.anim-in,html:not(.motion-full) .bwd .main.anim-in,
-  html:not(.motion-full) .ai.anim-in,html:not(.motion-full) .bwd .ai.anim-in,
-  html:not(.motion-full) .ghost.anim-l,html:not(.motion-full) .ghost.anim-r{
-    animation-delay:0ms;
-  }
-  /* spinner 停止旋转，改用静态色区分 loading 态 */
-  html:not(.motion-full) .ring{animation:none;border-top-color:#B9C0C8}
-  /* 按钮的位移/缩放反馈去掉，仅保留颜色变化 */
-  html:not(.motion-full) .main,html:not(.motion-full) .ai{transition:none}
-  html:not(.motion-full) .round{transition:background .16s,box-shadow .16s,opacity .16s}
-  html:not(.motion-full) .round:active{transform:none}
-  html:not(.motion-full) .ai .copy{transition:background .16s}
-  html:not(.motion-full) .ai .copy:active{transform:none}
-  /* 折叠/展开降级：去掉缩放与长距离变形，快速淡入淡出 */
-  html:not(.motion-full) .page-wrap{
-    transition:opacity .15s linear,visibility 0s 0s;
-  }
-  html:not(.motion-full) body.folded .page-wrap{
-    transform:none;
-    transition:opacity .15s linear,visibility 0s .15s;
-  }
-  html:not(.motion-full) .dock,
-  html:not(.motion-full) .dock .dock-x,
-  html:not(.motion-full) .dock .dock-card{
-    transition-duration:.15s;
-  }
-  /* hover 上浮位移去掉，仅保留投影加深 */
-  html:not(.motion-full) body.folded .dock:hover,
-  html:not(.motion-full) body.folded .dock:active{
-    transform:none;
-  }
+html.motion-lite .main.anim-in,html.motion-lite .bwd .main.anim-in,
+html.motion-lite .ai.anim-in,html.motion-lite .bwd .ai.anim-in,
+html.motion-lite .ghost.anim-l,html.motion-lite .ghost.anim-r{
+  /* animation 简写已把 delay 归零：AI 卡 60ms / 邻卡 70ms 的错位延迟
+   * 一并去掉，避免「先换主卡再换点评/邻卡」 */
+  animation:softFadeIn 130ms linear both;
+}
+/* 离场层不做滑出，直接隐藏——状态变化已由入场淡入表达 */
+html.motion-lite .out-layer{display:none}
+/* spinner 停止旋转，改用静态色区分 loading 态 */
+html.motion-lite .ring{animation:none;border-top-color:#B9C0C8}
+/* 按钮的位移/缩放反馈去掉，仅保留颜色变化 */
+html.motion-lite .main,html.motion-lite .ai{transition:none}
+html.motion-lite .round{transition:background .16s,box-shadow .16s,opacity .16s}
+html.motion-lite .round:active{transform:none}
+html.motion-lite .ai .copy{transition:background .16s}
+html.motion-lite .ai .copy:active{transform:none}
+/* 折叠/展开降级：去掉缩放与长距离变形，快速淡入淡出 */
+html.motion-lite .page-wrap{
+  transition:opacity .15s linear,visibility 0s 0s;
+}
+html.motion-lite body.folded .page-wrap{
+  transform:none;
+  transition:opacity .15s linear,visibility 0s .15s;
+}
+html.motion-lite .dock,
+html.motion-lite .dock .dock-x,
+html.motion-lite .dock .dock-card{
+  transition-duration:.15s;
+}
+/* hover 上浮位移去掉，仅保留投影加深 */
+html.motion-lite body.folded .dock:hover,
+html.motion-lite body.folded .dock:active{
+  transform:none;
 }
 
 /* ================================================================
