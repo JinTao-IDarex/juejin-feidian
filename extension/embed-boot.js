@@ -88,6 +88,52 @@
     else report();
   }).observe(document.body, { attributes: true, attributeFilter: ['class'] });
 
+  /* ---- 弹窗（风格 / AI 配置）开合 → 报给父窗口 ----
+   *
+   * 站点这两个弹窗自己带一层 `rgba(23,26,31,.38)` 深色底（`.aicfg-mask` 的 background），
+   * 但它是 `position:fixed; inset:0` 在 **iframe 视口**里的 —— 也就是只盖住面板那块
+   * 1440×722 的矩形。结果点开弹窗时，屏幕上会出现一块比周围更暗的方块
+   * （白底页实测：面板外 rgb(180,181,185)、面板内 rgb(121,122,127)，面板左缘
+   * 一道 Δ59 的硬台阶）。用户报的「弹窗背景虚化不是全屏」就是它。
+   *
+   * 修法：`embed.css` 把那层打透，改由**父页面那层全屏遮罩**加深到弹窗的浓度。
+   * 这里只负责把开合状态报上去，浓度/虚化都在 content.js 那边调。
+   *
+   * 为什么监听 `hidden` 属性而不是 class：站点是靠 `el.hidden = true/false` 开合的。 */
+  var MODAL_IDS = ['aiCfgMask', 'styleMask'];
+  var modalWas = null;
+
+  function modalOpen() {
+    for (var i = 0; i < MODAL_IDS.length; i++) {
+      var el = document.getElementById(MODAL_IDS[i]);
+      if (el && !el.hidden) return true;
+    }
+    return false;
+  }
+
+  function reportModal() {
+    var open = modalOpen();
+    if (open === modalWas) return;      // 去重：两个弹窗的 observer 都会打到这里
+    modalWas = open;
+    parent.postMessage({ t: 'jb-modal', open: open }, '*');
+  }
+
+  function watchModals() {
+    for (var i = 0; i < MODAL_IDS.length; i++) {
+      var el = document.getElementById(MODAL_IDS[i]);
+      if (!el) continue;
+      new MutationObserver(reportModal).observe(el, {
+        attributes: true, attributeFilter: ['hidden']
+      });
+    }
+    reportModal();
+  }
+
+  /* 脚本在 data.js / app.js 之前执行，弹窗的 DOM 已经在文档里了；
+   * 万一没有（换地方注入）就等 DOMContentLoaded，别让父窗口一直收不到。 */
+  if (document.getElementById(MODAL_IDS[0])) watchModals();
+  else document.addEventListener('DOMContentLoaded', watchModals);
+
   window.addEventListener('load', report);
   report();
 })();

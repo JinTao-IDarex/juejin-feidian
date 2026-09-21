@@ -146,4 +146,17 @@ html.embed .aicfg-mask {
   justify-items: center;
   overflow-y: auto;
   padding: 16px 0;
+  /* v0.2.8：打透这层深色底，理由见下。
+   * 站点自己的弹窗底是 `rgba(23,26,31,.38)`，但它 `position:fixed; inset:0` 钉的是
+   * **iframe 视口** —— 只盖住面板那块 1440×722 的矩形。于是点开「风格 / AI 配置」时，
+   * 屏幕上会出现一块比周围更暗的方块：白底页实测面板外 rgb(180,181,185)、
+   * 面板内 rgb(121,122,127)，面板左缘一道 **Δ59** 的硬台阶。
+   * 用户报的「弹窗背景虚化不是全屏」就是它。
+   *
+   * 打透之后，暗场全部由父页面那层全屏遮罩提供，并由 content.js 在弹窗开着时
+   * 加深到同一暗度（`MASK_ALPHA_DEEP`，0.54 是按复现原暗度反推的）。
+   * 弹窗卡 `.aicfg` 自己不透明 + 自带投影，脱离这层底照样立得住。
+   * ⚠️ 别再给它加 `backdrop-filter`：iframe 里的 backdrop-filter 糊不到父页面内容，
+   *    只会把面板自己的内容糊出一圈脏边（见顶部那条警示）。 */
+  background: transparent;
 }

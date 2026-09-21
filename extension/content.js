@@ -55,6 +55,20 @@
    * 底色的浓淡是唯一需要调的旋钮 —— 太浅（比如 .55 的白色）整屏会和面板糊成
    * 一片白，看不出"遮罩"，面板也浮不起来；这里取中等深度，让白色卡面立住。 */
   const MASK_ALPHA = 0.28;
+  /* 「有弹窗」那一档的浓度（v0.2.8）。
+   *
+   * 站点自己的两个弹窗（风格 `#styleMask` / AI 配置 `#aiCfgMask`）各带一层
+   * `rgba(23,26,31,.38)` 的深色底，但那层是 `position:fixed` 在 **iframe 视口**里的
+   * —— 也就是只盖住面板那块 1440×722 的矩形。于是点开弹窗时，屏幕上会出现一块
+   * 比周围更暗的方块（白底页实测：面板外 rgb(180,181,185)、面板内 rgb(121,122,127)，
+   * 面板左缘一道 Δ59 的硬台阶）。用户报的「弹窗背景虚化不是全屏」就是它。
+   *
+   * 修法：`embed.css` 把那层打透，改由**父页面这层全屏遮罩**加深到弹窗的浓度。
+   * 0.54 是按"复现原来的暗度"反推的（底页 ≈ rgb(243,244,246)：
+   *   原来 243 →（遮罩 28%）180 →（弹窗 38%）121
+   *   现在 243 →（遮罩 54%）243×0.46+17×0.54 = 121 ✓ 同一样暗，但铺满整屏）
+   * 虚化强度不变（弹窗本身就没加模糊，只是变暗）——所以只动浓度这一个旋钮。 */
+  const MASK_ALPHA_DEEP = 0.54;
   const MASK_BLUR = 'blur(12px) saturate(115%)';
   /* 收起态缩略卡的投影 —— 写在**父页面**这层（挂在 iframe 上），不写在卡上。
    *
@@ -89,6 +103,7 @@
   let maskTimer = null;
   let cur = { w: 0, h: 0, folded: START_FOLDED };
   let hovered = false;     // 指针是否在 iframe 上（收起态的投影为此分两档，见 paintShadow）
+  let modalOpen = false;   // iframe 里开着弹窗（风格 / AI 配置）——遮罩要加深铺满整屏
   let useFixed = true;
 
   /* 展开态停在哪：'center'（默认，主卡落在页面正中）| 'topright'。
@@ -162,17 +177,25 @@
     width: 'auto', height: 'auto',
     margin: '0', padding: '0', border: '0',
     'z-index': String(Z - 1),
-    /* 遮罩 = 半透明底 + 背景虚化。虚化必须做在**父页面**这一层：
-     * iframe 自己内部是拿不到父页面内容的，backdrop-filter 在 iframe 里
-     * 只能糊到 iframe 自己的（透明的）画布，什么也糊不着。 */
-    background: 'rgba(17,21,28,' + MASK_ALPHA + ')',
-    'backdrop-filter': MASK_BLUR,
-    '-webkit-backdrop-filter': MASK_BLUR,
+    /* 底色与虚化不写在这里 —— 它们是**两档**的（常态 / 有弹窗），由 paintMask() 单独写。
+     * 虚化必须做在**父页面**这一层：iframe 自己内部是拿不到父页面内容的，
+     * backdrop-filter 在 iframe 里只能糊到 iframe 自己的（透明的）画布，什么也糊不着。 */
     opacity: '0',
     display: 'none',
     'pointer-events': 'none',
     transition: 'opacity ' + MOVE_MS + 'ms ease'
   };
+
+  /* 遮罩的浓淡：常态一档、「有弹窗」一档（口径见 MASK_ALPHA_DEEP 注释）。
+   * 单独拎出来是因为它有两个入口 —— 建遮罩时、以及 iframe 报弹窗开合时。 */
+  function paintMask() {
+    if (!mask) return;
+    setCss(mask, {
+      background: 'rgba(17,21,28,' + (modalOpen ? MASK_ALPHA_DEEP : MASK_ALPHA) + ')',
+      'backdrop-filter': MASK_BLUR,
+      '-webkit-backdrop-filter': MASK_BLUR
+    });
+  }
 
   function setCss(el, css) {
     Object.keys(css).forEach((k) => el.style.setProperty(k, css[k], 'important'));
@@ -259,6 +282,7 @@
     mask.id = MASK_ID;
     mask.setAttribute('data-juejin-pin-gacha', '1');
     setCss(mask, MASK_BASE);
+    paintMask();      // 底色是两档的，单独写（MASK_BASE 里没有 background）
     mask.addEventListener('click', () => {
       /* 点遮罩 = 收起，等价于点站点自己的 dock 按钮。
        * 遮罩同时负责拦住误触 —— 不然点空处会点到下面的掘金页面。 */
@@ -372,6 +396,15 @@
       const folded = !!d.folded;
       host.setAttribute('data-jb-folded', folded ? '1' : '0');
       resize(d.w, d.h, folded);
+    }
+    /* 弹窗（风格 / AI 配置）开合 —— 全屏遮罩跟着换档。
+     * 为什么必须由父页面来做：弹窗自己那层 38% 深色底只在 iframe 视口里，
+     * 铺不到屏幕上（详见 MASK_ALPHA_DEEP 注释）。 */
+    if (d.t === 'jb-modal') {
+      modalOpen = !!d.open;
+      /* mask 还没建就是空操作；展开时 showMask() → ensureMask() 会按当时的 modalOpen
+       * 建出正确浓度的遮罩（所以不用在这里补建，收起态也不该凭空多出遮罩）。 */
+      paintMask();
     }
     /* 站点自己的「一键评论 / 打开原文」有时要开新标签，交给这里做 */
     if (d.t === 'jb-open' && d.url) window.open(d.url, '_blank', 'noopener');
