@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>浮层预览 · 模拟 juejin.cn 页面</title>
+<style>
+  html,body{margin:0;min-height:100%;background:#fff;color:#1F2329;
+    font:14px/1.7 -apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif}
+  .fake{max-width:720px;margin:0 auto;padding:48px 20px}
+  .fake h1{font-size:22px;margin:0 0 14px}
+  .fake p{color:#5C636D;margin:0 0 10px}
+  .fake .box{margin-top:22px;height:220px;border:1px dashed #D8DDE4;border-radius:12px;
+    display:grid;place-items:center;color:#A8AEB8}
+</style>
+</head>
+<body>
+
+<!-- 这个壳不是产品的一部分，只是把「掘金页面」伪造出来，
+     好让 extension/content.js 在 http 下也能被真实跑一遍、
+     从而验到注入位置、初始态尺寸、与 iframe 的消息协议。 -->
+<div class="fake">
+  <h1>模拟「掘金某页面」的正文区</h1>
+  <p>用来验证浮层有没有盖住正文、z-index 是否压得住、以及页面本身还能不能点。</p>
+  <p>右上角那块浮层由 <b>extension/content.js 真实注入</b>（不是手写的壳）。</p>
+  <div class="box">正文占位</div>
+</div>
+
+<script>
+  /* content.js 依赖的 chrome.* 最小桩：getURL + onMessage。
+   * 注意 iframe 里的 host.html 是另一个文档，它自己会走 api-shim 的
+   * 「没有扩展宿主就同源 fetch」分支，所以这里不用管接口。 */
+  var __listeners = [];
+  window.chrome = {
+    runtime: {
+      getURL: function () { return '/host.html'; },
+      onMessage: { addListener: function (fn) { __listeners.push(fn); } },
+      __send: function (msg) {
+        __listeners.forEach(function (fn) { fn(msg, {}, function () {}); });
+      }
+    }
+  };
+  window.addEventListener('error', function (e) {
+    window.__err = (window.__err || []).concat(String(e.message));
+  }, true);
+
+  /* ?tall=1 —— 把页面撑到超过一屏，逼出一条竖向滚动条。
+   *
+   * 为什么预览必须带这个开关：真实 juejin.cn 是**有**竖向滚动条的
+   * （agent-browser 实测 viewport 1440x900 下 innerWidth 1440 / clientWidth 1425，
+   * 差 15px），而"浮层贴右上角"这类定位自检一旦拿 innerWidth 当基准就会误判。
+   * 默认那版预览页面太短、压根不出滚动条，所以历史上一直没照出这个问题。
+   *
+   * 必须在 content.js 之前插入：content.js 挂载时就地做一次定位自检，
+   * 那时候滚动条得已经存在。 */
+  if (location.search.indexOf('tall') >= 0) {
+    var filler = document.createElement('div');
+    filler.setAttribute('data-filler', '1');
+    filler.style.cssText = 'height:2400px;margin-top:24px;border:1px dashed #E3E6EA;' +
+      'border-radius:12px;display:grid;place-items:center;color:#C2C7CE';
+    filler.textContent = '撑高用的正文（让页面出现竖向滚动条）';
+    document.body.appendChild(filler);
+  }
+</script>
+<script src="/content.js"></script>
+
+</body>
+</html>

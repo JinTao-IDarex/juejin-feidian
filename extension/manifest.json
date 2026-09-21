@@ -1,30 +1,33 @@
 {
   "manifest_version": 3,
-  "name": "沸点抽卡 · Juejin Pin Gacha",
-  "version": "0.1.0",
-  "description": "实时抓取掘金沸点，一张一张抽卡浏览，每张配一条 AI 犀利点评，可一键贴进评论。",
-  "permissions": ["storage", "alarms", "notifications", "tabs", "scripting", "activeTab"],
+  "name": "沸点抽卡 · 掘金沸点翻牌",
+  "version": "0.2.1",
+  "description": "在 juejin.cn 上悬浮站点同款的主卡与缩略卡：翻牌看当日沸点，配一句 AI 点评。不登录、不上传、不代发。",
+  "icons": {
+    "16": "icons/16.png",
+    "32": "icons/32.png",
+    "48": "icons/48.png",
+    "128": "icons/128.png"
+  },
+  "permissions": [],
   "host_permissions": [
-    "https://api.juejin.cn/*",
-    "https://*.juejin.cn/*",
-    "https://*/*",
-    "http://localhost/*",
-    "http://127.0.0.1/*"
+    "*://*.juejin.cn/*",
+    "https://api.juejin.cn/*"
   ],
   "background": {
-    "service_worker": "background.js"
+    "service_worker": "background.js",
+    "type": "module"
   },
   "content_scripts": [
     {
-      "matches": ["<all_urls>"],
-      "js": ["frame.js"],
+      "matches": ["*://*.juejin.cn/*"],
+      "js": ["content.js"],
       "run_at": "document_idle",
       "all_frames": false
     }
   ],
   "action": {
-    "default_title": "沸点抽卡 · 点一下在本页弹卡牌",
-    "default_popup": "popup.html",
+    "default_title": "沸点抽卡：显示 / 收起浮层",
     "default_icon": {
       "16": "icons/16.png",
       "32": "icons/32.png",
@@ -32,23 +35,19 @@
       "128": "icons/128.png"
     }
   },
-  "commands": {
-    "_execute_action": {
-      "suggested_key": { "default": "Alt+J" },
-      "description": "在本页弹出沸点卡牌"
-    }
-  },
-  "options_page": "options.html",
   "web_accessible_resources": [
     {
-      "resources": ["app.html", "app.css", "app.js"],
-      "matches": ["<all_urls>"]
+      "resources": [
+        "host.html",
+        "app.css",
+        "app.js",
+        "data.js",
+        "embed.css",
+        "embed-boot.js",
+        "api-shim.js",
+        "icons/*"
+      ],
+      "matches": ["*://*.juejin.cn/*"]
     }
-  ],
-  "icons": {
-    "16": "icons/16.png",
-    "32": "icons/32.png",
-    "48": "icons/48.png",
-    "128": "icons/128.png"
-  }
+  ]
 }

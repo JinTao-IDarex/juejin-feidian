@@ -1,259 +1,1051 @@
-/* app.css — 牌面弹窗（只弹两张牌）
- * 设计前提：这一页被当作浮层用（网页右下角 iframe / 独立小窗）。
- * 牌以外不留任何页面装饰，只有四角浮标提供必要操作。
+/* app.css — 沸点抽卡 · 纯白版
+ * 严格对齐 Ardot 设计稿（file 727057985392898，页面帧 3:1）
+ * 设计语言：整页纯白底 + 卡片靠圆角/描边/投影分层 + 双色蓝强调
+ *
+ * 坐标系（设计稿 1440 x 1000 直接映射，零换算）：
+ *   Hero      1440x230  @ (0, 0)
+ *   抽卡舞台   1440x620  @ (0, 226)
+ *     左邻卡   340x480   @ (424, 80)
+ *     主卡     372x520   @ (534, 40)
+ *     左箭头   36x36     @ (448, 282)
+ *     右邻卡   340x480   @ (796, 80)
+ *     右箭头   36x36     @ (956, 282)
+ *     AI 卡    284x360   @ (1156, 100)   ← 紧挨右邻卡右缘 1136 + 20
+ *   进度条     1440x86   @ (0, 862)
+ *
+ * 缩放模型：坐标系固定 1440 x 1000，视口放不下时整组按 --k 等比缩，
+ * transform-origin: center top，版心居中、顶边不动，横向溢出由 .page-wrap 裁掉。
  */
+
 *{box-sizing:border-box;margin:0;padding:0}
+
 :root{
-  --bg:transparent;
-  --card:#ffffff;
-  --ink:#1c1f24;
-  --ink2:#5c636e;
-  --ink3:#98a0ab;
-  --line:#e4e7ec;
-  --line2:#cfd4dc;
-  --hot:#f2661a;
-  --hot-soft:#fff3ea;
-  --like:#e8435f;
-  --ok:#1f9d63;
-  --err:#d93636;
-  --red:#d63a3a;
-  --spade:#22262c;
-  --glass:rgba(24,28,34,.52);
-  --glass-line:rgba(255,255,255,.24);
+  /* —— 双色蓝体系（设计稿唯一强调色）—— */
+  --blue:#1E80FF;          /* 深色：30, 128, 255 */
+  --blue-light:#EAF2FF;    /* 浅色：234, 242, 255 */
+  --blue-mid:#D6E8FF;      /* 徽标底（小字对比度加强） */
+  --blue-ghost:#A8C7FF;    /* 幽灵卡描边 */
+  --blue-deep:#0B4FBF;
+
+  /* —— 中性 —— */
+  --ink:#16181D;
+  --ink-body:#4B5159;
+  --ink-2:#5C636D;
+  --ink-3:#A8AEB8;
+  --hair:#E4E6E9;
+  --hair-2:#E8EAEC;
+  --dash:#E5E7EB;
+
+  /* 设计稿里文字用到的灰阶（保留原值） */
+  --t-title-ghost:#C4CAD2;
+  --t-body-ghost:#CBD1D8;
+
+  --font:"Outfit","Inter",-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+  --font-sans:"Inter",-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+  --font-cn:"Inter","Noto Sans SC","PingFang SC","Microsoft YaHei",var(--font-sans);
 }
-html,body{height:100%;overflow:hidden;background:transparent}
+
+html{-webkit-text-size-adjust:100%}
 body{
+  background:#fff;
   color:var(--ink);
-  font:14px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+  font:400 14px/1.6 var(--font-cn);
   -webkit-font-smoothing:antialiased;
-  display:grid;place-items:center;
+  -moz-osx-font-smoothing:grayscale;
+  overflow-x:clip;
 }
-.grow{flex:1}
 button{font:inherit;color:inherit;border:none;background:none;cursor:pointer}
-a{color:inherit;text-decoration:none}
+svg{display:block}
+img{display:block;max-width:100%}
+::selection{background:var(--blue-mid)}
 
-/* 被 content script 注入网页时：牌层自己铺一层遮罩（网页在内层，遮罩遮不到，所以在这儿补） */
-html.embed body{
-  background:rgba(16,19,24,.5);
-  backdrop-filter:blur(2.5px);
-  animation:veil .18s ease both;
+/* ================================================================
+ * 页面坐标系：1440 x 1000
+ * ================================================================ */
+.page-wrap{
+  position:relative;
+  width:100%;
+  /* 布局高度按缩放后的实际高占位，避免下方留白 */
+  height:calc(1000px * var(--k,1));
+  overflow-x:clip;
+  /* 两侧 24px 安全边距：k<1 时缩放后的画布恰好等于可用宽度，
+   * 没有边距的话 AI 卡右缘（设计坐标 1440，与画布齐平）会贴死窗口边缘。
+   * fitStage() 计算 k 时会同步扣除这 48px（见 app.js）。 */
+  padding:0 24px;
 }
-@keyframes veil{from{background:rgba(16,19,24,0)}to{background:rgba(16,19,24,.5)}}
-
-.wrap{
-  width:100%;height:100%;
-  display:flex;align-items:center;justify-content:center;
-  padding:62px 26px 96px;
-  animation:pop .24s cubic-bezier(.2,.9,.3,1.05) both;
+/* ---- 缩放模型的正确写法 ----
+ * 关键：布局宽度也要跟着 --k 走（1440 * k），不能写死 1440。
+ *
+ * 写死 1440 的后果：视口 1080 时，这个 1440 宽的盒子依然按 1440 居中
+ * （左右各溢出 180px），再以它的中心为原点 scale(0.75) —— 缩完右边缘
+ * 正好落在 1080，AI 卡（设计稿右缘 1440）就被挤出视口裁掉一条。
+ * 改成 width:calc(1440px * k) 后，盒子本身就只占缩放后的宽度，
+ * margin:auto 的居中是真实居中，缩放后四边都不溢出。 */
+.page{
+  position:relative;
+  width:calc(1440px * var(--k,1));
+  height:calc(1000px * var(--k,1));
+  margin:0 auto;
 }
-/* 独立窗口（非注入）且不是被谁嵌着：给自己铺一层浅色底 */
-html:not(.embed) body{ background:#eef1f5 }
-@keyframes pop{0%{opacity:0;transform:translateY(14px) scale(.975)}100%{opacity:1;transform:none}}
-
-/* ---------- 牌桌（只有两张牌） ---------- */
-.stage{position:relative;display:flex;align-items:stretch;justify-content:center;gap:22px}
-.stage::before{ /* 牌后面的一圈柔光，把浮层和网页主体分开 */
-  content:'';position:absolute;inset:-30px -33px;border-radius:26px;z-index:-1;
-  background:radial-gradient(120% 100% at 50% 40%,rgba(255,255,255,.3),rgba(24,28,34,.05) 78%);
-  filter:blur(2px);
+/* 内层固定 1440x1000 承载坐标，整体按 --k 缩，原点左上：
+ * 原点取左上而非 center，是因为外层盒子的尺寸已经等于缩放后尺寸，
+ * 用左上做原点，设计坐标 (x,y) 映射后就是 (x*k, y*k)，不引入额外偏移。 */
+.page-inner{
+  position:absolute;left:0;top:0;
+  width:1440px;height:1000px;
+  transform:scale(var(--k,1));
+  transform-origin:left top;
 }
-.cardHost{display:flex}
 
-/* ---------- 四角浮标 ---------- */
-.hud{position:fixed;left:14px;top:12px;display:flex;gap:6px;align-items:center;z-index:20}
-.hud .logo{width:26px;height:26px;border-radius:8px;display:grid;place-items:center;font-weight:700;
-  font-size:12px;color:#fff;background:var(--hot);box-shadow:0 4px 12px -4px rgba(242,102,26,.7)}
-.tbtn{border:1px solid var(--glass-line);background:var(--glass);color:#fff;
-  border-radius:9px;padding:5px 10px;font-size:12px;font-weight:500;transition:.16s;white-space:nowrap;
-  backdrop-filter:blur(8px);box-shadow:0 4px 14px -8px rgba(0,0,0,.5)}
-.tbtn:hover{background:rgba(24,28,34,.72);border-color:rgba(255,255,255,.36)}
-.tbtn b{font-weight:600}
-.tbtn.spin{animation:spin .8s linear infinite}
-@keyframes spin{to{transform:rotate(360deg)}}
-.hud .sub{font-size:10.5px;color:rgba(255,255,255,.62);margin-left:3px;
-  text-shadow:0 1px 3px rgba(0,0,0,.45);white-space:nowrap}
+/* ---- 纯白底层 ----
+ * 整页统一 #fff。之前的三层蓝色光晕已移除：面板透明度不一致
+ * （.62 / .42 / .62）会让同一片底色透出深浅不同的蓝，看起来割裂。
+ * 现在去掉光晕、所有面板改为不透明纯白，色差归零。 */
+.page{background:#fff}
 
-/* ---------- 右上角状态 ---------- */
-.info{position:fixed;right:14px;top:12px;text-align:right;z-index:20;
-  background:var(--glass);border:1px solid var(--glass-line);border-radius:10px;
-  padding:7px 11px;color:rgba(255,255,255,.78);font-size:11px;line-height:1.6;
-  backdrop-filter:blur(8px);pointer-events:none;min-width:132px}
-.info b{color:#fff;font-size:12.5px;font-weight:600;display:block}
-.info .prog{height:3px;background:rgba(255,255,255,.22);border-radius:9px;overflow:hidden;margin-top:6px}
-.info .prog i{display:block;height:100%;width:0;background:var(--hot);border-radius:9px;
-  transition:width .3s cubic-bezier(.4,0,.2,1)}
+/* ================================================================
+ * Hero  1440x230 @ (0,0)  — 纯白
+ * ================================================================ */
+.hero{
+  position:absolute;left:0;top:0;
+  width:1440px;height:230px;
+  padding:28px 0 20px;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;
+  background:#fff;
+  overflow:hidden;
+  z-index:2;
+}
+/* Tips 徽标：hug x 26，圆角 99，padding 0 12，gap 5 */
+.chip-tips{
+  display:inline-flex;align-items:center;gap:5px;
+  height:26px;padding:0 12px;border-radius:99px;
+  background:var(--blue-mid);
+  font:600 12px/1 var(--font-sans);color:var(--blue);
+}
+.hero h1{
+  font:700 40px/1.25 var(--font-cn);color:#16181D;
+  letter-spacing:-.5px;text-align:center;
+}
+.hero p{
+  font:400 14.5px/1.6 var(--font-cn);color:#8A9099;
+  text-align:center;
+}
 
-/* ---------- 搜索 ---------- */
-.search{position:fixed;left:14px;top:48px;z-index:20}
-.search input{width:184px;background:var(--glass);border:1px solid var(--glass-line);border-radius:9px;
-  padding:6px 11px;color:#fff;font:12px/1.5 inherit;outline:none;transition:.16s;backdrop-filter:blur(8px)}
-.search input::placeholder{color:rgba(255,255,255,.55)}
-.search input:focus{border-color:rgba(255,255,255,.5);background:rgba(24,28,34,.7)}
+/* ================================================================
+ * 抽卡舞台  1440x620 @ (0,226)  — 纯白（无边界，与页面融为一体）
+ * ================================================================ */
+.stage{
+  position:absolute;left:0;top:226px;
+  width:1440px;height:620px;
+  background:#fff;
+  z-index:1;
+}
+/* overflow:hidden 仍然必需：邻卡交换模型下卡片起点虽都在舞台内，
+ * 但 ±2 卡位（新邻卡的来处）探到主卡两侧之外，加上左右箭头缝隙，
+ * 不裁的话卡片边缘会探进 Hero / 进度条区域，整页穿帮。
+ * 裁在 .stage-inner 而不是 .stage 上，是因为 .stage-inner 就是 inset:0 的
+ * 内容区，裁它不会影响 .stage 自身背景与相邻区块的堆叠关系。 */
+.stage-inner{position:absolute;inset:0;overflow:hidden;perspective:1000px}
 
-/* ---------- 底部浮条 ---------- */
-.dock{position:fixed;left:50%;bottom:14px;transform:translateX(-50%);z-index:20;
-  display:flex;flex-direction:column;align-items:center;gap:6px;
-  background:var(--glass);border:1px solid var(--glass-line);border-radius:14px;
-  padding:9px 13px;backdrop-filter:blur(10px);
-  box-shadow:0 12px 30px -14px rgba(0,0,0,.55);max-width:calc(100vw - 24px)}
-.dock .row{display:flex;justify-content:center;gap:6px;flex-wrap:wrap}
-.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;border-radius:9px;
-  padding:7px 13px;font-size:12.5px;font-weight:600;transition:.16s;border:1px solid transparent;
-  white-space:nowrap}
-.btn:active{transform:translateY(1px)}
-.btn:disabled{opacity:.45;cursor:default;transform:none}
-.btn.ghost{background:rgba(255,255,255,.14);border-color:rgba(255,255,255,.22);color:#fff}
-.btn.ghost:hover{background:rgba(255,255,255,.26)}
-.btn.primary{background:var(--hot);color:#fff;box-shadow:0 8px 20px -10px rgba(242,102,26,.9)}
-.btn.primary:hover{background:#e35c12}
-.btn.ghost.liked{background:rgba(232,67,95,.92);border-color:transparent;color:#fff}
-.btn.ghost.liked:hover{background:#d63450}
-.btn.wide{padding:7px 24px}
-.hint{font-size:10.5px;color:rgba(255,255,255,.62);white-space:nowrap;overflow:hidden;
-  text-overflow:ellipsis;max-width:100%}
-kbd{font:inherit;font-size:11px;background:#fff;border:1px solid var(--line);border-bottom-width:2px;
-  border-radius:5px;padding:1px 6px;margin:0 2px}
+/* ---- 邻卡（前后张）：340x480 @ y=80，圆角 20 ----
+ * 玻璃 rgba(234,242,255,1) 不透明，LAYER_BLUR 8 用 filter 等价实现。
+ * 它半掩在主卡两侧，只探出 ~110px。 */
+.ghost{
+  position:absolute;top:80px;
+  width:340px;height:480px;
+  padding:32px 34px 0;
+  display:flex;flex-direction:column;gap:8px;
+  /* 邻卡底色取设计稿原值 #EBF2FF（比 --blue-light 亮 1/255，
+   * 邻卡是「虚化的下一张」，比主卡插画的浅蓝底再淡一档，层次更干净）。 */
+  background:#EBF2FF;
+  border:1px solid var(--blue-ghost);
+  border-radius:20px;
+  /* 设计稿是 LAYER_BLUR 8。网页里 blur 会把描边一起糊掉，
+   * 直接 8px 会让邻卡退化成一块色斑，所以降到 2.5px：
+   * 保留「虚化」的观感，同时让描边和文案还能读出来。 */
+  filter:blur(2.5px);
+  z-index:2;
+  pointer-events:none;
+}
+.ghost.left{left:424px}
+.ghost.right{left:676px}
+/* 标签 hug x 22，圆角 6，padding 0 8 */
+.ghost .tag{
+  align-self:flex-start;
+  display:inline-flex;align-items:center;
+  height:22px;padding:0 8px;border-radius:6px;
+  background:var(--blue-mid);
+  font:600 12px/1 var(--font-sans);color:#D9DEE4;
+}
+.ghost h3{
+  width:272px;
+  font:700 18px/1.5 var(--font-cn);color:var(--t-title-ghost);
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;
+}
+.ghost p{
+  width:272px;
+  font:400 12.5px/1.75 var(--font-cn);color:var(--t-body-ghost);
+  display:-webkit-box;-webkit-line-clamp:6;-webkit-box-orient:vertical;overflow:hidden;
+}
+/* 无话题短沸点：正文升格为主文案 */
+.ghost h3.asbody{
+  font:600 15px/1.8 var(--font-cn);
+  -webkit-line-clamp:7;
+}
 
-/* ---------- card ---------- */
-.card{
-  position:relative;width:266px;flex:0 0 auto;aspect-ratio:2.5/3.5;background:var(--card);
-  border:1px solid var(--line2);border-radius:12px;padding:15px 16px 14px;
+/* ---- 主卡：372x520 @ (534,40)，圆角 20，纸牌比例 1:1.3978 ----
+ * 纯白卡面 + 1px 中性描边 + 蓝调投影，纯白底上靠这两样分层 */
+.main{
+  position:absolute;left:534px;top:40px;
+  width:372px;height:520px;
+  padding:32px 34px 26px;
   display:flex;flex-direction:column;
-  box-shadow:0 18px 42px -18px rgba(18,22,28,.5);
-  transition:transform .18s ease,box-shadow .18s ease;
+  background:#fff;
+  border:1px solid #E5E7EA;
+  border-radius:20px;
+  box-shadow:0 14px 36px rgba(30,89,191,.14);
+  overflow:hidden;
+  z-index:4;                       /* 压住两侧邻卡 */
 }
-.card:hover{transform:translateY(-3px);box-shadow:0 26px 52px -20px rgba(18,22,28,.55)}
-.card.dealL{animation:dealL .46s cubic-bezier(.2,.9,.3,1.1) both}
-.card.dealR{animation:dealR .46s .08s cubic-bezier(.2,.9,.3,1.1) both}
-@keyframes dealL{0%{opacity:0;transform:translate(-42px,26px) rotate(-9deg)}100%{opacity:1;transform:none}}
-@keyframes dealR{0%{opacity:0;transform:translate(42px,26px) rotate(9deg)}100%{opacity:1;transform:none}}
+/* 卡头：标签 + 时间，fill_container */
+.main .chead{
+  display:flex;align-items:center;
+  flex:0 0 auto;
+}
+.main .tag{
+  display:inline-flex;align-items:center;gap:5px;
+  height:24px;padding:0 9px;border-radius:7px;
+  background:var(--blue-mid);
+  font:600 12px/1 var(--font-sans);color:var(--blue);
+  flex:0 0 auto;
+}
+.main .time{
+  margin-left:auto;
+  font:400 12.5px/1 var(--font-sans);color:#A8AEB8;
+  white-space:nowrap;
+}
+.main h2{
+  margin-top:16px;flex:0 0 auto;
+  width:304px;
+  font:700 24px/1.4 var(--font-cn);color:#16181D;letter-spacing:-.2px;
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;
+}
+.main .body{
+  margin-top:14px;flex:0 0 auto;
+  width:304px;
+  font:400 13.5px/1.8 var(--font-cn);color:#4B5159;
+  white-space:pre-line;word-break:break-word;
+  display:-webkit-box;-webkit-line-clamp:5;-webkit-box-orient:vertical;overflow:hidden;
+}
+/* 无话题的短沸点：正文升格为主文案 */
+.main .body.lead{
+  font:600 17px/1.75 var(--font-cn);color:#33383F;
+  -webkit-line-clamp:6;
+}
+/* 极短沸点（十几个字）：再抬一档，居中撑住卡片中段，
+ * 否则一句短话贴在标题位、下面一大片空白，卡片看起来像没加载完。 */
+.main .body.lead.xs{
+  align-self:center;
+  margin-top:26px;
+  font:600 22px/1.6 var(--font-cn);color:#2A2F36;
+  text-align:center;
+  -webkit-line-clamp:4;
+}
+/* 线稿插画区：固定 170 高，220x150 画布居中 */
+.main .illus{
+  margin-top:14px;flex:0 0 auto;height:170px;
+  display:flex;align-items:center;justify-content:center;
+}
+.main .illus svg{width:220px;height:150px}
+.main .spacer{flex:1;min-height:6px}
 
-.card .idx{position:absolute;line-height:1;text-align:center;font-weight:600}
-.card .idx .rank{font-size:19px}
-.card .idx .suit{font-size:14px;margin-top:3px;display:block}
-.card .idx.tl{top:11px;left:13px}
-.card .idx.br{bottom:11px;right:13px;transform:rotate(180deg)}
-.rank-red{color:var(--red)}
-.rank-black{color:var(--spade)}
+/* 卡底行：01 + 虚线 + 作者信息，gap 14 */
+.main .cfoot{
+  display:flex;align-items:center;gap:14px;flex:0 0 auto;
+}
+.main .bignum{
+  font:700 40px/1 var(--font-sans);color:#E5E7EB;letter-spacing:-1px;
+  flex:0 0 auto;
+}
+.main .dash{
+  flex:1;min-width:20px;height:0;
+  border-bottom:2px dotted #E5E7EB;
+  transform:translateY(-2px);
+}
+.main .who{
+  display:flex;flex-direction:column;gap:6px;align-items:flex-start;
+  flex:0 0 auto;
+}
+.main .who .line1{display:flex;align-items:center;gap:8px}
+.main .who .av{
+  width:22px;height:22px;border-radius:99px;background:#D6DBE1;
+  overflow:hidden;display:grid;place-items:center;flex:0 0 auto;
+}
+.main .who .av img{width:100%;height:100%;object-fit:cover}
+/* 行高不能写 /1：/1 把行盒压到 = 字号（12.5px），而该字体字形盒约 15px
+ * （ascent 12 + descent 3），字形会顶出行盒；overflow:hidden 是省略号必需的，
+ * 于是正好在行盒边界把字形顶部削掉。至少要 15/12.5 = 1.2，取 1.3 留余量。 */
+.main .who .name{
+  font:400 12.5px/1.3 var(--font-sans);color:#6B7280;
+  max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+}
+.main .who .meta{
+  font:400 11.5px/1.3 var(--font-sans);color:#A8AEB8;
+  padding-left:30px;              /* 与作者名对齐（头像 22 + gap 8） */
+}
+.main.liked{border-color:rgba(30,128,255,.55)}
 
-.slotTag{position:absolute;top:9px;right:12px;font-size:10.5px;letter-spacing:1.5px;
-  color:var(--ink3);text-transform:uppercase}
+/* ---- 主卡即链接：整张卡点进掘金这条沸点的原文页 ----
+ * 卡面元素本身是 <a>（无链接时退化成 <article>），所以先把 a 的默认样式清零。
+ * 「能点」这件事必须看得见：默认态在卡头右端放一枚「原文 ↗」，
+ * hover 时整卡浮起 + 提示变蓝。
+ *
+ * ⚠️ hover 反馈只能用 box-shadow / border-color，【不能用 transform】：
+ * .main.anim-in 的 animation 带 fill:both，动画结束后动画的 transform 值
+ * 仍然压着普通声明（动画优先于 :hover），写 transform 会看起来"没反应"。
+ */
+a.main{
+  color:inherit;text-decoration:none;cursor:pointer;
+  transition:box-shadow .18s ease,border-color .18s ease;
+}
+a.main:hover{box-shadow:0 20px 46px rgba(30,89,191,.22);border-color:#C9D9F0}
+a.main:active{box-shadow:0 8px 20px rgba(30,89,191,.18)}
+a.main:focus-visible{outline:2px solid var(--blue);outline-offset:3px}
+/* 卡头右端的「原文 ↗」：与时间同一行、和「沸点」标签同为 24px 高，
+ * 默认几乎无底色（不跟正文抢注意力），hover 时整卡浮起、它变蓝并显底。
+ * 给一点底色而不是纯文字，是因为"整卡可点"这件事必须有个可见的抓手。 */
+.main .go{
+  margin-left:8px;flex:0 0 auto;
+  display:inline-flex;align-items:center;gap:4px;
+  height:24px;padding:0 8px;border-radius:7px;
+  background:#F4F6F9;border:1px solid #EBEEF2;
+  font:500 11.5px/1 var(--font-sans);color:#8A9099;
+  transition:color .18s ease,background .18s ease,border-color .18s ease;
+}
+a.main:hover .go{color:var(--blue);background:var(--blue-mid);border-color:#BFDBFF}
 
-.cHead{margin:24px 0 0;padding-bottom:11px;border-bottom:1px solid var(--line);text-align:center}
-.cHead b{display:block;font-size:13.5px;font-weight:600}
-.cHead span{display:block;font-size:11.5px;color:var(--ink3);margin-top:2px;
-  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* ---- 翻牌箭头：36x36 圆钮 ---- */
+.round{
+  position:absolute;top:282px;
+  width:36px;height:36px;border-radius:99px;
+  background:#fff;border:1px solid #E6E7EA;
+  box-shadow:0 3px 10px rgba(0,0,0,.08);
+  display:grid;place-items:center;
+  z-index:6;
+  transition:box-shadow .16s,transform .16s,opacity .16s;
+}.round.prev{left:448px}
+.round.next{left:956px}
+.round:hover{box-shadow:0 6px 18px rgba(30,89,191,.18)}
+.round:active{transform:scale(.94)}
+.round[disabled]{opacity:.35;cursor:default}
+.round[disabled]:hover{box-shadow:0 3px 10px rgba(0,0,0,.08)}
 
-.cBody{flex:1;display:flex;flex-direction:column;justify-content:center;gap:10px;padding:13px 2px;min-height:0}
-.cBody .txt{font-size:12.5px;line-height:1.78;color:#2b3038;word-break:break-word;white-space:pre-wrap}
-.cBody .txt.scroll{max-height:206px;overflow:auto;padding-right:4px}
-.cBody .txt.scroll::-webkit-scrollbar{width:4px}
-.cBody .txt.scroll::-webkit-scrollbar-thumb{background:#dfe3ea;border-radius:9px}
-.cBody .pics{display:flex;gap:6px;justify-content:center;flex-wrap:wrap}
-.cBody .pics img{width:58px;height:58px;object-fit:cover;border-radius:8px;border:1px solid var(--line)}
+/* ---- AI 点评卡：284x360 @ (1136,100)，圆角 24，蓝描边 ----
+ * x=1136：在右邻卡（静态右缘 1016）右侧留 120px 呼吸位，比原 1156 靠左 20px，
+ * 更贴近牌阵；右缘 1420，距画布右边 20px。
+ * 两个箭头（448 / 956）对称贴在主卡两侧各 50px 的缝隙里，不再被这张卡遮住。 */
+.ai{
+  position:absolute;left:1136px;top:100px;
+  width:284px;height:360px;
+  padding:26px 26px 20px;
+  display:flex;flex-direction:column;gap:12px;
+  background:#fff;
+  border:1px solid var(--blue);
+  border-radius:24px;
+  box-shadow:0 14px 34px rgba(30,89,191,.14);
+  overflow:hidden;
+  z-index:5;
+}
+.ai .badge{
+  align-self:flex-start;
+  display:inline-flex;align-items:center;gap:5px;
+  height:26px;padding:0 10px;border-radius:7px;
+  background:var(--blue);
+  font:600 12px/1 var(--font-sans);color:#fff;
+  flex:0 0 auto;
+}
+.ai .roast{
+  width:228px;flex:1;min-height:0;overflow:auto;
+  font:400 13.5px/1.75 var(--font-cn);color:#33383F;
+  white-space:pre-line;word-break:break-word;
+  padding-right:4px;
+  display:flex;flex-direction:column;
+}
+.ai .roast > span{margin-bottom:auto}
+.ai .roast::-webkit-scrollbar{width:4px}
+.ai .roast::-webkit-scrollbar-thumb{background:#E2E5E8;border-radius:9px}
+.ai .copy{
+  flex:0 0 auto;height:40px;border-radius:10px;
+  background:var(--blue);
+  display:flex;align-items:center;justify-content:center;gap:7px;
+  font:600 13px/1 var(--font-sans);color:#fff;
+  transition:background .16s,transform .16s;
+}
+.ai .copy:hover{background:#0B6FE8}
+.ai .copy:active{transform:translateY(1px)}
+.ai .note{
+  flex:0 0 auto;text-align:center;
+  font:400 11.5px/1.5 var(--font-sans);color:#A8AEB8;
+}
 
-.cFoot{padding-top:11px;border-top:1px solid var(--line)}
-.cFoot .row{display:flex;justify-content:center;flex-wrap:wrap;gap:11px;font-size:11px;color:var(--ink3)}
-.cFoot .row a{color:var(--hot);font-weight:500}
-.cFoot .row a:hover{text-decoration:underline}
+/* ---- 右侧卡片栈：一叠卡上下翻（第 1 张 AI 点评，后面每条评论一张） ----
+ * 结构 = 钉住的头 + 裁切窗口 + 钉住的底：
+ *   .ai-top  徽标 / 页码 / 上下按钮
+ *   .ai-view 裁剪窗口（overflow:hidden）
+ *     .ai-track 整体上下平移的那条轨道
+ *       .ai-slide × N 每张绝对定位占满窗口，自身 translateY(k*100%) 排到第 k 格
+ *   .ai-foot 动作按钮 + 说明
+ * 只动轨道的 transform，不重建 DOM —— 所以连点不会错位，
+ * 评论正文的滚动位置也不会被重置。
+ *
+ * 注意别用 @media 驱动降级：档位由 app.js 决定，CSS 只认 html 上的类名。 */
+.ai .ai-top{display:flex;align-items:center;gap:8px;flex:0 0 auto}
+.ai .pager{margin-left:auto;display:inline-flex;align-items:center;gap:4px}
+.ai .pbtn{
+  width:24px;height:24px;border-radius:99px;
+  display:grid;place-items:center;
+  color:#8A9099;background:#F4F6F9;
+  transition:background .16s,color .16s;
+}
+.ai .pbtn:hover{background:var(--blue-mid);color:var(--blue)}
+.ai .pbtn[disabled]{opacity:.35;pointer-events:none}
+.ai .pnum{
+  min-width:32px;text-align:center;
+  font:500 11px/1 var(--font-sans);color:#A8AEB8;
+  font-variant-numeric:tabular-nums;
+}
+/* 评论用浅底深字的徽标，跟蓝色的「AI 点评」区分开 */
+.ai .badge.people{background:#F2F3F5;color:#5C636D}
 
-.tags{display:flex;justify-content:center;gap:5px;flex-wrap:wrap}
-.tag{font-size:10.5px;color:var(--ink2);background:#f2f4f7;border-radius:6px;padding:2px 8px}
-.tag.hot{color:var(--hot);background:var(--hot-soft)}
+.ai .ai-view{flex:1;min-height:0;position:relative;overflow:hidden}
+.ai .ai-track{
+  position:absolute;inset:0;
+  transition:transform .42s cubic-bezier(.22,1,.36,1);
+  will-change:transform;
+}
+.ai .ai-slide{
+  position:absolute;inset:0;
+  display:flex;flex-direction:column;gap:10px;
+  overflow:hidden;
+}
 
-/* ---------- 解析牌 ---------- */
-.card.ai{border-color:#f0d6c2}
-.card.ai .cHead{border-bottom-color:#f4e3d6}
-.card.ai .cHead b{color:var(--hot)}
-.ornament{text-align:center;font-size:10.5px;color:#e0c3ac;letter-spacing:5px}
-.cBody .roast{font-size:14px;line-height:1.92;text-align:center;color:#22262d;font-weight:500;
-  word-break:break-word}
-.personas{display:flex;justify-content:center;gap:5px;flex-wrap:wrap}
-.persona{font-size:10.5px;color:var(--ink2);border:1px solid var(--line);border-radius:6px;
-  padding:2px 8px;background:#fff;transition:.16s}
-.persona:hover{border-color:var(--hot);color:var(--hot)}
-.persona.on{background:var(--hot-soft);border-color:#f5c39f;color:var(--hot);font-weight:600}
-.persona.tagpill{cursor:default;opacity:.7;border-style:dashed}
-.cardActs{display:flex;justify-content:center;gap:6px;flex-wrap:wrap;margin-top:9px}
-.cardActs button{font-size:11px;color:var(--ink2);border:1px solid var(--line);border-radius:7px;
-  padding:3px 9px;background:#fff;transition:.16s}
-.cardActs button:hover{border-color:var(--hot);color:var(--hot)}
-.cardActs button:disabled{opacity:.45;cursor:default}
-.aiState{position:absolute;top:9px;right:12px;font-size:10.5px;color:var(--ink3);letter-spacing:1px;
-  text-transform:uppercase}
-.aiState.ok{color:var(--ok)}
-.aiState.err{color:var(--err)}
-.ph{font-size:12px;line-height:1.8;color:var(--ink3);text-align:center}
-.spinner{display:inline-block;width:10px;height:10px;border:2px solid #e2e6ec;border-top-color:var(--hot);
-  border-radius:50%;animation:spin .7s linear infinite;vertical-align:-1px;margin-right:5px}
+/* 评论卡：作者 → 正文（可滚） → 数据 */
+.ai .cmt-head{display:flex;align-items:center;gap:7px;flex:0 0 auto}
+.ai .cmt-av{
+  width:20px;height:20px;border-radius:99px;background:#D6DBE1;
+  overflow:hidden;display:grid;place-items:center;flex:0 0 auto;
+}
+.ai .cmt-av img{width:100%;height:100%;object-fit:cover}
+/* 同 .main .who .name：/1 会让 overflow:hidden 削掉字形顶部，改用 1.3 */
+.ai .cmt-name{
+  font:600 12px/1.3 var(--font-sans);color:#33383F;
+  max-width:104px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+}
+.ai .cmt-author{
+  flex:0 0 auto;height:16px;padding:0 5px;border-radius:4px;
+  background:var(--blue-mid);
+  font:600 10px/16px var(--font-sans);color:var(--blue);
+}
+.ai .cmt-body{
+  width:228px;padding-right:4px;
+  flex:1;min-height:0;overflow:auto;
+  font:400 13px/1.8 var(--font-cn);color:#33383F;
+  white-space:pre-line;word-break:break-word;
+}
+.ai .cmt-body::-webkit-scrollbar{width:4px}
+.ai .cmt-body::-webkit-scrollbar-thumb{background:#E2E5E8;border-radius:9px}
+.ai .cmt-meta{
+  flex:0 0 auto;
+  font:400 11px/1 var(--font-sans);color:#A8AEB8;
+  font-variant-numeric:tabular-nums;
+}
 
-/* ---------- empty ---------- */
-.boardEmpty{width:558px;min-height:220px;display:grid;place-items:center;text-align:center;
-  color:var(--ink2);font-size:13px;background:rgba(255,255,255,.94);border:1px solid var(--line);
-  border-radius:16px;box-shadow:0 18px 42px -18px rgba(18,22,28,.5)}
-.boardEmpty b{display:block;font-size:14px;color:var(--ink);margin-bottom:6px;font-weight:600}
+/* 占位卡：拉取中 / 一条都没有 / 没拉到 / 还有更多 */
+.ai .note-box{
+  flex:1;min-height:0;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;
+  text-align:center;
+  font:400 12.5px/1.7 var(--font-cn);color:#A8AEB8;
+}
+.ai .note-box b{font:600 13px/1.6 var(--font-cn);color:#5C636D}
+.ai .note-box span{font-size:11.5px;color:#B4B9C1}
 
-/* ---------- sheets ---------- */
-.mask{position:fixed;inset:0;background:rgba(16,19,24,.46);opacity:0;pointer-events:none;transition:.2s;z-index:40}
-.mask.on{opacity:1;pointer-events:auto}
-.sheet{position:fixed;top:50%;left:50%;transform:translate(-50%,-46%) scale(.97);width:min(500px,92vw);
-  max-height:84vh;overflow:auto;z-index:50;background:#fff;border:1px solid var(--line);border-radius:18px;
-  padding:20px 22px;box-shadow:0 28px 60px -24px rgba(16,19,24,.5);
-  opacity:0;pointer-events:none;transition:.22s cubic-bezier(.2,.9,.3,1)}
-.sheet.on{opacity:1;pointer-events:auto;transform:translate(-50%,-50%) scale(1)}
-.sheetHead{display:flex;align-items:center;gap:8px;margin-bottom:5px}
-.sheetHead b{font-size:15px;font-weight:600}
-.sub{font-size:11.5px;color:var(--ink3)}
-.subtle{font-size:11.5px;color:var(--ink3);margin-bottom:12px}
-.sheet textarea{width:100%;height:104px;background:#fbfcfd;border:1px solid var(--line);border-radius:12px;
-  padding:11px 13px;color:var(--ink);font:14px/1.7 inherit;resize:vertical;outline:none;transition:.16s}
-.sheet textarea:focus{border-color:var(--hot);box-shadow:0 0 0 3px rgba(242,102,26,.13)}
-.sheetActions{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap}
-.sheetActions .btn{padding:8px 15px;font-size:12.5px}
-.sheetActions .btn.ghost{background:#fff;border-color:var(--line);color:var(--ink2);backdrop-filter:none}
-.sheetActions .btn.ghost:hover{background:#fff;border-color:var(--line2);color:var(--ink)}
-.hotcmts{max-height:78px;overflow:auto;margin-bottom:10px;display:flex;flex-direction:column;gap:5px}
-.hotcmts:empty{display:none}
-.hotcmts .hc{font-size:11.5px;color:var(--ink3);line-height:1.55}
-.hotcmts .hc b{color:var(--ink2);font-weight:600}
-.favs{max-height:60vh;overflow:auto}
-.favs .it{display:flex;gap:10px;align-items:flex-start;padding:12px 0;border-bottom:1px solid var(--line);cursor:pointer}
-.favs .it:last-child{border-bottom:none}
-.favs .it:hover b{color:var(--hot)}
-.favs .it b{font-size:12.5px;font-weight:600;display:block;margin-bottom:3px;transition:.16s}
-.favs .it span{font-size:11.5px;color:var(--ink3);display:-webkit-box;-webkit-line-clamp:2;
-  -webkit-box-orient:vertical;overflow:hidden}
-.favs .rm{margin-left:auto;color:var(--ink3);font-size:15px;padding:0 4px;flex:0 0 auto}
-.favs .rm:hover{color:var(--err)}
-.empty{text-align:center;color:var(--ink3);padding:30px 0;font-size:12.5px}
+.ai .ai-foot{flex:0 0 auto;display:flex;flex-direction:column;gap:12px}
+.ai .copy[disabled]{opacity:.55;pointer-events:none}
 
-/* ---------- toast ---------- */
-.toast{position:fixed;left:50%;bottom:calc(100% - 62px);transform:translate(-50%,12px);background:#22262c;
-  color:#fff;padding:9px 18px;border-radius:11px;font-size:12.5px;z-index:60;opacity:0;
-  pointer-events:none;transition:.24s;max-width:80vw;text-align:center;
-  box-shadow:0 14px 32px -14px rgba(0,0,0,.6)}
+/* 轻量动效档：卡片栈没有位移，用一次 130ms 淡入代替「换了一张」的感知 */
+html.motion-lite .ai .ai-track{transition:none}
+html.motion-lite .ai .ai-view.fade{animation:softFadeIn 130ms ease both}
+
+/* ================================================================
+ * 进度条  1440x86 @ (0,862)  — 纯白
+ * ================================================================ */
+.hud{
+  position:absolute;left:0;top:862px;
+  width:1440px;height:86px;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;
+  background:#fff;
+  z-index:2;
+}
+.hud .status{
+  display:inline-flex;align-items:center;gap:10px;
+  font:600 13.5px/1 var(--font-sans);color:#5C636D;
+}
+.ring{
+  width:16px;height:16px;border-radius:99px;flex:0 0 auto;
+  border:2px solid #D8DCE1;border-top-color:var(--blue);
+  animation:spin 1s linear infinite;
+}
+@keyframes spin{to{transform:rotate(360deg)}}
+.hud .keys{
+  font:400 12.5px/1 var(--font-sans);color:#A8AEB8;
+}
+/* 洗牌小圆钮：挂在进度行尾部，弱化存在但可点 */
+.hud .shuffle{
+  display:inline-flex;align-items:center;gap:5px;
+  height:26px;padding:0 12px;border-radius:99px;
+  border:1px solid var(--hair);
+  font:600 12px/1 var(--font-sans);color:#5C636D;
+  transition:border-color .16s,color .16s,transform .16s;
+}
+.hud .shuffle:hover{border-color:var(--blue);color:var(--blue)}
+.hud .shuffle:active{transform:scale(.94)}
+.hud .shuffle:focus-visible{outline:2px solid var(--blue);outline-offset:2px}
+/* 动效档开关：与洗牌同款小圆钮，文字随档位变化（完整 / 轻量 / 跟随系统）。
+ * 定 min-width 避免切换档位时 HUD 整行左右抖动；
+ * 左侧小圆点常驻指示当前是「完整动效(蓝)」还是「已降级(灰)」。 */
+.hud .shuffle.motion{min-width:106px;justify-content:center}
+.hud .shuffle.motion .mo-dot{
+  width:6px;height:6px;border-radius:99px;flex:0 0 auto;
+  background:var(--blue);transition:background .16s;
+}
+.hud .shuffle.motion[aria-pressed="false"] .mo-dot{background:#C2C8D0}
+.hud .keys b{
+  font-weight:400;color:#8A9099;
+  background:rgba(255,255,255,.9);
+  border:1px solid var(--hair);border-bottom-width:2px;
+  border-radius:5px;padding:2px 6px;margin:0 1px;
+}
+
+/* ================================================================
+ * 翻牌动效 —— 离场层交叉淡化模型
+ * ----------------------------------------------------------------
+ * 旧版「相邻位交换」让新卡直接从旧卡位置长出来，但两张卡版式不同
+ * （邻卡只有标题/正文，主卡是完整版式），innerHTML 替换瞬间旧卡消失、
+ * 新卡内容跳变——视觉上就是「生硬」；且三张卡同时做 blur 滤镜动画，
+ * 每帧重绘面积大，容易掉帧。
+ *
+ * 现在的做法（JS 侧见 app.js render()）：
+ *   · 翻页时旧卡原样搬进 .out-layer（指针穿透的绝对定位层）：
+ *     旧主卡滑向行进方向后侧的邻卡位并淡出，旧邻卡 170ms 快速淡出；
+ *   · 新主卡从对应侧邻卡位滑入，blur 2.5→0 焦点吸入——
+ *     全场唯一一段滤镜动画，其余全部是 transform/opacity（可合成）；
+ *   · 新邻卡不再长距离滑行，只在卡位上淡入 + 轻微上浮落定，
+ *     避免与离场旧主卡在同一条路径上形成双重影像；
+ *   · 新旧卡在交接点交叉淡化，内容跳变被掩盖。
+ *
+ * 缓动 cubic-bezier(.22,1,.36,1)（quint-out）：起步比 expo-out 柔和，
+ * 减速段长、落位稳。主行程 480ms。几何数值沿用旧版坐标换算
+ * （右邻卡 340x480@(676,80) → 主卡 372x520@(534,40)：
+ *   142 = 左缘差 676−534，40 = 顶差 80−40，.914 = 340/372）。
+ * ================================================================ */
+
+/* 入场：新主卡从对应侧邻卡位滑入，焦点由糊到清 */
+@keyframes slideMainF{
+  0%  {transform:translate(142px,40px) scale(.914);filter:blur(2.5px)}
+  100%{transform:translate(0,0) scale(1);filter:blur(0)}
+}
+@keyframes slideMainB{
+  0%  {transform:translate(-110px,40px) scale(.914);filter:blur(2.5px)}
+  100%{transform:translate(0,0) scale(1);filter:blur(0)}
+}
+/* 入场：新邻卡在卡位上淡入 + 轻微上浮落定（位移交给离场层的旧主卡） */
+@keyframes ghostIn{
+  0%  {opacity:0;transform:translateY(10px)}
+  100%{opacity:1;transform:translateY(0)}
+}
+/* 离场：旧主卡滑向行进后侧的邻卡位，边滑边淡出（与入场几何镜像：
+ * 前进 → 左邻卡位 (-110,+40)，后退 → 右邻卡位 (+142,+40)） */
+@keyframes outMainF{
+  0%  {transform:translate(0,0) scale(1);opacity:1}
+  55% {opacity:.45}
+  100%{transform:translate(-110px,40px) scale(.914);opacity:0}
+}
+@keyframes outMainB{
+  0%  {transform:translate(0,0) scale(1);opacity:1}
+  55% {opacity:.45}
+  100%{transform:translate(142px,40px) scale(.914);opacity:0}
+}
+/* 离场：旧邻卡快速原地淡出——新卡从它们的卡位上接管，
+ * 170ms 刚好掩盖「同一位置换内容」的跳变，又不留残影 */
+@keyframes outGhost{0%{opacity:1}100%{opacity:0}}
+
+/* AI 卡翻转动画（单元素翻面技巧）：前半程转到 ∓90° 立边（内容不可见），
+ * 50% 处的 opacity:0 窗口遮住 -90°→+90° 的插值跳转，后半程转回 0°；
+ * JS 在 50% 时刻换掉卡内内容（见 app.js render()）。前进/后退镜像。 */
+@keyframes aiFlipF{
+  0%  {transform:rotateY(0);opacity:1}
+  45% {transform:rotateY(-80deg);opacity:1}
+  50% {transform:rotateY(-90deg);opacity:0}
+  50.5%{transform:rotateY(90deg);opacity:0}
+  55% {transform:rotateY(80deg);opacity:1}
+  100%{transform:rotateY(0);opacity:1}
+}
+@keyframes aiFlipB{
+  0%  {transform:rotateY(0);opacity:1}
+  45% {transform:rotateY(80deg);opacity:1}
+  50% {transform:rotateY(90deg);opacity:0}
+  50.5%{transform:rotateY(-90deg);opacity:0}
+  55% {transform:rotateY(-80deg);opacity:1}
+  100%{transform:rotateY(0);opacity:1}
+}
+
+/* 主卡：从对应侧邻卡位滑入，焦点由糊到清 */
+.main.anim-in{animation:slideMainF 480ms cubic-bezier(.22,1,.36,1) both;will-change:transform,filter}
+.bwd .main.anim-in{animation-name:slideMainB}
+
+/* 邻卡：原地淡入即可，方向无关；70ms 延迟让它在旧主卡离场起步后再落定 */
+.ghost.anim-l,.ghost.anim-r{animation:ghostIn 380ms 70ms cubic-bezier(.2,.7,.3,1) both;will-change:opacity,transform}
+
+/* AI 卡延迟 60ms 起步，读起来像被主卡带着走；翻转用加速-减速缓动才自然 */
+.ai.anim-in{animation:aiFlipF 480ms 60ms cubic-bezier(.4,0,.2,1) both;will-change:transform}
+.bwd .ai.anim-in{animation-name:aiFlipB}
+
+/* 离场层：盖在入场卡之上（z 5，低于箭头 z 6），指针穿透。
+ * 快速连翻时由 JS 先清掉旧层，不会无限堆叠。 */
+.out-layer{position:absolute;inset:0;pointer-events:none;z-index:5}
+.out-layer .main{animation:outMainF 440ms cubic-bezier(.22,1,.36,1) both;will-change:transform,opacity}
+.bwd .out-layer .main{animation-name:outMainB}
+.out-layer .ghost{animation:outGhost 170ms ease-in both;will-change:opacity}
+
+/* 动效降级档 —— html.motion-lite
+ * ----------------------------------------------------------------
+ * 档位由 app.js 顶部的「动效档」逻辑决定，CSS 只认最终类名：
+ *   html.motion-full —— 完整动效（默认档）
+ *   html.motion-lite —— 本块规则生效（轻量档）
+ *   「跟随系统」档由 JS 读 prefers-reduced-motion 后落到上面两者之一，
+ *   所以这里不再写 @media(prefers-reduced-motion:reduce)——媒体查询
+ *   只参与 JS 的档位解析，CSS 侧单一真相 = html 上的类名。
+ *
+ * 降级的目标不是「关掉动画」，而是「去掉会引发不适的运动」：
+ *   · 位移（主卡 142px / 邻卡 110~142px）—— 前庭敏感用户的主要不适源，去掉
+ *   · 缩放（.914 / 1.094）—— 同上，去掉
+ *   · blur 景深 —— 去掉
+ *   · 转圈 spinner —— 改成静态，但保留可区分的颜色
+ * 但【保留一段约 130ms 的纯淡入】。原因：
+ *   原来这里直接写 animation:none，翻页就变成零过渡的瞬变——
+ *   用户看到的是「内容突然变成了另一张」，反而丢失了「刚刚换过卡」
+ *   这件事本身的感知。而「内容切换」是界面的核心状态变化，
+ *   无障碍规范（WCAG 2.3.3）要限制的是「运动」，不是「状态可感知性」。
+ *   所以降级成纯 opacity 过渡：无位移、无缩放、无模糊，不会引起
+ *   前庭不适，同时翻页仍然看得出来是「换了一张」。 */
+@keyframes softFadeIn{from{opacity:0}to{opacity:1}}
+html.motion-lite .main.anim-in,html.motion-lite .bwd .main.anim-in,
+html.motion-lite .ai.anim-in,html.motion-lite .bwd .ai.anim-in,
+html.motion-lite .ghost.anim-l,html.motion-lite .ghost.anim-r{
+  /* animation 简写已把 delay 归零：AI 卡 60ms / 邻卡 70ms 的错位延迟
+   * 一并去掉，避免「先换主卡再换点评/邻卡」 */
+  animation:softFadeIn 130ms linear both;
+}
+/* 离场层不做滑出，直接隐藏——状态变化已由入场淡入表达 */
+html.motion-lite .out-layer{display:none}
+/* spinner 停止旋转，改用静态色区分 loading 态 */
+html.motion-lite .ring{animation:none;border-top-color:#B9C0C8}
+/* 按钮的位移/缩放反馈去掉，仅保留颜色变化 */
+html.motion-lite .main,html.motion-lite .ai{transition:none}
+html.motion-lite .round{transition:background .16s,box-shadow .16s,opacity .16s}
+html.motion-lite .round:active{transform:none}
+html.motion-lite .ai .copy{transition:background .16s}
+html.motion-lite .ai .copy:active{transform:none}
+/* 折叠/展开降级：去掉缩放与长距离变形，快速淡入淡出 */
+html.motion-lite .page-wrap{
+  transition:opacity .15s linear,visibility 0s 0s;
+}
+html.motion-lite body.folded .page-wrap{
+  transform:none;
+  transition:opacity .15s linear,visibility 0s .15s;
+}
+html.motion-lite .dock,
+html.motion-lite .dock .dock-x,
+html.motion-lite .dock .dock-card{
+  transition-duration:.15s;
+}
+/* hover 上浮位移去掉，仅保留投影加深 */
+html.motion-lite body.folded .dock:hover,
+html.motion-lite body.folded .dock:active{
+  transform:none;
+}
+
+/* ================================================================
+ * 收起按钮 ⇄ 迷你卡片（dock）
+ * ----------------------------------------------------------------
+ * 固定在视口右上角，是窗口级控件，不参与 1440 坐标系与 --k 缩放。
+ * 两种形态共用同一个 <button>，全靠 transition 变形，天然可逆：
+ *   页面态：40x40 圆形 × 按钮；
+ *   卡片态：228x92 迷你卡（标题 + 进度 + 展开提示），整卡可点击。
+ * 折叠时 .page-wrap 以 dock 圆心为原点缩小淡出——视觉上是
+ * 「页面被吸进按钮、按钮撑开成卡片」；点击卡片反向播放。
+ * ================================================================ */
+/* ---- 洗牌（获取最新沸点）圆钮：固定在关闭按钮左侧（右缘 24+40+12=76） ---- */
+.fab{
+  position:fixed;top:20px;right:76px;z-index:100;
+  width:40px;height:40px;border-radius:99px;
+  background:#fff;border:1px solid #E6E7EA;color:#5C636D;
+  box-shadow:0 3px 10px rgba(0,0,0,.08);
+  display:grid;place-items:center;
+  transition:box-shadow .16s,transform .16s,color .16s,border-color .16s,opacity .2s,visibility 0s 0s;
+}
+/* 折叠成迷你卡时，右上角功能钮（洗牌 / AI 配置 / 风格）随页面一起隐藏。
+ * 原来洗牌钮只是恰好被迷你卡盖住，风格钮位置更靠左盖不住——改成显式隐藏，不再依赖碰巧。 */
+body.folded .fab{
+  opacity:0;visibility:hidden;pointer-events:none;
+  transition:box-shadow .16s,transform .16s,color .16s,border-color .16s,opacity .2s,visibility 0s .2s;
+}
+.fab:hover{box-shadow:0 6px 18px rgba(30,89,191,.18);color:var(--blue);border-color:var(--blue)}
+.fab:active{transform:scale(.94)}
+.fab:focus-visible{outline:2px solid var(--blue);outline-offset:2px}
+/* 拉取中：图标持续旋转作为加载反馈（spin 在 HUD 章节已定义） */
+.fab.busy svg{animation:spin 1s linear infinite}
+
+/* ---- AI 点评接口配置圆钮：固定在洗牌钮左侧（右缘 76+40+12=128） ---- */
+.fab.cfg{right:128px}
+/* 已配置接口时给个品牌色描边提示「实时点评已开启」 */
+.fab.cfg.on{color:var(--blue);border-color:var(--blue)}
+
+/* ---- 点评风格胶囊钮：固定在 AI 配置钮左侧（右缘 128+40+12=180） ---- */
+.fab.pill{
+  right:180px;width:auto;padding:0 14px;
+  display:inline-flex;align-items:center;gap:6px;
+  font:600 13px/1 var(--font-cn);
+}
+.fab.pill.on{color:var(--blue);border-color:var(--blue)}
+
+/* ---- AI 配置弹窗 ---- */
+.aicfg-mask{
+  position:fixed;inset:0;z-index:200;
+  background:rgba(23,26,31,.38);
+  display:grid;place-items:center;
+  animation:aicfgMaskIn .18s ease-out both;
+}
+.aicfg-mask[hidden]{display:none}
+@keyframes aicfgMaskIn{from{opacity:0}to{opacity:1}}
+.aicfg{
+  width:380px;max-width:calc(100vw - 48px);
+  background:#fff;border-radius:18px;
+  box-shadow:0 24px 64px rgba(23,26,31,.22);
+  padding:22px 24px 20px;
+  animation:aicfgIn .22s cubic-bezier(.2,.9,.3,1.2) both;
+}
+@keyframes aicfgIn{from{opacity:0;transform:translateY(14px) scale(.96)}to{opacity:1;transform:none}}
+.aicfg-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}
+.aicfg-head b{font:700 16px/1.4 var(--font-cn);color:#1F2329}
+.aicfg-x{
+  width:28px;height:28px;border-radius:8px;
+  display:grid;place-items:center;
+  font:400 18px/1 var(--font-sans);color:#8A919C;
+  transition:background .14s,color .14s;
+}
+.aicfg-x:hover{background:#F2F3F5;color:#1F2329}
+.aicfg-tip{
+  margin:0 0 14px;
+  font:400 12px/1.7 var(--font-cn);color:#8A919C;
+}
+/* 「服务端已配置，可留空」小标记 */
+.srv-tag{
+  font:400 11px/1 var(--font-cn);font-style:normal;color:var(--blue);
+  background:var(--blue-light,#E8F2FF);border-radius:5px;padding:2px 6px;
+  margin-left:4px;vertical-align:1px;
+}
+.aicfg-field{display:block;margin-bottom:12px}
+.aicfg-field span{
+  display:block;margin-bottom:5px;
+  font:600 12px/1 var(--font-cn);color:#5C636D;
+}
+.aicfg-field input{
+  width:100%;height:38px;padding:0 12px;
+  border:1px solid #E6E7EA;border-radius:9px;
+  font:400 13px/1 var(--font-sans);color:#1F2329;
+  transition:border-color .14s,box-shadow .14s;
+}
+.aicfg-field input:focus{
+  outline:none;border-color:var(--blue);
+  box-shadow:0 0 0 3px rgba(30,128,255,.12);
+}
+.aicfg-ops{display:flex;justify-content:flex-end;gap:8px;margin-top:16px}
+.aicfg-btn{
+  height:34px;padding:0 14px;border-radius:9px;
+  font:600 12.5px/1 var(--font-cn);
+  transition:background .14s,color .14s,border-color .14s;
+}
+.aicfg-btn.plain{border:1px solid #E6E7EA;color:#5C636D;background:#fff}
+.aicfg-btn.plain:hover{border-color:var(--blue);color:var(--blue)}
+.aicfg-btn.primary{background:var(--blue);color:#fff}
+.aicfg-btn.primary:hover{background:#0B6FE8}
+.aicfg-btn[disabled]{opacity:.5;pointer-events:none}
+
+/* AI 点评生成中的加载态（在 .roast 里） */
+.roast .ai-loading{
+  display:inline-flex;align-items:center;gap:8px;
+  color:#A8AEB8;font-size:13px;
+}
+.roast .ai-loading i.dot{
+  width:5px;height:5px;border-radius:99px;background:var(--blue);
+  animation:aiDot 1s ease-in-out infinite;
+}
+.roast .ai-loading i.dot:nth-child(2){animation-delay:.16s}
+.roast .ai-loading i.dot:nth-child(3){animation-delay:.32s}
+/* 批量点评进度态的转圈图标（复用全局 spin 关键帧） */
+.roast .ai-loading i.spin{
+  width:14px;height:14px;border-radius:99px;flex:0 0 auto;
+  border:2px solid #E2E5E8;border-top-color:var(--blue);
+  animation:spin .8s linear infinite;
+}
+@keyframes aiDot{0%,100%{opacity:.25;transform:translateY(0)}50%{opacity:1;transform:translateY(-3px)}}
+/* 实时生成的点评：左侧留一道蓝条标记，和手写点评区分 */
+.roast .roast-live{
+  border-left:3px solid var(--blue);padding-left:10px;
+}
+
+/* ---- 点评风格弹窗：卡牌式选择 ---- */
+.aicfg.wide{width:560px}
+.style-grid{
+  display:grid;grid-template-columns:1fr 1fr;gap:12px;
+  max-height:min(56vh,430px);overflow:auto;padding:2px;
+}
+.style-card{
+  position:relative;text-align:left;
+  border:1px solid #E6E7EA;border-radius:14px;
+  padding:14px 14px 12px;
+  background:#fff;
+  display:flex;flex-direction:column;gap:7px;
+  transition:border-color .15s,box-shadow .15s,transform .15s;
+}
+.style-card:hover{
+  border-color:var(--blue);
+  box-shadow:0 8px 20px rgba(30,89,191,.12);
+  transform:translateY(-2px);
+}
+.style-card.on{
+  border-color:var(--blue);
+  background:linear-gradient(180deg,#F4F9FF,#fff);
+  box-shadow:0 8px 20px rgba(30,89,191,.14);
+}
+.style-card.on::after{
+  content:'✓';position:absolute;top:10px;right:10px;
+  width:20px;height:20px;border-radius:99px;
+  background:var(--blue);color:#fff;
+  font:700 11px/20px var(--font-sans);text-align:center;
+}
+.style-card b{font:700 14px/1.3 var(--font-cn);color:#1F2329}
+.style-card .demo{
+  font:400 12px/1.6 var(--font-cn);color:#5C636D;
+}
+.style-card .demo::before{content:'「'}
+.style-card .demo::after{content:'」'}
+.style-card .prompt{
+  font:400 11px/1.6 var(--font-cn);color:#A8AEB8;
+  border-top:1px dashed #EBECF0;padding-top:7px;
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;
+}
+
+.dock{
+  position:fixed;top:20px;right:24px;z-index:100;
+  width:40px;height:40px;border-radius:99px;
+  background:#fff;border:1px solid #E6E7EA;
+  box-shadow:0 3px 10px rgba(0,0,0,.08);
+  display:block;overflow:hidden;cursor:pointer;
+  transition:width .42s cubic-bezier(.22,1,.36,1),height .42s cubic-bezier(.22,1,.36,1),
+             border-radius .42s cubic-bezier(.22,1,.36,1),box-shadow .2s,border-color .2s,
+             transform .18s ease-out;
+}
+.dock:hover{box-shadow:0 6px 18px rgba(30,89,191,.18)}
+.dock:focus-visible{outline:2px solid var(--blue);outline-offset:2px}
+/* × 图标：圆形态居中，卡片态旋转缩小淡出 */
+.dock .dock-x{
+  position:absolute;left:50%;top:50%;
+  transform:translate(-50%,-50%);
+  transition:opacity .18s,transform .3s;
+}
+/* 卡片内容：圆形态隐藏，卡片态等外形撑开后延迟淡入 */
+.dock .dock-card{
+  position:absolute;inset:0;
+  display:flex;flex-direction:column;
+  padding:10px 12px;
+  opacity:0;transform:translateY(4px);
+  transition:opacity .2s,transform .2s;
+  pointer-events:none;
+}
+/* 卡片态 = 一张竖版纸牌（扑克牌式）：
+ * 牌号 + 蓝色闪电花色在左上角，右下角同款旋转 180°；
+ * 中段居中：沸点标签 + 标题；底部居中：进度 + 展开提示。 */
+.dock .dc-corner{position:absolute;display:flex;flex-direction:column;align-items:center;gap:2px}
+.dock .dc-corner.tl{left:9px;top:8px}
+.dock .dc-corner.br{right:9px;bottom:8px;transform:rotate(180deg)}
+.dock .dc-corner b{font:700 15px/1 var(--font-sans);color:#16181D;letter-spacing:-.5px}
+/* 花色符号：与点数同色；红桃/方块整角转红（纸牌惯例） */
+.dock .dc-suit{font:400 12px/1 var(--font-sans);font-style:normal;color:#16181D}
+.dock .dc-corner.red b,.dock .dc-corner.red .dc-suit{color:#E04A4A}
+.dock .dc-center{
+  flex:1;min-height:0;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:7px;
+}
+.dock .dc-tag{
+  display:inline-flex;align-items:center;gap:4px;
+  height:20px;padding:0 7px;border-radius:6px;
+  background:var(--blue-mid);
+  font:600 11px/1 var(--font-sans);color:var(--blue);
+}
+.dock .dc-title{
+  font:600 12.5px/1.5 var(--font-cn);color:#16181D;text-align:center;
+  display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;
+}
+.dock .dc-meta{
+  display:flex;flex-direction:column;align-items:center;gap:3px;
+  margin-bottom:16px;              /* 给右下角牌号让位 */
+}
+.dock .dc-prog{font:400 10.5px/1 var(--font-sans);color:#A8AEB8;white-space:nowrap}
+.dock .dc-hint{font:600 10.5px/1 var(--font-sans);color:var(--blue);white-space:nowrap}
+
+body.folded .dock{
+  /* 竖版纸牌 148x196 ≈ 1:1.32，接近主卡的 1:1.4 纸牌比例 */
+  width:148px;height:196px;border-radius:12px;
+  border-color:#E5E7EA;
+  box-shadow:0 14px 36px rgba(30,89,191,.14);
+}
+/* 收起状态盲翻时的卡面反馈（见 app.js syncDock） */
+@keyframes dcTick{0%{opacity:.2;transform:translateX(6px)}100%{opacity:1;transform:none}}
+.dock .dock-card.tick{animation:dcTick .22s ease-out}
+
+/* 卡片态 hover：轻微上浮 + 投影加深，像从桌面拾起一张牌；
+ * 只在卡片态生效（圆形 × 按钮态保持原有的投影反馈） */
+body.folded .dock:hover{
+  transform:translateY(-3px);
+  box-shadow:0 20px 44px rgba(30,89,191,.20);
+}
+body.folded .dock:active{transform:translateY(-1px)}
+body.folded .dock .dock-x{opacity:0;transform:translate(-50%,-50%) scale(.4) rotate(90deg)}
+body.folded .dock .dock-card{opacity:1;transform:translateY(0);transition-delay:.18s}
+
+/* 页面折叠/展开：以 dock 圆心（右缘 24+20、顶 20+20）为缩放原点。
+ * 方向性缓动：收起用 ease-in（加速被吸入），展开用 quint-out（减速落位）。
+ * visibility 收起时等缩小动画播完再切，展开时立即恢复。 */
+.page-wrap{
+  transform-origin:calc(100% - 44px) 40px;
+  transition:transform .45s cubic-bezier(.22,1,.36,1),opacity .3s ease-out,visibility 0s 0s;
+}
+body.folded .page-wrap{
+  transform:scale(.06);opacity:0;visibility:hidden;pointer-events:none;
+  transition:transform .45s cubic-bezier(.55,0,.55,.2),opacity .28s ease-in,visibility 0s .45s;
+}
+
+/* ================================================================
+ * Toast
+ * ================================================================ */
+.toast{
+  position:fixed;left:50%;bottom:34px;transform:translate(-50%,14px);
+  background:#16181D;color:#fff;
+  padding:11px 20px;border-radius:12px;
+  font:500 12.5px/1.5 var(--font-cn);
+  box-shadow:0 14px 34px -14px rgba(16,19,24,.6);
+  opacity:0;pointer-events:none;
+  transition:.24s cubic-bezier(.2,.9,.3,1);
+  z-index:90;max-width:80vw;text-align:center;
+}
 .toast.on{opacity:1;transform:translate(-50%,0)}
 
-/* ---------- 响应式：牌宽同时受「高度」和「宽度」约束 ----------
-   两张牌 = 2×w + 22px gap，必须塞进 (100vw - 52px)；
-   牌高 = w×3.5/2.5 也塞进 (100vh - 158px)。
-   取两者的小值，牌才不会溢出或被底栏/顶栏压住。 */
-@media(max-height:820px){
-  .card{width:min(266px, calc((100vh - 158px) * 2.5 / 3.5))}
+/* ================================================================
+ * 空态
+ * ================================================================ */
+.empty{
+  position:absolute;left:534px;top:40px;
+  width:372px;height:520px;border-radius:20px;
+  background:#fff;
+  border:1px solid #E5E7EA;
+  box-shadow:0 14px 36px rgba(30,89,191,.14);
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;
+  text-align:center;padding:40px;z-index:4;
 }
-@media(max-width:900px){
-  .stage{gap:14px}
-  .card{width:min(266px, calc((100vw - 56px) / 2 - 7px))}
-  .search{display:none}
-  .info{min-width:0;padding:6px 9px}
+.empty b{font:600 17px/1.5 var(--font-cn);color:#16181D}
+.empty span{font:400 13.5px/1.8 var(--font-cn);color:#A8AEB8}
+
+/* ================================================================
+ * 响应式
+ * ================================================================ */
+
+/* ≤760：撤掉坐标系，改成流式两卡（主卡 + AI 卡并排），再窄则单列。
+ *
+ * 断点为什么是 760 而不是 1120：
+ *   设计稿是 1440 固定坐标系，视口不足时应当【等比缩小】而不是【换布局】。
+ *   1440 → 1080 只要 k=0.75，40px 标题缩到 30px 依然清晰；
+ *   真正撑不住的是主卡 372 + gap 20 + AI 卡 284 + 左右留白 ≈ 760px。
+ *   旧版把断点设在 1120，导致 1080 这种最常见的笔记本视口直接塌成
+ *   流式布局 —— 邻卡被 display:none、主卡与 AI 卡重叠、进度条压住卡片。
+ *   等比缩放到 0.53（760/1440）字才开始糊，那才是该换布局的时机。
+ */
+@media(max-width:760px){
+  /* 流式布局的左右留白由 .page 自己的 padding 负责，这里归零避免叠加 */
+  .page-wrap{height:auto;padding:0}
+  .page{
+    width:100%;height:auto;transform:none;
+    padding:0 24px;
+  }
+  /* 撤掉坐标系：内层回到普通流，取消固定尺寸与缩放 */
+  .page-inner{
+    position:static;
+    width:100%;height:auto;
+    transform:none;
+    display:flex;flex-direction:column;gap:20px;
+  }
+  .hero{
+    position:relative;left:auto;top:auto;
+    width:100%;height:auto;
+    padding:36px 20px 28px;
+    border-radius:0 0 24px 24px;
+    box-shadow:0 1px 0 rgba(30,89,191,.06);
+  }
+  .hero h1{font-size:clamp(26px,5.4vw,40px)}
+  .hero p{font-size:13.5px}
+  .stage{
+    position:relative;left:auto;top:auto;
+    width:100%;height:auto;
+    padding:28px 20px;
+    border-radius:24px;
+  }
+  .stage-inner{
+    position:relative;inset:auto;
+    display:flex;gap:20px;justify-content:center;align-items:flex-start;
+  }
+  .ghost{display:none}
+  .main{
+    position:relative;left:auto;top:auto;
+    flex:0 0 372px;height:520px;
+  }
+  .ai{
+    position:relative;left:auto;top:auto;
+    flex:0 0 284px;height:360px;margin-top:80px;
+  }
+  .round.prev{left:6px;top:272px}
+  .round.next{left:auto;right:6px;top:272px}
+  .empty{position:relative;left:auto;top:auto}
+  .hud{
+    position:relative;left:auto;top:auto;
+    width:100%;height:auto;
+    padding:20px;border-radius:24px;
+  }
 }
-@media(max-height:620px){
-  .wrap{padding:48px 20px 82px}
-  .card{padding:12px 13px 11px}
-  .card .idx .rank{font-size:16px}
-  .card .idx .suit{font-size:12px}
-  .cHead{margin-top:21px}
-  .cBody .txt{font-size:11.5px}
-  .cBody .roast{font-size:12.5px}
-  .hint{display:none}
+
+/* ≤560：单列（主卡与 AI 卡上下堆叠） */
+@media(max-width:560px){
+  .page{padding:0 16px}
+  .page-inner{gap:16px}
+  .hero{padding:28px 16px 22px}
+  .hero h1{font-size:26px}
+  .stage{padding:22px 16px}
+  .stage-inner{flex-direction:column;align-items:center;gap:16px}
+  .main{flex:0 1 auto;width:100%;max-width:372px;height:auto;min-height:520px}
+  .main .illus{height:150px}
+  .main .illus svg{width:190px;height:130px}
+  .ai{flex:0 1 auto;width:100%;max-width:372px;height:auto;min-height:300px;margin-top:0}
+  .round{display:none}
+  .empty{width:100%;max-width:372px;height:440px}
 }

@@ -6,6 +6,7 @@ Thumbs.db
 
 # 生成产物
 output/
+_bak/
 data/align.txt
 data/_view.txt
 

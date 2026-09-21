@@ -282,12 +282,15 @@ img{display:block;max-width:100%}
   overflow:hidden;display:grid;place-items:center;flex:0 0 auto;
 }
 .main .who .av img{width:100%;height:100%;object-fit:cover}
+/* 行高不能写 /1：/1 把行盒压到 = 字号（12.5px），而该字体字形盒约 15px
+ * （ascent 12 + descent 3），字形会顶出行盒；overflow:hidden 是省略号必需的，
+ * 于是正好在行盒边界把字形顶部削掉。至少要 15/12.5 = 1.2，取 1.3 留余量。 */
 .main .who .name{
-  font:400 12.5px/1 var(--font-sans);color:#6B7280;
+  font:400 12.5px/1.3 var(--font-sans);color:#6B7280;
   max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
 }
 .main .who .meta{
-  font:400 11.5px/1 var(--font-sans);color:#A8AEB8;
+  font:400 11.5px/1.3 var(--font-sans);color:#A8AEB8;
   padding-left:30px;              /* 与作者名对齐（头像 22 + gap 8） */
 }
 .main.liked{border-color:rgba(30,128,255,.55)}
@@ -433,8 +436,9 @@ a.main:hover .go{color:var(--blue);background:var(--blue-mid);border-color:#BFDB
   overflow:hidden;display:grid;place-items:center;flex:0 0 auto;
 }
 .ai .cmt-av img{width:100%;height:100%;object-fit:cover}
+/* 同 .main .who .name：/1 会让 overflow:hidden 削掉字形顶部，改用 1.3 */
 .ai .cmt-name{
-  font:600 12px/1 var(--font-sans);color:#33383F;
+  font:600 12px/1.3 var(--font-sans);color:#33383F;
   max-width:104px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
 }
 .ai .cmt-author{

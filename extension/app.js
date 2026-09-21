@@ -1,469 +1,1524 @@
-/* app.js — 沸点抽卡 · 牌面层（扑克牌面，浅色）
- * 两张牌并排：左 = 沸点原文，右 = AI 犀利解析。
- * 点数由热度（赞 + 评论×2）映射：A 2 3 … 10 J Q K。
- * 三种打开方式共用这一份：
- *   ?embed=1          被 content script 注入的浮层 iframe 引用（牌后面铺一层遮罩）
- *   （无参数）         独立窗口 / 独立标签页（自己铺浅色底）
+/* ⚠️ 本文件由 scripts/build_extension.py 从 site/app.js 生成，请勿直接改。
+ * 与站点的差异只有下面这一处补丁：
+ *   app.js 用 location.protocol 判断「有没有同源代理可用」，共两处：boot() 的实时拉取闸门、refreshDeck() 的洗牌闸门
+ * 要改逻辑请改 site/app.js，然后重跑构建。 */
+/* app.js — 沸点抽卡 · 磨砂玻璃版
+ * 数据：启动时经同源 /api/pins（serve.mjs 代理掘金 recommend 接口）拉实时沸点，
+ * 失败回退到 data.js 内置牌堆（60 条 0917 真实沸点 + 配对点评）。
+ *
+ * 设计稿（file 727057985392898，帧 3:1）的落地模型：
+ *   坐标系固定 1440 x 1000，所有元素按设计稿像素绝对定位；
+ *   视口放不下时整组按 --k 等比缩（transform-origin: center top）。
+ *   坐标零换算、居中零计算，响应式只需要一个 k。
+ *
+ * 交互对齐设计稿：层叠轮播主舞台 + 右侧 AI 点评卡 + 喜欢/复制点评。
+ * 不做登录、不上传、不代发。
  */
-const $ = (s) => document.querySelector(s);
-const send = (msg) => new Promise((r) => chrome.runtime.sendMessage(msg, (v) => {
-  if (chrome.runtime.lastError) r({ ok: false, error: chrome.runtime.lastError.message });
-  else r(v || { ok: false, error: '空响应' });
-}));
-const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g,
-  (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-const pad = (n) => (n < 10 ? '0' + n : '' + n);
+(function () {
+  'use strict';
 
-const QS = new URLSearchParams(location.search);
-const EMBED = QS.get('embed') === '1';
-const TOKEN = QS.get('t') || '';     // 宿主 frame.js 给的回执令牌，避免认错父窗口
+  var DATA = window.PINS_DATA || {};
+  var PINS = (DATA.pins || []).slice();
+  var $ = function (s) { return document.querySelector(s); };
+  var esc = function (s) {
+    return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c];
+    });
+  };
+  var pad = function (n) { return (n < 10 ? '0' : '') + n; };
 
-function fmt(ts) {
-  if (!ts) return '';
-  const diff = (Date.now() / 1000) - ts;
-  if (diff < 60) return '刚刚';
-  if (diff < 3600) return Math.floor(diff / 60) + ' 分钟前';
-  if (diff < 86400) return Math.floor(diff / 3600) + ' 小时前';
-  const d = new Date(ts * 1000);
-  return pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
-}
+  var LKEY = 'juejin-gacha-glass';
 
-/** 热度 -> 牌面点数 */
-const RANKS = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K'];
-function heat(p) { return (p.digg || 0) + (p.cmt || 0) * 2 + (p.pics && p.pics.length ? 1 : 0); }
-function rankOf(p) {
-  const list = S.pins.slice().sort((a, b) => heat(a) - heat(b));
-  const i = list.findIndex((x) => x.id === p.id);
-  const n = list.length || 1;
-  const tier = Math.min(RANKS.length - 1, Math.floor((i / n) * RANKS.length));
-  return RANKS[tier];
-}
+  var S = { order: [], pos: 0, liked: {}, seen: {}, muted: true, motion: 'full' };
 
-let toastTimer;
-function toast(m) {
-  const t = $('#toast'); t.textContent = m; t.classList.add('on');
-  clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove('on'), 2000);
-}
-function copyText(txt) {
-  return navigator.clipboard.writeText(txt).catch(() => {
-    const a = document.createElement('textarea'); a.value = txt; a.style.position = 'fixed';
-    a.style.opacity = '0'; document.body.appendChild(a); a.select();
-    document.execCommand('copy'); a.remove();
-  });
-}
-const isEmpty = (v) => !v || !v.trim();
-const isTop = () => { try { return window.top === window; } catch (e) { return false; } };
+  /* ---------------- 动效档 ----------------
+   * 三档，持久化在 localStorage（S.motion）：
+   *   'full'   完整    ：翻牌滑动 / 焦点吸入 / 离场层交叉淡化 / AI 卡翻转（默认档）
+   *   'lite'   轻量    ：去掉位移、缩放、blur，只留 130ms 纯淡入（见 app.css）
+   *   'system' 跟随系统：读 prefers-reduced-motion，命中 reduce 时按 lite 走
+   *
+   * 为什么默认是 full 而不是跟随系统：本站的观感主要就靠这套翻牌动效，
+   * 不该因为预览环境/系统设置被静悄悄降级成「看起来没动画」。需要减少
+   * 动效的用户可在底部 HUD 的「动效」钮一键切到轻量或跟随系统，选择会记住。
+   *
+   * CSS 侧只认 html.motion-lite / html.motion-full 两个类，媒体查询由这里解析——
+   * 单一真相，避免 CSS 里再散落 @media(prefers-reduced-motion)。
+   * URL 覆写（临时预览用，不落盘）：?motion=full|lite|system */
+  var MOTION_MODES = ['full', 'lite', 'system'];
+  var MOTION_LABEL = { full: '完整', lite: '轻量', system: '跟随系统' };
+  var motionQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
+  var urlMotion = (function () {
+    var m = /[?&]motion=([a-z]+)/.exec(location.search);
+    return m && MOTION_MODES.indexOf(m[1]) >= 0 ? m[1] : null;
+  })();
 
-/** 关闭牌面层：被注入的浮层 -> 通知父页面；独立窗口 -> 关掉自己 */
-function closeSelf() {
-  if (EMBED || window.parent !== window) {
-    try { window.parent.postMessage({ token: TOKEN, type: 'pin-gacha-close' }, '*'); } catch (e) {}
-  } else {
-    window.close();
+  function resolveMotion() {
+    var mode = MOTION_MODES.indexOf(S.motion) >= 0 ? S.motion : 'full';
+    var lite = mode === 'lite' || (mode === 'system' && motionQuery.matches);
+    var root = document.documentElement;
+    root.classList.toggle('motion-lite', lite);
+    root.classList.toggle('motion-full', !lite);
+    var btn = $('#btnMotion');
+    if (btn) {
+      btn.setAttribute('aria-pressed', lite ? 'false' : 'true');
+      btn.setAttribute('aria-label', '动效：' + MOTION_LABEL[mode] + (lite ? '（已降级）' : ''));
+      btn.title = '动效：' + MOTION_LABEL[mode] + ' —— 点击切换';
+    }
+    var lab = $('#motionLabel');
+    if (lab) lab.textContent = '动效 · ' + MOTION_LABEL[mode];
   }
-}
 
-/** 打开原文 / 外链：浮层里 window.open 可能被拦，交给宿主页面处理 */
-function openLink(url) {
-  if (EMBED) {
-    try { window.parent.postMessage({ token: TOKEN, type: 'pin-gacha-open-link', url }, '*'); return; } catch (e) {}
+  /* 点一下循环切换 完整 → 轻量 → 跟随系统 → 完整。
+   * 显式选择后 URL 覆写作废，并把选择落盘。 */
+  function cycleMotion() {
+    var i = MOTION_MODES.indexOf(S.motion);
+    S.motion = MOTION_MODES[(i + 1) % MOTION_MODES.length];
+    urlMotion = null;
+    saveLocal();
+    resolveMotion();
+    toast('动效：' + MOTION_LABEL[S.motion] +
+      (S.motion === 'lite' ? '（只保留淡入）' : S.motion === 'system' ? '（随系统设置）' : ''));
   }
-  window.open(url, '_blank', 'noopener');
-}
 
-const S = {
-  pins: [], roasts: {}, cfg: {}, meta: {}, seen: [],
-  order: [], pos: 0, cur: null, curIdx: -1,
-  personaPick: 0, liked: {}, cmted: {}, q: '',
-};
+  /* 'system' 档下系统设置变化要实时跟随 */
+  if (motionQuery.addEventListener) motionQuery.addEventListener('change', resolveMotion);
+  else if (motionQuery.addListener) motionQuery.addListener(resolveMotion);
 
-const LKEY = 'gacha-local';
-async function loadLocal() {
-  const v = await new Promise((r) => chrome.storage.local.get(LKEY, (o) => r(o[LKEY] || {})));
-  S.liked = v.liked || {}; S.cmted = v.cmted || {};
-}
-const saveLocal = () => chrome.storage.local.set({ [LKEY]: { liked: S.liked, cmted: S.cmted } });
-
-/* ---------------- 数据 ---------------- */
-
-async function boot() {
-  await loadLocal();
-  const st = await send({ type: 'getState' });
-  if (!st || st.ok === false) { toast('扩展未就绪，去 chrome://extensions 重新加载一次'); return; }
-  S.pins = st.pins; S.roasts = st.roasts; S.cfg = st.cfg; S.meta = st.meta; S.seen = st.seen;
-  updateDateTag();
-  if (!S.pins.length) {
-    $('#stage').innerHTML = '<div class="boardEmpty"><div><b>牌堆是空的</b>正在抓取最新沸点…</div></div>';
-    $('#prog').style.width = '0%';
-    $('#mLeft').textContent = '0 / 0';
-    await doRefresh(true);
-  } else {
-    shuffle(false);
+  /* ---------------- 本地进度 ---------------- */
+  function loadLocal() {
+    try {
+      var raw = localStorage.getItem(LKEY);
+      if (!raw) return;
+      var v = JSON.parse(raw);
+      S.liked = v.liked || {};
+      S.seen = v.seen || {};
+      /* 默认静音：只有用户显式按过 M 取消静音（存了 false）才开声音 */
+      S.muted = v.muted !== false;
+      setMuted(S.muted);
+      /* 动效档：没存过就保持默认 'full'（不跟随系统） */
+      if (MOTION_MODES.indexOf(v.motion) >= 0) S.motion = v.motion;
+    } catch (e) { /* 隐私模式 / 数据损坏：静默降级 */ }
   }
-}
-async function updateDateTag() {
-  const nl = Object.values(S.liked).filter(Boolean).length;
-  const el = $('#favN'); if (el) el.textContent = nl;
-  const chip = $('#subChip');
-  if (chip) chip.textContent = (S.cfg.autoFetch ? '每 ' + S.cfg.everyMinutes + ' 分自动抓' : '手动刷新');
-}
+  function saveLocal() {
+    try {
+      localStorage.setItem(LKEY, JSON.stringify({
+        liked: S.liked, seen: S.seen, muted: S.muted, motion: S.motion,
+      }));
+    } catch (e) { /* 配额满：不影响抽卡 */ }
+  }
 
-function rebuild(kw) {
-  const k = (kw || '').trim().toLowerCase();
-  const all = S.pins.map((p, i) => i);
-  S.order = k ? all.filter((i) => {
-    const p = S.pins[i]; const r = S.roasts[p.id];
-    const hay = (p.content + p.user + p.company + p.job + p.topics.join('') +
-      (r ? r.roasts.map((x) => x.text).join('') : '')).toLowerCase();
-    return hay.includes(k);
-  }) : all;
-  S.pos = 0;
-}
-function shuffle(notify) {
-  rebuild(S.q);
-  S.order.sort(() => Math.random() - 0.5);
-  render(true);
-  if (notify) toast('重新洗牌');
-}
+  /* ---------------- 工具 ---------------- */
+  var toastTimer;
+  /* 离场层的兜底移除定时器（见 render()） */
+  var outTimer;
+  /* AI 卡翻转动画中点换内容的定时器（见 render()） */
+  var aiSwapTimer;
+  /* 右侧卡片栈（AI 点评 + 掘金评论）的状态 —— 见文件下半部分的「右侧卡片栈」章节 */
+  var aiIdx = 0;          // 当前显示第几张（0 = AI 点评，1.. = 评论）
+  var aiFlipUntil = 0;    // 翻牌动画窗口的结束时间戳，窗口内不要动 #ai 的内容
+  var aiLateTimer = 0;    // 被动画挡住时的延后重绘定时器
+  var cmtCache = {};      // pinId -> { list, hasMore, err }
+  var cmtLoading = {};    // pinId -> true（请求在途）
+  var cmtTimer = 0;       // 连翻时的防抖定时器
+  /* 批量生成进度：非空表示「正有一批点评在跑」，值为 {id,total,start}。
+   * null 表示空闲。点评只有「批量」这一条生成路径，见 startBatch()。 */
+  var batchCtl = null;
+  var batchSeq = 0;
+  var batchTicker = null;
 
-async function doRefresh(silent) {
-  const b = $('#btnRefresh'); b.classList.add('spin');
-  const r = await send({ type: 'refresh', opts: { pages: 2, limit: 20 } });
-  b.classList.remove('spin');
-  if (!r || r.ok === false) { toast('抓取失败：' + ((r && r.error) || '未知错误')); return; }
-  const st = await send({ type: 'getState' });
-  S.pins = st.pins; S.roasts = st.roasts; S.meta = st.meta;
-  updateDateTag();
-  rebuild(S.q);
-  if (r.added) {
-    const fresh = new Set((r.fresh || []).map((p) => p.id));
-    S.order.sort((a, c) => (fresh.has(S.pins[c].id) ? 1 : 0) - (fresh.has(S.pins[a].id) ? 1 : 0));
+  /* ---------------- AI 实时点评配置 ----------------
+   * 配置存在 localStorage（只存本机浏览器）：OpenAI 兼容接口三要素。
+   * 配了之后翻牌时经同源 /api/roast（serve.mjs 转发，避免 CORS）实时生成点评；
+   * 没配就用 data.js 里的手写点评兜底。 */
+  var AI_CFG_KEY = 'juejin-boom:ai-cfg';
+  /* 掘金登录态 Cookie（一键评论用）：可存浏览器 localStorage，
+   * 也可写进服务端 site/.ai-config.json 的 jjCookie 字段（不进浏览器） */
+  var JJ_COOKIE_KEY = 'juejin-boom:jj-cookie';
+  var aiCfg = loadAiCfg();
+  /* 已生成的点评按沸点 id 缓存，来回翻牌不重复打接口（改配置时清空） */
+  var roastCache = {};
+  /* 失败负缓存：批量里「模型漏答」的牌记 30s，避免下一轮批量立刻重试同一批 */
+  var roastFail = {};
+  function loadAiCfg() {
+    try {
+      var c = JSON.parse(localStorage.getItem(AI_CFG_KEY) || 'null');
+      /* token 允许为空：空 token 时由服务端 .ai-config.json 补上（Key 不进浏览器） */
+      return (c && c.baseUrl && c.model) ? c : null;
+    } catch (e) { return null; }
+  }
+
+  /* ---------------- 点评风格预设 ----------------
+   * 每张风格牌 = 名字 + 示例 + 完整提示词；提示词随 /api/roast 请求发给模型。
+   * 第一张「毒舌」就是原本的默认提示词；选择存 localStorage，改风格时清空点评缓存。 */
+  var STYLE_KEY = 'juejin-boom:ai-style';
+  var STYLES = [
+    {
+      id: 'toxic', name: '毒舌点评', demo: '毒的是现象，不是你。',
+      prompt: '你是掘金沸点的毒舌评论员。针对用户给的沸点内容写一句点评：' +
+        '口语化、犀利幽默、一针见血，可以调侃现象，但不攻击作者本人。' +
+        '不超过 60 字，只输出点评本身，不要引号、不要解释、不要前缀。',
+    },
+    {
+      id: 'warm', name: '温柔治愈', demo: '先给你一个抱抱，剩下的慢慢来。',
+      prompt: '你是掘金沸点的暖心评论员。针对用户给的沸点内容写一句点评：' +
+        '温柔善意，先共情再给一点小鼓励，像朋友递过来一杯热茶。' +
+        '不超过 60 字，只输出点评本身，不要引号、不要解释、不要前缀。',
+    },
+    {
+      id: 'logic', name: '理性拆解', demo: '情绪很满，信息量很低。',
+      prompt: '你是掘金沸点的理性评论员。针对用户给的沸点内容写一句点评：' +
+        '冷静客观，直接点出事情的本质或逻辑漏洞，不带情绪，不落俗套。' +
+        '不超过 60 字，只输出点评本身，不要引号、不要解释、不要前缀。',
+    },
+    {
+      id: 'melon', name: '吃瓜群众', demo: '搬好小板凳，就等后续了。',
+      prompt: '你是掘金沸点的吃瓜评论员。针对用户给的沸点内容写一句点评：' +
+        '围观群众视角，看热闹不嫌事大，轻松调侃，可以用网络梗但不低俗。' +
+        '不超过 60 字，只输出点评本身，不要引号、不要解释、不要前缀。',
+    },
+    {
+      id: 'poet', name: '文青感慨', demo: '风把日子吹皱了，也算是种动静。',
+      prompt: '你是掘金沸点的文艺评论员。针对用户给的沸点内容写一句点评：' +
+        '感性细腻，带点诗意和画面感，像一句随手写下的随笔。' +
+        '不超过 60 字，只输出点评本身，不要引号、不要解释、不要前缀。',
+    },
+  ];
+  function currentStyle() {
+    var id = localStorage.getItem(STYLE_KEY) || 'toxic';
+    for (var i = 0; i < STYLES.length; i++) if (STYLES[i].id === id) return STYLES[i];
+    return STYLES[0];
+  }
+  function toast(msg) {
+    var t = $('#toast');
+    t.textContent = msg;
+    t.classList.add('on');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { t.classList.remove('on'); }, 2000);
+  }
+
+  function copyText(txt) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      return navigator.clipboard.writeText(txt).catch(function () { fallbackCopy(txt); });
+    }
+    fallbackCopy(txt);
+    return Promise.resolve();
+  }
+  function fallbackCopy(txt) {
+    var a = document.createElement('textarea');
+    a.value = txt;
+    a.setAttribute('readonly', '');
+    a.style.cssText = 'position:fixed;top:0;left:-9999px;opacity:0';
+    document.body.appendChild(a);
+    a.select();
+    try { document.execCommand('copy'); } catch (e) { /* 极老浏览器 */ }
+    a.remove();
+  }
+
+  function fmtTime(ts) {
+    if (!ts) return '';
+    var d = new Date(ts * 1000);
+    return pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + ' ' +
+      pad(d.getHours()) + ':' + pad(d.getMinutes());
+  }
+  function likedCount() {
+    return Object.keys(S.liked).filter(function (k) { return S.liked[k]; }).length;
+  }
+  function seenCount() {
+    return Object.keys(S.seen).filter(function (k) { return S.seen[k]; }).length;
+  }
+  var isFav = function (id) { return !!S.liked[id]; };
+
+  /* ---------------- 排序 ---------------- */
+  function rebuild() {
+    S.order = PINS.map(function (_, i) { return i; });
     S.pos = 0;
-    render(true);
-    toast('抓到 ' + r.added + ' 条新沸点');
-  } else if (!silent) {
-    render(true); toast('没有新沸点，牌堆已是最新');
   }
-}
+  function shuffleOrder() {
+    for (var i = S.order.length - 1; i > 0; i--) {
+      var j = Math.floor(Math.random() * (i + 1));
+      var t = S.order[i]; S.order[i] = S.order[j]; S.order[j] = t;
+    }
+  }
 
-/* ---------------- 渲染 ---------------- */
+  /* ---------------- 标题 / 正文拆分 ----------------
+   * 数据现状：60 条里绝大多数 topic 是「沸点」（掘金默认占位），没信息量。
+   * 主卡是固定高度的纸牌，若把一句短话当标题、正文留空，中段会出现一大片
+   * 留白。所以只有「内容够长、需要分两层读」时才拆标题：
+   *   有真话题             → 标题=话题，正文=全文
+   *   无话题、内容 < 34 字  → 不拆，整条当导语（正文升格为主体）
+   *   无话题、内容 ≥ 34 字  → 首句 ≤20 字时当标题，其余作正文
+   */
+  function splitTitleBody(p) {
+    var raw = String(p.content || '').replace(/\n{2,}/g, '\n').trim();
+    var hasTopic = p.topic && p.topic !== '沸点';
+    if (hasTopic) return { title: p.topic.trim(), body: raw };
+    if (raw.length < 34) return { title: '', body: raw };
+    var lines = raw.split('\n').map(function (s) { return s.trim(); }).filter(Boolean);
+    if (lines.length > 1 && lines[0].length <= 20) {
+      return { title: lines[0], body: lines.slice(1).join('\n') };
+    }
+    return { title: '', body: raw };
+  }
 
-function cardShell(side, opts) {
-  const cls = 'card ' + side + (opts.ai ? ' ai' : '') + (opts.anim ? ' deal' + (side === 'cardL' ? 'L' : 'R') : '');
-  const suit = opts.ai ? '♠' : '◆';
-  const rankCls = opts.ai ? 'rank-black' : 'rank-red';
-  return '' +
-    '<article class="' + cls + '">' +
-      '<div class="idx tl ' + rankCls + '"><span class="rank">' + opts.rank + '</span><span class="suit">' + suit + '</span></div>' +
-      '<div class="idx br ' + rankCls + '"><span class="rank">' + opts.rank + '</span><span class="suit">' + suit + '</span></div>' +
-      (opts.slot ? '<div class="slotTag">' + opts.slot + '</div>' : '') +
-      opts.inner +
+  /* 主卡线稿插画：土星虫（掘金宠物）坐在散开的牌堆上 —— 220x150 画布。
+   * 变体 A · 土星虫主视角，与 pets/illustrations.py 的 saturn_hero() 同源：
+   *   底：三张散开的牌（-8° / 4° / 14°），中间那张填充浅蓝并带两条书写线；
+   *   上：土星虫（身体 + 四条细腿 + 横幅光环 + 眯眼）+ 三颗大小不一的蓝色四角星。
+   * 光环的遮挡顺序必须是「后半整椭圆 → 身体 → 腿 → 前半下弧」，
+   * 这样才有"环穿过身体"的正确层次；只画一段弧会看成张开双臂。
+   */
+  /* 主卡线稿插画 —— 220x150 画布，两版随机展示。
+   *
+   * ILLUS_A  · 变体 A「土星虫主视角」，与 pets/illustrations.py 的 saturn_hero() 同源：
+   *   底：三张散开的牌（-8° / 4° / 14°），中间那张填充浅蓝并带两条书写线；
+   *   上：土星虫（身体 + 四条细腿 + 横幅光环 + 眯眼）+ 三颗大小不一的蓝色四角星。
+   *   光环的遮挡顺序必须是「后半整椭圆 → 身体 → 腿 → 前半下弧」，
+   *   这样才有"环穿过身体"的正确层次；只画一段弧会看成张开双臂。
+   *
+   * ILLUS_V1 · 初版：两张斜叠的牌（后牌空心描边、前牌浅蓝底 + 三条书写线）
+   *   + 左上蓝色四角星 + 右下白描边对话泡（内含两条蓝线）。
+   *
+   * 选取规则见 pickIllus()：每次渲染主卡时独立随机，用 Math.random() < 0.5 抛硬币。
+   * 不做「本次页面只用一个」的缓存 —— 翻一张换一次，才有开盲盒的手感。
+   */
+  var ILLUS_A =
+    '<svg viewBox="0 0 220 150" fill="none" aria-hidden="true">' +
+      // 底：三张散开的牌
+      '<g stroke="#1A1D21" stroke-width="2.1">' +
+        '<rect x="30" y="94" width="84" height="52" rx="8" fill="#FFFFFF" transform="rotate(-8 72 120)"/>' +
+        '<rect x="52" y="94" width="84" height="52" rx="8" fill="#EAF2FF" transform="rotate(4 94 120)"/>' +
+        '<rect x="74" y="94" width="84" height="52" rx="8" fill="#FFFFFF" transform="rotate(14 116 120)"/>' +
+      '</g>' +
+      '<path d="M92 112h40M92 124h24" stroke="#1A1D21" stroke-width="2.1" ' +
+        'stroke-linecap="round" transform="rotate(14 116 120)" opacity="0.45"/>' +
+      // 土星虫：光环后半 → 身体 → 腿 → 光环前半 → 眼睛
+      '<g>' +
+        '<ellipse cx="108" cy="77.4" rx="55.1" ry="10.2" fill="none" stroke="#EFC21E" stroke-width="10.2"/>' +
+        '<path d="M74 73C74 32.4 85.6 13.8 108 13.8C130.4 13.8 142 32.4 142 73' +
+          'L142 91.6C142 103.1 130.4 108.4 108 108.4C85.6 108.4 74 103.1 74 91.6Z" ' +
+          'fill="#FF7A1A" stroke="#1A1D21" stroke-width="1.9"/>' +
+        '<path d="M86.6 103.1v24.5M100.9 103.1v24.5M115.1 103.1v24.5M129.4 103.1v24.5" ' +
+          'stroke="#FF7A1A" stroke-width="7.5" stroke-linecap="round"/>' +
+        '<path d="M52.9 77.4A55.1 10.2 0 0 0 163.1 77.4" fill="none" ' +
+          'stroke="#FFD93B" stroke-width="10.2" stroke-linecap="round"/>' +
+        '<path d="M95.4 47.4v9.5M95.4 47.4h6.8v9.5M113.8 47.4v9.5M113.8 47.4h6.8v9.5" ' +
+          'stroke="#3A1F00" stroke-width="4.4" stroke-linecap="round" stroke-linejoin="round" fill="none"/>' +
+      '</g>' +
+      // 蓝色四角星点缀
+      '<path d="M170 35l4.2 8.8 8.8 4.2-8.8 4.2-4.2 8.8-4.2-8.8-8.8-4.2 8.8-4.2z" fill="#1E80FF"/>' +
+      '<path d="M190 76l2.6 5.4 5.4 2.6-5.4 2.6-2.6 5.4-2.6-5.4-5.4-2.6 5.4-2.6z" fill="#A8C7FF"/>' +
+      '<path d="M30 53l2.2 4.8 4.8 2.2-4.8 2.2-2.2 4.8-2.2-4.8-4.8-2.2 4.8-2.2z" fill="#A8C7FF"/>' +
+    '</svg>';
+
+  var ILLUS_V1 =
+    '<svg viewBox="0 0 220 150" fill="none" aria-hidden="true">' +
+      '<rect x="40" y="34" width="92" height="62" rx="9" transform="rotate(-9 86 65)" ' +
+        'stroke="#1A1D21" stroke-width="2.4"/>' +
+      '<g transform="rotate(7 120 80)">' +
+        '<rect x="74" y="50" width="92" height="62" rx="9" fill="#EAF2FF" ' +
+          'stroke="#1A1D21" stroke-width="2.4"/>' +
+        '<line x1="90" y1="68" x2="150" y2="68" stroke="#1A1D21" stroke-width="2.4" stroke-linecap="round"/>' +
+        '<line x1="90" y1="81" x2="136" y2="81" stroke="#1A1D21" stroke-width="2.4" stroke-linecap="round"/>' +
+        '<line x1="90" y1="94" x2="144" y2="94" stroke="#1A1D21" stroke-width="2.4" stroke-linecap="round"/>' +
+      '</g>' +
+      '<path d="M52 22l3 7 7 3-7 3-3 7-3-7-7-3 7-3z" fill="#1E80FF"/>' +
+      '<path d="M162 112c0-6.6 5.4-12 12-12h8c6.6 0 12 5.4 12 12s-5.4 12-12 12h-4l-7 6v-6h3c-6.6 0-12-5.4-12-12z" ' +
+        'stroke="#1A1D21" stroke-width="2.4" fill="#FFFFFF"/>' +
+      '<line x1="172" y1="110" x2="184" y2="110" stroke="#1E80FF" stroke-width="2.4" stroke-linecap="round"/>' +
+      '<line x1="172" y1="117" x2="181" y2="117" stroke="#1E80FF" stroke-width="2.4" stroke-linecap="round"/>' +
+    '</svg>';
+
+  /* 主卡插画随机选取：每次渲染主卡独立抛硬币，翻一张换一次。 */
+  function pickIllus() { return Math.random() < 0.5 ? ILLUS_A : ILLUS_V1; }
+
+  var ICON_USER =
+    '<svg width="17" height="17" viewBox="0 0 17 17" fill="none" aria-hidden="true">' +
+      '<circle cx="8.5" cy="5.9" r="2.7" stroke="#A8AEB8" stroke-width="1.3"/>' +
+      '<path d="M3.4 14.1c0-2.3 2.3-4.1 5.1-4.1s5.1 1.8 5.1 4.1" stroke="#A8AEB8" stroke-width="1.3" stroke-linecap="round"/>' +
+    '</svg>';
+
+  var ICON_BOLT = '<svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true">' +
+    '<path d="M5.8 0.4L1.2 5.8h3.4L4.2 9.6l4.6-5.4H5.4L5.8 0.4z" fill="#fff"/></svg>';
+
+  var ICON_BOLT_BLUE = '<svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true">' +
+    '<path d="M5.8 0.4L1.2 5.8h3.4L4.2 9.6l4.6-5.4H5.4L5.8 0.4z" fill="#1E80FF"/></svg>';
+
+  var ICON_COPY = '<svg width="13" height="13" viewBox="0 0 13 13" fill="none" aria-hidden="true">' +
+    '<rect x="4.2" y="1.2" width="7.6" height="8.4" rx="1.6" stroke="#fff" stroke-width="1.3"/>' +
+    '<path d="M8.8 11.8H2.8c-.8 0-1.4-.6-1.4-1.4V4.4" stroke="#fff" stroke-width="1.3" stroke-linecap="round"/></svg>';
+
+  /* 「原文」外链箭头。stroke 走 currentColor，跟着 .go 的 hover 变蓝。 */
+  var ICON_GO = '<svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true">' +
+    '<path d="M2.7 7.3L7.3 2.7M3.9 2.7h3.4v3.4" stroke="currentColor" stroke-width="1.4" ' +
+    'stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
+  /* 右侧卡片栈用的小图标：评论气泡（徽标）/ 上一条 / 下一条。
+   * 气泡走 currentColor —— 评论徽标是浅底深字，白色 path 会看不见。 */
+  var ICON_CHAT = '<svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true">' +
+    '<path d="M1.3 4.3c0-1.8 1.7-3.3 3.7-3.3s3.7 1.5 3.7 3.3S7 7.6 5 7.6c-.4 0-.8 0-1.2-.1' +
+    'l-2.1 1.2.4-1.6C1.6 6.5 1.3 5.5 1.3 4.3z" fill="currentColor"/></svg>';
+
+  var ICON_UP = '<svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true">' +
+    '<path d="M2.2 6.2L5 3.4l2.8 2.8" stroke="currentColor" stroke-width="1.5" ' +
+    'stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
+  var ICON_DOWN = '<svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true">' +
+    '<path d="M2.2 3.8L5 6.6l2.8-2.8" stroke="currentColor" stroke-width="1.5" ' +
+    'stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
+  /* ---------------- 邻卡 ----------------
+   * 设计稿里邻卡只有「标签 + 标题 + 正文」三块，按 272 宽排版。
+   * 形状与主卡不同：这里不拆导语档，统一走「标题 + 正文」，
+   * 无话题时把正文压成单段填满，避免半张卡空着。
+   */
+  function ghostCard(p, side, anim) {
+    var cls = 'ghost ' + side + (anim ? ' anim-' + (side === 'left' ? 'l' : 'r') : '');
+    if (!p) return '<article class="' + cls + '"></article>';
+    var sb = splitTitleBody(p);
+    var body = (sb.body || p.content || '').replace(/\n+/g, ' ').trim();
+    if (!sb.title) {
+      return '<article class="' + cls + '">' +
+        '<span class="tag">沸点</span>' +
+        '<h3 class="asbody">' + esc(body.slice(0, 96)) + '</h3>' +
+      '</article>';
+    }
+    return '<article class="' + cls + '">' +
+      '<span class="tag">沸点</span>' +
+      '<h3>' + esc(sb.title) + '</h3>' +
+      '<p>' + esc(body.slice(0, 130)) + '</p>' +
     '</article>';
-}
-
-function render(anim) {
-  const stage = $('#stage');
-  if (!S.order.length) {
-    stage.innerHTML = '<div class="boardEmpty"><div><b>' +
-      (S.q ? '没搜到' : '牌堆是空的') + '</b>' +
-      (S.q ? '换个词试试。' : '点左上角「⟳ 抓最新」发一把牌。') + '</div></div>';
-    $('#prog').style.width = '0%'; $('#mLeft').textContent = '0 / 0';
-    $('#mRight').textContent = '喜欢 ' + Object.values(S.liked).filter(Boolean).length +
-      ' · 已评 ' + Object.values(S.cmted).filter(Boolean).length;
-    S.cur = null;
-    return;
   }
-  const idx = S.order[S.pos];
-  const p = S.pins[idx];
-  S.cur = p; S.curIdx = idx;
-  if (anim) S.personaPick = 0;
 
-  const rank = rankOf(p);
-  const long = p.content.length > 250;
-  const pics = (p.pics || []).slice(0, 2);
-  const left = cardShell('cardL', {
-    anim: anim, rank: rank, slot: '原文',
-    inner:
-      '<div class="cHead"><b>' + esc(p.user) + '</b><span>' +
-        esc([p.company, p.job].filter(Boolean).join(' · ') || '掘友') + '</span></div>' +
-      '<div class="cBody">' +
-        '<div class="txt' + (long ? ' scroll' : '') + '">' + esc(p.content) + '</div>' +
-        (pics.length ? '<div class="pics">' + pics.map((u) =>
-          '<img src="' + esc(u) + '" referrerpolicy="no-referrer">').join('') + '</div>' : '') +
-        (p.topics.length ? '<div class="tags">' + p.topics.slice(0, 3).map((t) =>
-          '<span class="tag"># ' + esc(t) + '</span>').join('') + '</div>' : '') +
+  /* 只放行 http(s)。data.js 与 /api/pins 的 url 都来自外部，
+   * 万一被写成 javascript:/data: 之类，直接当没有链接处理。 */
+  function safeUrl(u) {
+    u = String(u == null ? '' : u).trim();
+    return /^https?:\/\//i.test(u) ? u : '';
+  }
+
+  /* ---------------- 主卡 ----------------
+   * 整张卡就是链接：点它进掘金这条沸点的原文页。
+   * 用真 <a> 而不是 JS window.open —— 悬停时状态栏给地址预览、中键/⌘点击
+   * 新开标签、右键「复制链接地址」、Tab 可聚焦，这些原生行为自己写补不齐。
+   * 只有一件事原生不管：拖选文字后松手会顺带触发 click，把「想选中一段字」
+   * 变成「跳走了」——那一条在 bind() 里用选区判断拦掉。
+   */
+  function mainCard(p, idx, anim) {
+    var av = p.avatar
+      ? '<img src="' + esc(p.avatar) + '" alt="" loading="lazy" referrerpolicy="no-referrer">'
+      : ICON_USER;
+    var on = isFav(p.id);
+    var tb = splitTitleBody(p);
+    // 极短沸点（无话题且 ≤ 16 字）：正文居中放大撑住卡片中段
+    var short = !tb.title && tb.body.length <= 16;
+    var bodyHTML = tb.body
+      ? '<div class="body' + (tb.title ? '' : ' lead') + (short ? ' xs' : '') + '">' + esc(tb.body) + '</div>'
+      : '';
+    var url = safeUrl(p.url) || (p.id ? 'https://juejin.cn/pin/' + p.id : '');
+    var cls = 'main' + (anim ? ' anim-in' : '') + (on ? ' liked' : '');
+    var open = url
+      ? '<a class="' + cls + '" href="' + esc(url) + '" target="_blank"' +
+        ' rel="noopener noreferrer" draggable="false" title="在掘金打开这条沸点">'
+      : '<article class="' + cls + '">';
+    var close = url ? '</a>' : '</article>';
+    return '' +
+      open +
+        '<div class="chead">' +
+          '<span class="tag">' + ICON_BOLT_BLUE + '沸点</span>' +
+          '<span class="time">' + esc(fmtTime(p.ctime)) + '</span>' +
+          (url ? '<span class="go" aria-hidden="true">原文' + ICON_GO + '</span>' : '') +
+        '</div>' +
+        (tb.title ? '<h2>' + esc(tb.title) + '</h2>' : '') +
+        bodyHTML +
+        '<div class="illus">' + pickIllus() + '</div>' +
+        '<div class="spacer"></div>' +
+        '<div class="cfoot">' +
+          '<span class="bignum">' + pad(idx + 1) + '</span>' +
+          '<span class="dash"></span>' +
+          '<div class="who">' +
+            '<div class="line1">' +
+              '<span class="av">' + av + '</span>' +
+              '<span class="name">' + esc(p.user) + '</span>' +
+            '</div>' +
+            '<span class="meta">' + (p.digg || 0) + ' 赞 · ' + (p.cmt || 0) + ' 评论</span>' +
+          '</div>' +
+        '</div>' +
+      close;
+  }
+
+  /* ================================================================
+   * 右侧卡片栈（AI 点评 + 掘金评论）
+   * ----------------------------------------------------------------
+   * 第 1 张永远是这条沸点的 AI 点评，后面接掘金评论区的一级评论，
+   * 每条评论独占一张卡，↑↓（或键盘 ↑↓）上下翻着看。
+   *
+   * 实现要点：钉住的头 + 裁切窗口 + 钉住的底，窗口里是一条整体上下平移的轨道。
+   * 切换只改轨道的 transform —— 不重建 DOM，所以连点不会错位、
+   * 评论正文的滚动位置也不会被重置。页码/按钮在钉住的那一圈里，动画期间照样能点。
+   *
+   * 外壳 <aside class="ai"> 写在 index.html 里（在卡片容器之外、单独定位），
+   * 这里只返回卡内内容。注意别再套一层 .ai——套了会嵌套两层 absolute 直接被推出卡外。
+   *
+   * 评论是「一条沸点一次」的读请求，只在当前这张牌上按需拉，且带 450ms 防抖
+   * + 10 分钟服务端缓存。绝不整副牌预取，见 ensureComments()。
+   * ================================================================ */
+
+  /* 这条沸点右侧一共几张卡：AI 点评 +（拉取中 / 零条 / 失败 / 每条评论 / 还有更多） */
+  function aiList(p) {
+    var out = [{ kind: 'ai', pin: p }];
+    var c = cmtCache[p.id];
+    if (!c) { out.push({ kind: 'note', mode: 'loading' }); return out; }
+    if (c.err) { out.push({ kind: 'note', mode: 'error' }); return out; }
+    if (!c.list.length) { out.push({ kind: 'note', mode: 'empty' }); return out; }
+    for (var i = 0; i < c.list.length; i++) out.push({ kind: 'cmt', c: c.list[i] });
+    if (c.hasMore) out.push({ kind: 'note', mode: 'more' });
+    return out;
+  }
+
+  /* AI 点评的正文（三种状态：已生成 / 批量进行中 / 内置占位） */
+  function roastBodyHTML(p) {
+    var r = roastFor(p);
+    if (r.loading) {
+      return batchCtl
+        ? '<span class="ai-loading"><i class="spin"></i>AI 正在一次性点评 ' +
+          batchCtl.total + ' 条 · 已等 ' +
+          Math.round((Date.now() - batchCtl.start) / 1000) + 's</span>'
+        : '<span class="ai-loading"><i class="dot"></i><i class="dot"></i><i class="dot"></i>AI 正在看这条沸点…</span>';
+    }
+    return '<span' + (r.live ? ' class="roast-live"' : '') + '>' + esc(r.text) + '</span>';
+  }
+
+  function cmtAvatar(c) {
+    return c.avatar
+      ? '<img src="' + esc(c.avatar) + '" alt="" loading="lazy" referrerpolicy="no-referrer">'
+      : ICON_USER;
+  }
+
+  /* 每张卡绝对定位占满窗口，靠自身 translateY(k*100%) 排到第 k 格；
+   * 轨道整体上移 k*100% 时第 k 张正好落进窗口。 */
+  function aiSlideHTML(s, k) {
+    var off = ' style="transform:translateY(' + (k * 100) + '%)"';
+    if (s.kind === 'ai') {
+      return '<div class="ai-slide" data-k="ai"' + off + '>' +
+        '<div class="roast">' + roastBodyHTML(s.pin) + '</div>' +
+        '</div>';
+    }
+    if (s.kind === 'cmt') {
+      var c = s.c;
+      return '<div class="ai-slide cmt"' + off + '>' +
+        '<div class="cmt-head">' +
+          '<span class="cmt-av">' + cmtAvatar(c) + '</span>' +
+          '<span class="cmt-name">' + esc(c.user) + '</span>' +
+          (c.author ? '<span class="cmt-author">作者</span>' : '') +
+        '</div>' +
+        '<div class="cmt-body">' + (c.content ? esc(c.content) : '（图片评论）') + '</div>' +
+        '<div class="cmt-meta">' + c.digg + ' 赞 · ' + c.reply + ' 回复 · ' +
+          esc(fmtTime(c.ctime)) + '</div>' +
+        '</div>';
+    }
+    var msg = s.mode === 'error' ? '评论没拉到'
+      : s.mode === 'empty' ? '这条沸点还没人评论'
+      : s.mode === 'more' ? '还有更多评论'
+      : '正在拉评论…';
+    var sub = s.mode === 'error' ? '多半是网络或接口抖了一下，点下面重试'
+      : s.mode === 'empty' ? '你是第一个说话的人'
+      : s.mode === 'more' ? '去原文翻完整评论区'
+      : '掘金评论区';
+    return '<div class="ai-slide note"' + off + '>' +
+      '<div class="note-box">' +
+        (s.mode === 'loading'
+          ? '<span class="ai-loading"><i class="dot"></i><i class="dot"></i><i class="dot"></i>' + msg + '</span>'
+          : '<b>' + msg + '</b><span>' + sub + '</span>') +
       '</div>' +
-      '<div class="cFoot"><div class="row"><span>赞 ' + p.digg + '</span><span>评 ' + p.cmt +
-        '</span><span>' + fmt(p.ctime) + '</span>' +
-        '<a href="' + esc(p.url) + '" target="_blank" rel="noreferrer" id="pLink">原文 ↗</a></div></div>',
-  });
-  stage.innerHTML = left + '<div class="cardHost" id="aiHost"></div>';
-  renderAI(p, anim);
-
-  $('#prog').style.width = ((S.pos + 1) / S.order.length * 100) + '%';
-  $('#mLeft').textContent = (S.pos + 1) + ' / ' + S.order.length + ' · ' + rank;
-  const nl = Object.values(S.liked).filter(Boolean).length;
-  const nc = Object.values(S.cmted).filter(Boolean).length;
-  $('#mRight').textContent = '喜欢 ' + nl + ' · 已评 ' + nc;
-  $('#favN').textContent = nl;
-  $('#btnLike').classList.toggle('liked', !!S.liked[p.id]);
-  $('#btnLike').innerHTML = '♥ ' + (S.liked[p.id] ? '已喜欢' : '喜欢');
-  document.documentElement.classList.toggle('embed', EMBED);
-  $('#pLink').onclick = (e) => { e.preventDefault(); openLink(p.url); };
-  send({ type: 'markSeen', ids: [p.id] });
-}
-
-function currentRoast(p) {
-  const r = S.roasts[p.id];
-  if (!r) return null;
-  const list = r.roasts || [];
-  return list[Math.min(S.personaPick, list.length - 1)] || list[0] || null;
-}
-
-function renderAI(p, anim) {
-  const host = $('#aiHost');
-  if (!host) return;
-  const r = S.roasts[p.id];
-  const list = r ? (r.roasts || []) : [];
-  const cur = currentRoast(p);
-  const rank = rankOf(p);
-
-  let body, foot = '', state = '待生成', stateCls = '', actions = '';
-  if (!r) {
-    state = S.cfg.aiProvider === 'off' ? '未配置' : '待生成';
-    body = '<p class="ph">' + (S.cfg.aiProvider === 'off'
-      ? '还没接模型 API，去设置页填一个。'
-      : '点下面「生成点评」，AI 现写一张。') + '</p>';
-  } else {
-    state = (r.model || 'AI');
-    stateCls = ' ok';
-    body = '<div class="ornament">◆ ◆ ◆</div>' +
-      '<div class="roast">' + esc(cur ? cur.text : '（空）') + '</div>' +
-      '<div class="ornament">◆ ◆ ◆</div>';
-    foot = '<div class="personas">' + list.map((x, i) =>
-      '<button class="persona' + (i === Math.min(S.personaPick, list.length - 1) ? ' on' : '') +
-      '" data-i="' + i + '">' + esc(x.persona) + '</button>').join('') +
-      ((r.tags && r.tags.length) ? r.tags.map((t) =>
-        '<span class="persona tagpill">#' + esc(t) + '</span>').join('') : '') + '</div>' +
-      '<div class="cardActs">' +
-        '<button id="btnGen">重写</button>' +
-        '<button id="btnCopyRoast">复制</button>' +
-        '<button id="btnUseRoast">用这句评论</button>' +
-        '<button id="btnBatch">补 5 条</button>' +
       '</div>';
   }
-  if (!r) {
-    actions = '<div class="cardActs"><button id="btnGen">生成点评</button>' +
-      '<button id="btnBatch">补 5 条</button></div>';
-  }
 
-  host.innerHTML = cardShell('cardR', {
-    anim: anim, rank: rank, ai: true,
-    inner:
-      '<div class="aiState' + stateCls + '">' + esc(state) + '</div>' +
-      '<div class="cHead"><b>' + (r ? esc(cur ? cur.persona : '犀利解析') : '犀利解析') + '</b>' +
-        '<span>' + (r ? 'AI 点评 · ' + fmt(Math.floor((r.at || 0) / 1000)) : '等待生成') + '</span></div>' +
-      '<div class="cBody">' + body + '</div>' +
-      '<div class="cFoot">' + foot + actions + '</div>',
-  });
-
-  const hostEl = $('#aiHost');
-  hostEl.querySelectorAll('.persona[data-i]').forEach((el) => {
-    el.onclick = () => { S.personaPick = +el.dataset.i; renderAI(p, false); };
-  });
-  const g = hostEl.querySelector('#btnGen');
-  if (g) g.onclick = (e) => genRoast(p, !!r, e.target);
-  const cp = hostEl.querySelector('#btnCopyRoast');
-  if (cp) cp.onclick = () => { const c = currentRoast(p); if (c) copyText(c.text).then(() => toast('点评已复制')); };
-  const ur = hostEl.querySelector('#btnUseRoast');
-  if (ur) ur.onclick = () => openCmt(true);
-  const bt = hostEl.querySelector('#btnBatch');
-  if (bt) bt.onclick = async (e) => {
-    e.target.disabled = true; e.target.textContent = '补写中…';
-    const out = await send({ type: 'roastBatch', n: 5 });
-    const st = await send({ type: 'getState' });
-    S.roasts = st.roasts;
-    const ok = (out || []).filter((x) => x && x.ok).length;
-    toast(ok ? '补好了 ' + ok + ' 条' : '没补成，检查 API 设置');
-    renderAI(p, false);
-  };
-}
-
-async function genRoast(p, force, btn) {
-  if (S.cfg.aiProvider === 'off') { toast('先去设置页配置模型 API'); return; }
-  if (btn) { btn.disabled = true; btn.textContent = '生成中…'; }
-  const host = $('#aiHost');
-  if (host) {
-    const ph = host.querySelector('.ph');
-    if (ph) ph.innerHTML = '<span class="spinner"></span>AI 正在写…';
-    const st = host.querySelector('.aiState');
-    if (st) { st.textContent = '生成中'; st.className = 'aiState'; }
-  }
-  const r = await send({ type: 'roast', id: p.id, force: !!force });
-  if (!r || r.ok === false) {
-    toast('点评失败：' + ((r && r.error) || ''));
-    if (host) {
-      const st = host.querySelector('.aiState');
-      if (st) { st.textContent = '失败'; st.className = 'aiState err'; }
-      const b = host.querySelector('.cBody');
-      if (b) b.innerHTML = '<p class="ph">' + esc((r && r.error) || '生成失败') + '</p>';
+  /* 钉住不动的那一圈：徽标 / 页码 / 上下按钮 / 动作按钮 / 说明。
+   * 只有这里随当前卡片更新，轨道本身不重建。 */
+  function aiSyncChrome(p, list) {
+    var s = list[aiIdx] || list[0];
+    var isAI = s.kind === 'ai';
+    var badge = $('#aiBadge'), num = $('#aiNum'), up = $('#aiUp'), dn = $('#aiDn');
+    var cp = $('#btnCopy'), note = $('#aiNote');
+    if (badge) {
+      badge.className = 'badge' + (isAI ? '' : ' people');
+      badge.innerHTML = isAI
+        ? ICON_BOLT + (aiCfg ? 'AI 点评' : '内置点评')
+        : ICON_CHAT + '评论';
     }
-    return;
+    if (num) num.textContent = (aiIdx + 1) + ' / ' + list.length;
+    if (up) up.disabled = aiIdx <= 0;
+    if (dn) dn.disabled = aiIdx >= list.length - 1;
+    var n = 0;
+    for (var i = 1; i < list.length; i++) if (list[i].kind === 'cmt') n++;
+    if (cp) {
+      /* 每张卡都恰好有一个动作 —— 底栏高度恒定，切换时不会跳 */
+      if (isAI) { cp.innerHTML = ICON_COPY + '一键评论'; cp.disabled = false; }
+      else if (s.kind === 'cmt') { cp.innerHTML = ICON_COPY + '复制这条'; cp.disabled = false; }
+      else if (s.mode === 'error') { cp.textContent = '重试'; cp.disabled = false; }
+      else if (s.mode === 'empty') { cp.textContent = '去原文评论'; cp.disabled = false; }
+      else if (s.mode === 'more') { cp.textContent = '去原文看全部'; cp.disabled = false; }
+      else { cp.textContent = '正在拉评论…'; cp.disabled = true; }
+    }
+    if (note) {
+      note.textContent = isAI ? '毒的是现象，不是你。'
+        : s.mode === 'loading' ? '掘金评论区 · 拉取中'
+        : n ? '掘金评论区 · 共 ' + n + ' 条'
+        : '掘金评论区';
+    }
   }
-  S.roasts[p.id] = r.roast;
-  S.personaPick = 0;
-  renderAI(p, false);
-  toast(r.cached ? '用的是缓存点评' : 'AI 点评到手');
-}
 
-/* ---------------- 互动 ---------------- */
-
-function openSheet(el) { $('#mask').classList.add('on'); el.classList.add('on'); }
-function closeSheets() {
-  $('#mask').classList.remove('on');
-  $('#sheetCmt').classList.remove('on'); $('#sheetList').classList.remove('on');
-}
-function openCmt(useAI) {
-  if (!S.cur) return;
-  const p = S.cur;
-  const cur = currentRoast(p);
-  if (useAI && cur) $('#ta').value = cur.text;
-  else if (useAI) toast('先给这张生成点评');
-  $('#cmtState').textContent = '@ ' + p.user;
-  openSheet($('#sheetCmt'));
-  loadHotComments(p);
-  if (useAI) setTimeout(() => $('#ta').focus(), 240);
-}
-async function loadHotComments(p) {
-  const box = $('#hotCmts');
-  box.innerHTML = '';
-  const r = await send({ type: 'pinComments', id: p.id });
-  const list = (r && r.data) || [];
-  if (!list.length) return;
-  box.innerHTML = list.slice(0, 4).map((c) => {
-    const ci = c.comment_info || {}; const u = c.user_info || {};
-    return '<div class="hc"><b>' + esc(u.user_name || '掘友') + '：</b>' +
-      esc(String(ci.comment_content || '').slice(0, 70)) + '</div>';
-  }).join('');
-}
-function openList() {
-  const box = $('#favs');
-  const items = Object.keys(S.liked).filter((k) => S.liked[k]);
-  $('#listN').textContent = items.length + ' 张';
-  if (!items.length) box.innerHTML = '<div class="empty">还没喜欢过任何一张。</div>';
-  else {
-    box.innerHTML = items.map((id) => {
-      const p = S.pins.find((x) => x.id === id) || { content: '（已不在本地库里）', user: '', id };
-      const r = S.roasts[id];
-      const t = r && r.roasts && r.roasts[0] ? r.roasts[0].text : '';
-      return '<div class="it" data-id="' + esc(id) + '">' +
-        '<div><b>' + rankOf(p) + ' · ' + esc(p.user || '掘友') + '：' + esc(p.content.slice(0, 34)) + '</b>' +
-        '<span>' + (t ? 'AI：' + esc(t) : esc(p.content.slice(0, 80))) + '</span></div>' +
-        '<button class="rm" data-rm="' + esc(id) + '">×</button></div>';
-    }).join('');
+  /* 只动轨道。animate=false 用于「重建 DOM 之后把位置摆正」——
+   * 不先掐掉过渡的话，插入后第一次设 transform 会演一段没人要的动画。 */
+  function aiApply(i, animate) {
+    var track = $('#aiTrack');
+    if (!track) return;
+    var y = 'translateY(-' + (i * 100) + '%)';
+    if (animate) { track.style.transform = y; return; }
+    track.style.transition = 'none';
+    track.style.transform = y;
+    void track.offsetWidth;   // 让「无过渡 + 新位置」这一帧落地
+    track.style.transition = '';
   }
-  openSheet($('#sheetList'));
-}
 
-async function toggleLike() {
-  if (!S.cur) return;
-  const p = S.cur;
-  S.liked[p.id] = !S.liked[p.id];
-  saveLocal(); render(false);
-  toast(S.liked[p.id] ? '已加入收藏' : '取消收藏');
-  if (!S.liked[p.id]) return;
-  const r = await send({ type: 'digg', id: p.id, on: true });
-  if (r && r.err_no === 0) toast('已收藏，并在掘金点了赞');
-  else if (r && r.err_msg === 'must login') toast('已收藏（掘金未登录，没同步点赞）');
-}
-
-async function sendComment() {
-  if (!S.cur) return;
-  const txt = $('#ta').value.trim();
-  if (!txt) { toast('先写点什么'); return; }
-  const btn = $('#btnSendCmt');
-  btn.disabled = true; btn.textContent = '发送中…';
-  const r = await send({ type: 'comment', id: S.cur.id, content: txt });
-  btn.disabled = false; btn.textContent = '发表评论';
-  if (r && r.err_no === 0) {
-    S.cmted[S.cur.id] = true; saveLocal(); render(false);
-    toast('评论已发布'); $('#ta').value = ''; closeSheets();
-  } else {
-    const why = (r && (r.err_msg || r.error)) || '未知';
-    toast('发失败（' + why + '），已复制内容，可去原文粘贴');
-    copyText(txt);
+  function aiSet(i, animate) {
+    var p = PINS[S.order[S.pos]];
+    if (!p) return;
+    var list = aiList(p);
+    aiIdx = Math.max(0, Math.min(list.length - 1, i));
+    aiApply(aiIdx, animate === true);
+    aiSyncChrome(p, list);
+    /* 轻量动效档没有位移，补一次 130ms 淡入，别让切换变成无感知的瞬变 */
+    if (animate === true && document.documentElement.classList.contains('motion-lite')) {
+      var v = $('#aiView');
+      if (v) { v.classList.remove('fade'); void v.offsetWidth; v.classList.add('fade'); }
+    }
   }
-}
 
-/* ---------------- 事件 ---------------- */
+  function aiStep(d) { aiSet(aiIdx + d, true); }
 
-function bind() {
-  $('#btnRefresh').onclick = () => doRefresh(false);
-  $('#btnShuffle').onclick = () => shuffle(true);
-  $('#btnSettings').onclick = () => send({ type: 'openOptions' });
-  $('#btnList').onclick = openList;
-  $('#q').oninput = (e) => { S.q = e.target.value; rebuild(S.q); render(true); };
-  $('#btnClose').onclick = closeSelf;
-  $('#btnNext').onclick = () => {
+  function aiHTML() {
+    var p = PINS[S.order[S.pos]];
+    var list = aiList(p);
+    aiIdx = Math.max(0, Math.min(list.length - 1, aiIdx));
+    var slides = '';
+    for (var i = 0; i < list.length; i++) slides += aiSlideHTML(list[i], i);
+    return '' +
+      '<div class="ai-top">' +
+        '<span class="badge" id="aiBadge"></span>' +
+        '<div class="pager">' +
+          '<button class="pbtn" id="aiUp" type="button" aria-label="上一条">' + ICON_UP + '</button>' +
+          '<span class="pnum" id="aiNum"></span>' +
+          '<button class="pbtn" id="aiDn" type="button" aria-label="下一条">' + ICON_DOWN + '</button>' +
+        '</div>' +
+      '</div>' +
+      '<div class="ai-view" id="aiView">' +
+        '<div class="ai-track" id="aiTrack" style="transform:translateY(-' + (aiIdx * 100) + '%)">' +
+          slides +
+        '</div>' +
+      '</div>' +
+      '<div class="ai-foot">' +
+        '<button class="copy" id="btnCopy" type="button"></button>' +
+        '<div class="note" id="aiNote"></div>' +
+      '</div>';
+  }
+
+  /* 无条件重绘整块面板。调用方自己保证时机（翻牌动画中点那一下就走这里）。 */
+  function paintAI() {
+    var ai = $('#ai');
+    var p = PINS[S.order[S.pos]];
+    if (!ai || !p) return;
+    ai.innerHTML = aiHTML();
+    bindAI();
+    aiSet(aiIdx, false);
+    ensureComments(p);
+  }
+
+  /* 带时机守卫的入口：翻牌动画还在播（rotateY 立边窗口）时不换内容，
+   * 延后到动画结束再画 —— 否则会看到「卡片转到一半内容变了」。 */
+  function renderAI() {
+    if (Date.now() < aiFlipUntil) {
+      clearTimeout(aiLateTimer);
+      aiLateTimer = setTimeout(renderAI, Math.max(60, aiFlipUntil - Date.now() + 40));
+      return;
+    }
+    paintAI();
+  }
+
+  /* ---------------- 评论拉取 ----------------
+   * 一条沸点一次读请求，所以必须防抖：连翻十张不该变成十次上游调用。
+   * 停手 600ms 后才拉当前这张，且已经翻走就直接放弃这次。
+   * 600ms 是实测过的平衡点：连点（间隔 <600ms）一次都不会发，
+   * 而单次翻牌停下后约 1s 内评论就位，不至于让人盯着「正在拉评论…」等。
+   * 再叠加两层缓存（本地按 pinId、服务端 10 分钟），同一张牌一辈子只打一次。 */
+  function ensureComments(p) {
+    if (!p || !p.id || cmtLoading[p.id]) return;
+    var hit = cmtCache[p.id];
+    if (hit && !hit.err) return;   // 已有结果（哪怕是「零条评论」）就不再打
+    clearTimeout(cmtTimer);
+    cmtTimer = setTimeout(function () {
+      var cur = PINS[S.order[S.pos]];
+      if (!cur || cur.id !== p.id) return;   // 已经翻走了，不浪费这次请求
+      fetchComments(cur);
+    }, 600);
+  }
+
+  function fetchComments(p) {
+    if (cmtLoading[p.id]) return;
+    cmtLoading[p.id] = true;
+    fetch('api/comments?pinId=' + encodeURIComponent(p.id))
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        cmtCache[p.id] = {
+          list: (d && d.comments) || [],
+          hasMore: !!(d && d.hasMore),
+          err: (d && d.error) || '',
+        };
+      })
+      .catch(function (e) {
+        /* 失败不静默：留一条 error 卡，底栏给「重试」 */
+        cmtCache[p.id] = { list: [], hasMore: false, err: String((e && e.message) || e) };
+      })
+      .then(function () {
+        cmtLoading[p.id] = false;
+        var cur = PINS[S.order[S.pos]];
+        if (cur && cur.id === p.id) renderAI();   // 只刷新当前这一张
+      });
+  }
+
+  /* 底栏那一个动作按钮干啥，按当前这张卡决定 */
+  function onAiAction() {
+    var p = PINS[S.order[S.pos]];
+    if (!p) return;
+    var s = aiList(p)[aiIdx];
+    if (!s) return;
+    if (s.kind === 'ai') { postRoastComment(p); return; }
+    if (s.kind === 'cmt') {
+      copyText(s.c.content).then(function () { toast('已复制这条评论'); });
+      return;
+    }
+    if (s.mode === 'error') {
+      delete cmtCache[p.id];          // 清掉负缓存，重试一次
+      toast('重新拉取评论…');
+      fetchComments(p);
+      return;
+    }
+    if (p.url) window.open(p.url, '_blank', 'noopener');
+  }
+
+  /* 「一键评论」：把当前点评直接发到这条沸点的评论区（经 /api/comment 转发）。
+   * 未配置掘金 Cookie 时自动退化为「复制文案」，按钮任何时候都有用。
+   * 按钮是常驻元素（只有 paintAI() 重建面板时才换），所以这里不用重新绑定。 */
+  function postRoastComment(p) {
+    var btn = $('#btnCopy');
+    if (!btn) return;
+    /* 优先发实时生成的点评，其次手写点评 */
+    var text = roastCache[p.id] || p.roast;
+    if (!text) { toast(aiCfg ? '点评还在生成中…' : '这条还没配点评'); return; }
+    btn.disabled = true;
+    btn.textContent = '评论中…';
+    var restore = function () { aiSet(aiIdx, false); };
+    fetch('/api/comment', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        pinId: p.id,
+        content: text,
+        cookie: localStorage.getItem(JJ_COOKIE_KEY) || '',
+      }),
+    })
+      .then(parseRoastRes)
+      .then(function (res) {
+        if (res.ok && res.d.ok) {
+          btn.textContent = '已评论 ✓';
+          toast('已评论到这条沸点 ✓');
+          return;                      // 停在成功态，下次切换卡片时自动复位
+        }
+        var msg = (res.d && res.d.error) || '评论失败';
+        /* 没配 Cookie：不报错，退化为复制文案 */
+        if (/未配置掘金 Cookie/.test(msg)) {
+          restore();
+          copyText(text).then(function () {
+            toast('未配置掘金 Cookie，已复制文案，去评论区粘贴即可');
+          });
+        } else {
+          restore();
+          toast('评论失败：' + msg);
+        }
+      })
+      .catch(function (e) {
+        restore();
+        toast('评论失败：' + ((e && e.message) || e));
+      });
+  }
+
+  /* 当前这条该显示什么点评。配了 AI 接口时三层判定：
+   *   ① 有缓存           → 直接显示（批量已经评过了）
+   *   ② 有批量在跑       → 进度态转圈，等这一批一次性补齐
+   *   ③ 没有批量在跑     → 回退到内置点评/占位文案，不转圈
+   * 注意：任何情况下都不在这里单独打接口。点评只由 startBatch() 一次性
+   * 批量生成——逐条补点评会按牌数产生 N 次请求，是限流的主要来源。 */
+  function roastFor(p) {
+    if (aiCfg) {
+      if (roastCache[p.id]) return { text: roastCache[p.id], live: true };
+      if (batchCtl) return { loading: true };
+      return { text: p.roast || '（这条暂无 AI 点评，可点「洗牌」重试）', live: false };
+    }
+    return { text: p.roast || '（这条还没配点评）', live: false };
+  }
+
+  /* /api/roast 响应解析：旧版预览服务没有该路由时会返回纯文本 404，
+   * 直接 r.json() 会抛出谁也看不懂的语法错误——转成可操作的提示。 */
+  function parseRoastRes(r) {
+    return r.text().then(function (t) {
+      var d = null;
+      try { d = JSON.parse(t); } catch (e) { /* 非 JSON：多半是旧服务的 404 纯文本 */ }
+      if (!d) {
+        throw new Error(r.status === 404
+          ? '预览服务还是旧版（缺 /api/roast），请关掉预览卡片重新打开'
+          : '服务返回异常（HTTP ' + r.status + '）');
+      }
+      return { ok: r.ok, d: d };
+    });
+  }
+
+  /* 单条「实时点评」已取消。
+   * ----------------------------------------------------------------
+   * 原实现：翻牌落定 700ms 后为当前这一张单独打一次 /api/roast。
+   * 与「批量点评」并存之后，点评就有了两条来源，于是：
+   *   · 批量没覆盖到的牌（批量进行中洗牌、批量失败、模型漏答）会走单条，
+   *     用户一路翻下去就是 N 次单条请求——正是限流的主要触发点；
+   *   · 单条与批量还会同时打同一批 id，缓存互相踩。
+   * 现在收紧成一句话：【点评只有一个来源 = startBatch() 的一次性批量请求】。
+   * 没评到的牌显示内置点评/占位文案，点「洗牌」即可重新批量补齐。 */
+
+  /* ---------------- 批量点评（唯一的点评生成路径） ----------------
+   * 一次动作把当前所有还没点评过的牌全部生成完（启动 / 洗牌 / 换配置 /
+   * 换风格后自动触发）。整副牌打包发给 /api/roast，服务端拼成【一次】
+   * 上游调用、JSON 数组一次拿回——请求数与牌数无关，天然避开限流。
+   * 失败或部分失败都不逐条补打，见 startBatch()。 */
+
+  /* 逐条兜底已取消。
+   * ----------------------------------------------------------------
+   * 原实现：批量失败后 runSerial() 把队列逐条重打一遍 /api/roast
+   * （间隔 300ms、限流退避 2.8s）。串行虽然不会打爆并发配额，
+   * 但请求数仍然等于牌数——一次洗牌失败就会产生 N 次请求，
+   * 既慢又正好踩在服务商的「短时间请求数」限流上。
+   * 现在批量失败就如实失败：提示用户，重试入口是「洗牌」（会重新批量）。 */
+
+  /* 就地刷新「AI 点评」那一张的正文（批量进度变化 / 点评已生成时）。
+   * 只动第 1 张的 .roast，【不重建整块面板】—— 重建会把用户正在读的
+   * 评论正文滚动位置一起重置，而批量每秒 tick 一次，那样就全乱了。 */
+  function refreshAiCard() {
+    var p = PINS[S.order[S.pos]];
+    var ai = $('#ai');
+    if (!p || !ai || Date.now() < aiFlipUntil) return;
+    var box = ai.querySelector('.ai-slide[data-k="ai"] .roast');
+    if (!box) return;                       // 面板还没建起来
+    box.innerHTML = roastBodyHTML(p);
+  }
+
+  function stopBatch() {
+    batchCtl = null;
+    if (batchTicker) { clearInterval(batchTicker); batchTicker = null; }
+  }
+
+  /* 把整副牌里「还没点评」的牌打包成【一次】请求交给 /api/roast。
+   * ----------------------------------------------------------------
+   * 这是全站唯一的点评生成路径：不逐条、不并发、不重试单条。
+   * 服务端把这一批拼成一次上游调用、JSON 数组一次拿回，
+   * 所以「一次洗牌 = 最多一次 AI 请求」，从根上避开限流。
+   *
+   * force=true —— 抢占：洗牌 / 换配置 / 换风格时必须传。
+   *   否则会被进行中的旧批量挡住（`if (batchCtl) return`），
+   *   新牌堆永远评不上，翻牌时又只能靠单条凑——正是要消除的场景。
+   * force=false —— 幂等：同一批的重复触发直接忽略。 */
+  function startBatch(force) {
+    if (!aiCfg) return;
+    if (batchCtl) {
+      if (!force) return;
+      stopBatch();
+    }
+    var queue = [];
+    for (var i = 0; i < S.order.length; i++) {
+      var p = PINS[S.order[i]];
+      if (!p || roastCache[p.id]) continue;
+      if (roastFail[p.id] && Date.now() - roastFail[p.id] < 30000) continue;
+      queue.push(p);
+    }
+    if (!queue.length) return;
+    var myId = ++batchSeq;
+    batchCtl = { id: myId, total: queue.length, start: Date.now() };
+    refreshAiCard();
+    /* 单次请求可能等十几秒，每秒刷一次「已等 Xs」让等待可感知 */
+    batchTicker = setInterval(function () {
+      if (batchCtl && batchCtl.id === myId) refreshAiCard();
+    }, 1000);
+    fetch('/api/roast', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        baseUrl: aiCfg.baseUrl, token: aiCfg.token, model: aiCfg.model,
+        prompt: currentStyle().prompt,
+        items: queue.map(function (p) { return { id: p.id, content: p.content, topic: p.topic }; }),
+      }),
+    })
+      .then(parseRoastRes)
+      .then(function (res) {
+        if (!batchCtl || batchCtl.id !== myId) return; // 已被取消/替换
+        var d = res.d || {};
+        /* 服务端可能「部分成功」：已算好的 roasts 会连同 error 一起回来 */
+        if (!d.roasts) throw new Error(d.error || 'AI 接口异常');
+        var got = d.roasts;
+        var okCount = 0;
+        for (var i = 0; i < queue.length; i++) {
+          var p = queue[i];
+          if (got[p.id]) { roastCache[p.id] = got[p.id]; delete roastFail[p.id]; okCount++; }
+          else roastFail[p.id] = Date.now(); // 模型漏答的记负缓存，30s 后可重试
+        }
+        stopBatch();
+        refreshAiCard();
+        if (d.error) {
+          toast('AI 点评完成 ' + okCount + '/' + queue.length + ' 条 · 其余未成功：' + d.error);
+        } else {
+          toast('AI 批量点评完成 · ' + okCount + '/' + queue.length + ' 条');
+        }
+      })
+      .catch(function (e) {
+        if (!batchCtl || batchCtl.id !== myId) return;
+        /* 整批失败就如实失败，不逐条补打。重试入口 = 再点一次「洗牌」 */
+        stopBatch();
+        refreshAiCard();
+        toast('AI 点评未生成（' + ((e && e.message) || e) + '）· 点「洗牌」可重试');
+      });
+  }
+
+  /* ---------------- 渲染 ----------------
+   * 离场层交叉淡化模型（见 app.css 动效章节）：
+   * dir 只在翻页时有意义：+1 前进、−1 后退，落到 #cards 的 .fwd/.bwd 类上。
+   * 翻页时先把当前三张卡原样搬进 .out-layer（旧主卡滑向行进后侧的邻卡位
+   * 并淡出，旧邻卡快速淡出），再写入新卡；新主卡从对应侧邻卡位滑入、
+   * 焦点由糊到清，新邻卡在卡位上淡入。新旧在交接点交叉淡化，
+   * 掩盖「邻卡版式 → 主卡版式」的内容跳变。首屏渲染传 (false, 0)，不播动画。
+   */
+  function render(anim, dir) {
+    var host = $('#cards');
+    var ai = $('#ai');
+    if (!S.order.length) {
+      host.innerHTML = '<div class="empty"><b>牌堆是空的</b>' +
+        '<span>把 site/data.js 放进来就有牌了。</span></div>';
+      if (ai) ai.innerHTML = '';
+      updateHud();
+      return;
+    }
+
+    host.classList.toggle('fwd', dir > 0);
+    host.classList.toggle('bwd', dir < 0);
+
+    var idx = S.order[S.pos];
+    var p = PINS[idx];
+    var prev = S.order[S.pos - 1] != null ? PINS[S.order[S.pos - 1]] : null;
+    var next = S.order[S.pos + 1] != null ? PINS[S.order[S.pos + 1]] : null;
+    if (!prev && S.order.length > 1) prev = PINS[S.order[S.order.length - 1]];
+    if (!next && S.order.length > 1) next = PINS[S.order[0]];
+
+    /* 离场层：必须先移动节点再写 innerHTML，否则旧卡随 innerHTML 一起销毁。
+     * 快速连翻时先清掉上一轮还没播完的离场层，避免无限堆叠。 */
+    clearTimeout(outTimer);
+    var stale = host.querySelector('.out-layer');
+    if (stale) stale.remove();
+    var out = null;
+    if (anim && host.querySelector('.main')) {
+      out = document.createElement('div');
+      out.className = 'out-layer';
+      Array.prototype.slice.call(host.children).forEach(function (el) {
+        /* 摘掉上一轮的入场类：其动画停在结束帧（fill:both），
+         * 不摘会与 .out-layer 的离场动画争抢同一属性。 */
+        el.classList.remove('anim-in', 'anim-l', 'anim-r');
+        out.appendChild(el);
+      });
+    }
+
+    host.innerHTML = ghostCard(prev, 'left', anim) + mainCard(p, idx, anim) + ghostCard(next, 'right', anim);
+    if (out) {
+      host.appendChild(out);
+      /* 离场动画最长 440ms；定时器兜底移除，不依赖 animationend（连翻时可能漏事件） */
+      outTimer = setTimeout(function () { out.remove(); }, 700);
+    }
+    if (ai) {
+      /* #ai 是常驻元素（不是像卡片那样随 innerHTML 重建），
+       * 如果只是 classList.toggle('anim-in', true)，类名已经在身上，
+       * 动画不会被重新触发——从第二次翻页开始 AI 卡就静止了。
+       * 必须先摘掉类、强制 reflow、再加回，才能让动画每次都重新起跑。 */
+      ai.classList.remove('anim-in');
+      clearTimeout(aiSwapTimer);
+      clearTimeout(aiLateTimer);
+      /* 换牌了：右侧卡片栈回到第 1 张（AI 点评） */
+      aiIdx = 0;
+      if (anim) {
+        void ai.offsetWidth;
+        ai.classList.add('anim-in');
+        /* 翻转动画在 50%（60ms 延迟 + 480ms×50% ≈ 300ms）处处于立边不可见，
+         * 此刻换掉卡内内容，人眼看到的是「翻过去旧点评、翻过来新点评」。
+         * lite 档（手选轻量，或 system 档命中 reduce）下动画被降级成
+         * 130ms 淡入，没有「立边不可见」的窗口，必须立刻换内容。
+         *
+         * aiFlipUntil 是给别的调用方（评论到了要重绘）用的时机闸：
+         * 动画没播完之前不许动 #ai，只有下面这个中点回调例外。 */
+        var reduced = document.documentElement.classList.contains('motion-lite');
+        var delay = reduced ? 0 : 300;
+        aiFlipUntil = Date.now() + delay + 240;
+        aiSwapTimer = setTimeout(paintAI, delay);
+      } else {
+        aiFlipUntil = 0;
+        paintAI();
+      }
+    }
+
+    S.seen[p.id] = true;
+    saveLocal();
+    updateHud();
+    syncDock(p, idx);
+    /* 这里不再为当前这一张单独发点评请求——点评统一由 startBatch()
+     * 一次性批量生成。该牌若已有缓存，上面的 aiCard()/roastFor() 已经
+     * 渲染出来了；没有则显示内置点评或占位，等下一次批量补齐。 */
+  }
+
+  /* 迷你卡片（dock）内容同步：牌号与主卡左下角大数字一致（原始序号），
+   * 纸牌式布局有左上/右下两个牌号角，一起更新；
+   * 标题沿用主卡的拆分逻辑——有话题取话题，无话题取正文开头。
+   * 收起状态下盲翻时给卡面一个短促的 tick 反馈，提示牌面已换。 */
+  function syncDock(p, idx) {
+    /* 牌角改为纸牌的「点数 + 花色」：按牌序映射到 A~K × ♠♥♣♦，
+     * 一副 52 张排完自动进入下一副；红桃/方块为红色，黑桃/梅花为黑色 */
+    var RANKS = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K'];
+    var SUITS = ['♠', '♥', '♣', '♦'];
+    var suit = SUITS[Math.floor(idx / 13) % 4];
+    var red = suit === '♥' || suit === '♦';
+    var corners = document.querySelectorAll('.dock .dc-corner');
+    for (var i = 0; i < corners.length; i++) {
+      var n = corners[i].querySelector('.dc-num');
+      var s = corners[i].querySelector('.dc-suit');
+      if (n) n.textContent = RANKS[idx % 13];
+      if (s) s.textContent = suit;
+      corners[i].classList.toggle('red', red);
+    }
+    var dt = $('#dockTitle');
+    if (dt) {
+      var tb = splitTitleBody(p);
+      dt.textContent = (tb.title || tb.body || '（空沸点）').replace(/\n+/g, ' ').slice(0, 32);
+    }
+    if (document.body.classList.contains('folded')) {
+      var dc = document.querySelector('.dock .dock-card');
+      if (dc) { dc.classList.remove('tick'); void dc.offsetWidth; dc.classList.add('tick'); }
+    }
+  }
+
+  /* 右侧卡片栈的绑定。
+   * 上下按钮与底栏按钮都是「钉住」的常驻元素（只有 paintAI() 重建面板时才换），
+   * 但面板每次重建都会换掉 DOM，所以仍然要在 paintAI() 之后重新绑一次。
+   * 动作本身按「当前这张卡」分派 —— 见 onAiAction()。 */
+  function bindAI() {
+    var up = $('#aiUp'), dn = $('#aiDn'), cp = $('#btnCopy');
+    if (up) up.onclick = function () { aiStep(-1); };
+    if (dn) dn.onclick = function () { aiStep(1); };
+    if (cp) cp.onclick = onAiAction;
+  }
+
+  function updateHud() {
+    var total = S.order.length;
+    $('#progText').textContent = total
+      ? '第 ' + (S.pos + 1) + ' / ' + total + ' 张 · 已看 ' + seenCount() + ' · 喜欢 ' + likedCount()
+      : '第 0 / 0 张 · 已看 0 · 喜欢 0';
+    /* 迷你卡片（收起态）里的进度同步：竖版纸牌宽度有限，
+     * 只保留「第 N / M 张」，喜欢数由下方 HUD 完整展示 */
+    var dp = $('#dockProg');
+    if (dp) dp.textContent = total
+      ? '第 ' + (S.pos + 1) + ' / ' + total + ' 张'
+      : '牌堆是空的';
+    $('#btnPrev').disabled = total === 0 || S.pos === 0;
+    $('#btnNext').disabled = total === 0;
+  }
+
+  /* ---------------- 翻牌音效 ----------------
+   * Web Audio 现场合成纸牌「咔哒」声：带通噪声脉冲（纸面摩擦）
+   * + 三角波低频短促下扫（牌落桌面的"嗒"）。无音频文件、零加载。
+   * 中心频率带随机抖动，连续翻牌不会显得机械。 */
+  var audioCtx = null;
+  function playFlip() {
+    if (S.muted) return;
+    try {
+      if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      if (audioCtx.state === 'suspended') audioCtx.resume();
+      var t = audioCtx.currentTime;
+      var dur = 0.09;
+      var buf = audioCtx.createBuffer(1, Math.floor(audioCtx.sampleRate * dur), audioCtx.sampleRate);
+      var data = buf.getChannelData(0);
+      for (var i = 0; i < data.length; i++) {
+        var x = i / data.length;
+        data[i] = (Math.random() * 2 - 1) * Math.pow(1 - x, 2.2);
+      }
+      var noise = audioCtx.createBufferSource();
+      noise.buffer = buf;
+      var bp = audioCtx.createBiquadFilter();
+      bp.type = 'bandpass';
+      bp.frequency.value = 2200 + Math.random() * 700;
+      bp.Q.value = 0.9;
+      var g = audioCtx.createGain();
+      g.gain.setValueAtTime(0.32, t);
+      g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+      noise.connect(bp); bp.connect(g); g.connect(audioCtx.destination);
+      noise.start(t);
+
+      var osc = audioCtx.createOscillator();
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(320, t);
+      osc.frequency.exponentialRampToValueAtTime(140, t + 0.07);
+      var g2 = audioCtx.createGain();
+      g2.gain.setValueAtTime(0.16, t);
+      g2.gain.exponentialRampToValueAtTime(0.001, t + 0.08);
+      osc.connect(g2); g2.connect(audioCtx.destination);
+      osc.start(t); osc.stop(t + 0.09);
+    } catch (e) { /* 无音频环境：静默降级 */ }
+  }
+
+  function setMuted(on) {
+    S.muted = on;
+    saveLocal();
+    var b = $('#btnMute');
+    if (b) {
+      b.classList.toggle('muted', on);
+      b.setAttribute('aria-label', on ? '取消静音' : '静音');
+      b.setAttribute('aria-pressed', String(on));
+    }
+  }
+
+  /* ---------------- 翻牌 ---------------- */
+  function go(delta) {
     if (!S.order.length) return;
-    if (S.pos + 1 >= S.order.length) { S.order.sort(() => Math.random() - 0.5); S.pos = 0; toast('牌堆抽完，重洗'); }
-    else S.pos++;
-    render(true);
-  };
-  $('#btnPrev').onclick = () => { if (S.pos > 0) { S.pos--; render(true); } else toast('已经是第一张'); };
-  $('#btnLike').onclick = toggleLike;
-  $('#btnComment').onclick = () => openCmt(false);
-  $('#btnCopyLink').onclick = () => {
-    if (!S.cur) return;
-    const c = currentRoast(S.cur);
-    copyText(S.cur.content + '\n' + S.cur.url + (c ? '\n\n—— ' + c.text : ''))
-      .then(() => toast('已复制' + (c ? '（含点评）' : '')));
-  };
-
-  $('#btnUseAI').onclick = () => {
-    const c = S.cur && currentRoast(S.cur);
-    if (c) { $('#ta').value = c.text; toast('AI 点评已贴入'); } else toast('先给这张生成点评');
-  };
-  $('#btnCopyCmt').onclick = () => {
-    const v = $('#ta').value.trim();
-    v ? copyText(v).then(() => toast('已复制')) : toast('先写点什么');
-  };
-  $('#btnGoCmt').onclick = () => {
-    const v = $('#ta').value.trim();
-    if (v) copyText(v);
-    if (S.cur) { openLink(S.cur.url); toast(v ? '已复制，去原文粘贴' : '已打开原文'); }
-  };
-  $('#btnSendCmt').onclick = sendComment;
-
-  $('#favs').onclick = (e) => {
-    const rm = e.target.closest('[data-rm]');
-    if (rm) { S.liked[rm.dataset.rm] = false; saveLocal(); openList(); render(false); return; }
-    const it = e.target.closest('.it');
-    if (it) {
-      const i = S.pins.findIndex((p) => p.id === it.dataset.id);
-      if (i < 0) { toast('这条已不在本地牌堆里'); return; }
-      const oi = S.order.indexOf(i);
-      if (oi >= 0) S.pos = oi; else { S.order.unshift(i); S.pos = 0; }
-      closeSheets(); render(true);
+    var n = S.pos + delta;
+    if (n < 0) { toast('已经是第一张了'); return; }
+    playFlip();
+    if (n >= S.order.length) {
+      shuffleOrder(); S.pos = 0; render(true, 1);
+      toast('这副牌抽完了，重新洗一副');
+      return;
     }
-  };
-  $('#mask').onclick = closeSheets;
+    S.pos = n;
+    render(true, delta);
+  }
 
-  document.addEventListener('keydown', (e) => {
-    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
-    const ae = document.activeElement;
-    if (ae && ae.tagName === 'BUTTON') ae.blur();
-    if (e.key === 'ArrowRight' || e.key === ' ') { e.preventDefault(); $('#btnNext').click(); }
-    else if (e.key === 'ArrowLeft') $('#btnPrev').click();
-    else if (e.key.toLowerCase() === 'l') toggleLike();
-    else if (e.key.toLowerCase() === 'c') openCmt(false);
-    else if (e.key.toLowerCase() === 'r') doRefresh(false);
-    else if (e.key === 'Escape') {
-      if ($('#mask').classList.contains('on')) closeSheets();
-      else $('#btnClose').click();
+  /* 纯换序：牌堆本身不变，只重排顺序并回到第一张 */
+  function shuffleDeck(msg) {
+    if (!S.order.length) return;
+    shuffleOrder();
+    S.pos = 0;
+    render(true, 1);
+    toast(msg || '已重新洗牌');
+  }
+
+  /* 洗牌（产品语义）= 拉取最新沸点 + 重洗：
+   * 绕过 /api/pins 的 180s 缓存强取上游；拉不到（离线 / 接口异常 /
+   * file:// 直开）退化为纯换序——任何环境下「洗牌」都有反馈。 */
+  var refreshing = false;
+  function refreshDeck() {
+    if (refreshing) return;
+    if (location.protocol !== 'http:' && location.protocol !== 'https:' && !window.__JB_HOST__) {
+      shuffleDeck();
+      return;
     }
-  });
-}
+    refreshing = true;
+    var fab = $('#btnRefresh');
+    if (fab) fab.classList.add('busy');
+    function done() {
+      refreshing = false;
+      if (fab) fab.classList.remove('busy');
+    }
+    fetchLivePins(8000, true).then(function (pins) {
+      done();
+      if (pins && pins.length) {
+        PINS = pins;
+        rebuild();
+        render(true, 1);
+        toast('已获取最新沸点 · ' + pins.length + ' 条');
+        startBatch(true); // 新牌堆必须重新批量点评（抢占：不被旧批量挡住）
+      } else {
+        shuffleDeck('没拉到新数据，先洗一遍手头的');
+      }
+    }, function () {
+      done();
+      shuffleDeck('获取失败，先洗一遍手头的');
+    });
+  }
 
-bind();
-boot();
+  function toggleLike() {
+    if (!S.order.length) return;
+    var p = PINS[S.order[S.pos]];
+    var on = !S.liked[p.id];
+    S.liked[p.id] = on;
+    saveLocal();
+    // 只切类名，不重绘，避免翻牌动画重放
+    var card = document.querySelector('.main');
+    if (card) card.classList.toggle('liked', on);
+    updateHud();
+    toast(on ? '已加入收藏' : '取消收藏');
+  }
+
+  /* ---------------- 舞台等比缩放 ----------------
+   * 坐标系固定 1440 宽，版心放不下时整组按 --k 缩，
+   * transform-origin: center top（版心居中，顶边不动），横向溢出由 .page-wrap 裁掉。
+   * 只负责写 --k；布局切换（两卡 / 单列）由 CSS 断点接管，这里不插手。
+   *
+   * 断点 760 必须与 app.css 的 @media(max-width:760px) 保持一致：
+   * 1440~760 之间走等比缩放（1080 视口 → k=0.75，字仍清晰），
+   * 760 以下才交给流式布局。旧版这里写的是 1120，与 CSS 断点虽同步
+   * 但时机太早，会让 1080 视口白白丢掉坐标系。
+   */
+  var DESIGN_W = 1440;
+  var FLOW_BREAKPOINT = 760;
+  function fitStage() {
+    var wrap = document.querySelector('.page-wrap');
+    if (!wrap) return;
+    if (window.matchMedia &&
+        window.matchMedia('(max-width:' + FLOW_BREAKPOINT + 'px)').matches) {
+      document.documentElement.style.setProperty('--k', '1');
+      return;
+    }
+    /* 扣除 .page-wrap 两侧的 24px 安全边距（见 app.css），
+     * 否则 k<1 时缩放画布恰好撑满视口，AI 卡右缘会贴死窗口边缘 */
+    var avail = wrap.clientWidth - 48;
+    if (!avail || avail < 0) return;
+    var k = Math.min(1, avail / DESIGN_W);
+    document.documentElement.style.setProperty('--k', String(Math.round(k * 1000) / 1000));
+  }
+
+  /* ---------------- 收起 ⇄ 迷你卡片 ----------------
+   * 形态切换全部由 CSS transition 完成（见 app.css dock 章节），
+   * JS 只负责切 body.folded 类与无障碍标注。 */
+  function setFolded(on) {
+    document.body.classList.toggle('folded', on);
+    var dock = $('#dock');
+    dock.setAttribute('aria-expanded', String(!on));
+    dock.setAttribute('aria-label', on ? '展开页面' : '收起为卡片');
+  }
+
+  /* ---------------- 事件 ---------------- */
+  function bind() {
+    $('#btnNext').onclick = function () { go(1); };
+    $('#btnPrev').onclick = function () { go(-1); };
+    $('#dock').onclick = function () {
+      setFolded(!document.body.classList.contains('folded'));
+    };
+    var mb = $('#btnMute');
+    if (mb) mb.onclick = function () { setMuted(!S.muted); };
+    var sb = $('#btnShuffle');
+    if (sb) sb.onclick = refreshDeck;
+    var rf = $('#btnRefresh');
+    if (rf) rf.onclick = refreshDeck;
+    /* 动效档开关（完整 / 轻量 / 跟随系统） */
+    var mo = $('#btnMotion');
+    if (mo) mo.onclick = cycleMotion;
+
+    /* ---- AI 点评接口配置弹窗 ---- */
+    var cfgMask = $('#aiCfgMask');
+    function syncCfgBtn() {
+      var b = $('#btnAiCfg');
+      if (b) b.classList.toggle('on', !!aiCfg);
+    }
+    function openCfg() {
+      $('#aiCfgBase').value = aiCfg ? aiCfg.baseUrl : '';
+      $('#aiCfgToken').value = aiCfg ? aiCfg.token : '';
+      $('#aiCfgModel').value = aiCfg ? aiCfg.model : '';
+      $('#aiCfgCookie').value = localStorage.getItem(JJ_COOKIE_KEY) || '';
+      /* 探测服务端 .ai-config.json：已配 Key / Cookie 则提示「可留空」，并预填地址/模型 */
+      fetch('/api/roast/config').then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (c) {
+          if (!c) return;
+          $('#aiCfgSrvTag').hidden = !c.serverKey;
+          $('#aiCfgCookieTag').hidden = !c.jjCookie;
+          if (c.serverKey) {
+            if (!$('#aiCfgBase').value && c.baseUrl) $('#aiCfgBase').value = c.baseUrl;
+            if (!$('#aiCfgModel').value && c.model) $('#aiCfgModel').value = c.model;
+          }
+        })
+        .catch(function () {});
+      cfgMask.hidden = false;
+    }
+    function closeCfg() { cfgMask.hidden = true; }
+    function applyCfg(next) {
+      aiCfg = next;
+      stopBatch(); // 换配置/清配置都先停掉进行中的批量
+      if (next) localStorage.setItem(AI_CFG_KEY, JSON.stringify(next));
+      else localStorage.removeItem(AI_CFG_KEY);
+      /* 换接口/模型后旧缓存失效，清空并让当前卡重新生成 */
+      roastCache = {};
+      roastFail = {};
+      syncCfgBtn();
+      render(false, 0);
+      startBatch(true); // 换接口/模型后必须重评（抢占）
+    }
+    var cb = $('#btnAiCfg');
+    if (cb) cb.onclick = openCfg;
+    $('#aiCfgClose').onclick = closeCfg;
+    cfgMask.addEventListener('click', function (e) { if (e.target === cfgMask) closeCfg(); });
+    $('#aiCfgSave').onclick = function () {
+      var next = {
+        baseUrl: $('#aiCfgBase').value.trim(),
+        token: $('#aiCfgToken').value.trim(),
+        model: $('#aiCfgModel').value.trim(),
+      };
+      /* 掘金 Cookie 独立保存：不参与「是否配置 AI 接口」的判断 */
+      var ck = $('#aiCfgCookie').value.trim();
+      if (ck) localStorage.setItem(JJ_COOKIE_KEY, ck);
+      else localStorage.removeItem(JJ_COOKIE_KEY);
+      if (!next.baseUrl && !next.token && !next.model) {
+        applyCfg(null);
+        toast('未配置 AI 接口，使用内置点评');
+      } else if (!next.baseUrl || !next.model) {
+        toast('接口地址和模型必填；Key 可留空（由服务端文件提供）');
+        return;
+      } else {
+        applyCfg(next);
+        toast(next.token ? '已保存，翻牌时实时生成点评' : '已保存，Key 由服务端文件提供');
+      }
+      closeCfg();
+    };
+    $('#aiCfgClear').onclick = function () {
+      applyCfg(null);
+      localStorage.removeItem(JJ_COOKIE_KEY);
+      closeCfg();
+      toast('已清除配置，回到内置点评');
+    };
+    $('#aiCfgTest').onclick = function () {
+      var btn = this;
+      var cfg = {
+        baseUrl: $('#aiCfgBase').value.trim(),
+        token: $('#aiCfgToken').value.trim(),
+        model: $('#aiCfgModel').value.trim(),
+      };
+      if (!cfg.baseUrl || !cfg.model) { toast('接口地址和模型必填'); return; }
+      if (!cfg.token) { toast('Key 为空，将使用服务端 .ai-config.json 里的'); }
+      btn.disabled = true;
+      btn.textContent = '测试中…';
+      fetch('/api/roast', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          baseUrl: cfg.baseUrl, token: cfg.token, model: cfg.model,
+          content: '今天又是周一，感觉人生无望。', topic: '测试',
+        }),
+      })
+        .then(parseRoastRes)
+        .then(function (res) {
+          if (!res.ok || !res.d.roast) throw new Error((res.d && res.d.error) || 'AI 接口异常');
+          toast('测试成功：' + res.d.roast.slice(0, 40));
+        })
+        .catch(function (e) { toast('测试失败：' + ((e && e.message) || e)); })
+        .finally(function () { btn.disabled = false; btn.textContent = '测试一下'; });
+    };
+    syncCfgBtn();
+
+    /* ---- 点评风格弹窗：卡牌式选择 ---- */
+    var styleMask = $('#styleMask');
+    function syncStyleBtn() {
+      var b = $('#btnStyle');
+      if (b) b.classList.toggle('on', currentStyle().id !== 'toxic');
+    }
+    function buildStyleGrid() {
+      var grid = $('#styleGrid');
+      var cur = currentStyle().id;
+      grid.innerHTML = STYLES.map(function (s) {
+        return '<button type="button" class="style-card' + (s.id === cur ? ' on' : '') +
+          '" data-style="' + s.id + '">' +
+          '<b>' + esc(s.name) + '</b>' +
+          '<span class="demo">' + esc(s.demo) + '</span>' +
+          '<span class="prompt">' + esc(s.prompt) + '</span>' +
+          '</button>';
+      }).join('');
+      var cards = grid.querySelectorAll('.style-card');
+      for (var i = 0; i < cards.length; i++) {
+        cards[i].onclick = function () {
+          var id = this.getAttribute('data-style');
+          localStorage.setItem(STYLE_KEY, id);
+          /* 换风格后旧点评缓存全部失效，当前卡立即按新风格重新生成 */
+          roastCache = {};
+          roastFail = {};
+          buildStyleGrid();
+          syncStyleBtn();
+          render(false, 0);
+          toast('已换成「' + currentStyle().name + '」');
+          startBatch(true); // 新风格必须重评（抢占）
+        };
+      }
+    }
+    function openStyle() { buildStyleGrid(); styleMask.hidden = false; }
+    function closeStyle() { styleMask.hidden = true; }
+    var stb = $('#btnStyle');
+    if (stb) stb.onclick = openStyle;
+    $('#styleClose').onclick = closeStyle;
+    styleMask.addEventListener('click', function (e) { if (e.target === styleMask) closeStyle(); });
+    syncStyleBtn();
+
+    /* 启动时探测服务端 .ai-config.json：浏览器完全没配过且服务端配全了，
+     * 就直接采用服务端配置——Key 全程不进浏览器（控制台/Network 都看不到）。 */
+    if (!aiCfg) {
+      fetch('/api/roast/config').then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (c) {
+          if (c && c.serverKey && c.baseUrl && c.model && !aiCfg) {
+            aiCfg = { baseUrl: c.baseUrl, token: '', model: c.model };
+            syncCfgBtn();
+            render(false, 0);
+            startBatch(true);
+          }
+        })
+        .catch(function () { /* 静态服务器无此路由，静默忽略 */ });
+    }
+
+    var rt;
+    window.addEventListener('resize', function () {
+      clearTimeout(rt);
+      rt = setTimeout(fitStage, 80);
+    });
+    var mq = window.matchMedia
+      ? window.matchMedia('(max-width:' + FLOW_BREAKPOINT + 'px)')
+      : null;
+    if (mq) {
+      var onmq = function () { fitStage(); };
+      if (mq.addEventListener) mq.addEventListener('change', onmq);
+      else if (mq.addListener) mq.addListener(onmq);
+    }
+    fitStage();
+
+    document.addEventListener('keydown', function (e) {
+      /* 弹窗打开时：Esc 只关弹窗，不触发收起页面 */
+      if (e.key === 'Escape') {
+        if (!cfgMask.hidden) { closeCfg(); return; }
+        if (!styleMask.hidden) { closeStyle(); return; }
+      }
+      var tag = (e.target.tagName || '').toUpperCase();
+      if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+      var ae = document.activeElement;
+      if (ae && ae.tagName === 'BUTTON') ae.blur();
+
+      /* Esc 随时可收起；M 随时可切换静音；S 随时可洗牌（均含收起状态） */
+      if (e.key === 'Escape') { setFolded(true); return; }
+      if (e.key === 'm' || e.key === 'M') { setMuted(!S.muted); return; }
+      if (e.key === 's' || e.key === 'S') { refreshDeck(); return; }
+      /* 收起状态：允许 ← → / 空格 盲翻（只换数据与迷你卡，页面保持隐藏），
+       * 其余键（喜欢 L / 看评论 C）仍然屏蔽 */
+      if (document.body.classList.contains('folded')) {
+        if (e.key === 'ArrowRight' || e.key === ' ') { e.preventDefault(); go(1); }
+        else if (e.key === 'ArrowLeft') { e.preventDefault(); go(-1); }
+        return;
+      }
+
+      if (e.key === 'ArrowRight' || e.key === ' ') { e.preventDefault(); go(1); }
+      else if (e.key === 'ArrowLeft') { e.preventDefault(); go(-1); }
+      /* ↑↓ 翻右侧卡片栈（AI 点评 / 评论）。必须 preventDefault，否则会滚动页面 */
+      else if (e.key === 'ArrowUp') { e.preventDefault(); aiStep(-1); }
+      else if (e.key === 'ArrowDown') { e.preventDefault(); aiStep(1); }
+      else if (e.key === 'l' || e.key === 'L') toggleLike();
+      else if (e.key === 'c' || e.key === 'C') {
+        var p = PINS[S.order[S.pos]];
+        if (p) window.open(p.url, '_blank', 'noopener');
+      }
+    });
+
+    // 触屏：左右滑
+    var x0 = null;
+    var host = $('#stageInner');
+    host.addEventListener('touchstart', function (e) {
+      x0 = e.changedTouches[0].clientX;
+    }, { passive: true });
+    host.addEventListener('touchend', function (e) {
+      if (x0 == null) return;
+      var dx = e.changedTouches[0].clientX - x0;
+      x0 = null;
+      if (Math.abs(dx) > 55) go(dx < 0 ? 1 : -1);
+    }, { passive: true });
+
+    /* 主卡是 <a>，整卡点进原文页。原生行为之外只补一件事：
+     * 拖选文字后松手，浏览器照样派发 click ——用户本意是选中一段字，
+     * 结果整页跳走。所以有非空选区时把这次 click 拦掉。
+     * （触屏左右滑不会派发 click，交给浏览器自己判定，不在这里处理。） */
+    host.addEventListener('click', function (e) {
+      var t = e.target;
+      var a = t && t.closest ? t.closest('a.main') : null;
+      if (!a) return;
+      var sel = window.getSelection && window.getSelection();
+      if (sel && !sel.isCollapsed && String(sel).length) e.preventDefault();
+    });
+  }
+
+  /* ---------------- 实时沸点 ----------------
+   * 浏览器直连 api.juejin.cn 会被 CORS 拦截，所以经同源 /api/pins
+   * （serve.mjs 的服务端代理）拉取实时沸点。失败场景
+   * （离线 / file:// 直开 / 接口变动 / 超时）一律回退到 data.js
+   * 的内置牌堆——页面在任何环境下都可用。 */
+  function fetchLivePins(timeoutMs, fresh) {
+    return new Promise(function (resolve, reject) {
+      var ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+      var timer = setTimeout(function () {
+        if (ctrl) ctrl.abort();
+        reject(new Error('timeout'));
+      }, timeoutMs || 8000);
+      fetch(fresh ? 'api/pins?fresh=1' : 'api/pins', ctrl ? { signal: ctrl.signal } : {})
+        .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+        .then(function (v) { clearTimeout(timer); resolve((v && v.pins) || []); })
+        .catch(function (e) { clearTimeout(timer); reject(e); });
+    });
+  }
+
+  function startDeck() {
+    if (!PINS.length) {
+      $('#cards').innerHTML = '<div class="empty"><b>没读到牌面数据</b>' +
+        '<span>确认 site/data.js 和 index.html 在同一目录。<br>' +
+        '如果直接双击打开，部分浏览器会拦截本地文件读取。</span></div>';
+      updateHud();
+      return;
+    }
+    rebuild();
+    /* 首屏传 false：不播入场动画。
+     * 首屏没有「从上一张翻过来」的语义，静止呈现更稳，
+     * 动画只留给真正的翻页动作（go() 里始终传 true）。 */
+    render(false, 0);
+    /* 配了 AI 接口就顺带把整副牌未点评的都批量补齐 */
+    startBatch();
+  }
+
+  /* ---------------- 启动 ---------------- */
+  function boot() {
+    loadLocal();
+    /* URL 覆写优先于本地记住的档位；只影响本次会话，不落盘 */
+    if (urlMotion) S.motion = urlMotion;
+    /* 必须早于首屏 render()：先把 html 的档位类定下来，
+     * 首屏 render(false, 0) 本来就不播动画，不存在闪烁问题 */
+    resolveMotion();
+    /* file:// 直开没有代理可用，直接用内置牌堆 */
+    if (location.protocol !== 'http:' && location.protocol !== 'https:' && !window.__JB_HOST__) {
+      startDeck();
+      return;
+    }
+    /* 加载态：HUD 的 spinner 本来就在转，补一句文案 */
+    $('#progText').textContent = '正在获取实时沸点…';
+    fetchLivePins(8000).then(function (pins) {
+      if (pins && pins.length) {
+        PINS = pins;
+        startDeck();
+        toast('已更新为实时沸点 · ' + pins.length + ' 条');
+      } else {
+        startDeck();
+      }
+    }, function () { startDeck(); });
+  }
+
+  bind();
+  boot();
+  // 首帧宽度可能还没定（DOM 刚解析完），等布局稳定再量一次；
+  // 字体加载完也会改变文字宽度，所以 fonts.ready 后再补一次。
+  window.addEventListener('load', fitStage);
+  if (document.fonts && document.fonts.ready) {
+    document.fonts.ready.then(fitStage).catch(function () {});
+  }
+  requestAnimationFrame(fitStage);
+})();

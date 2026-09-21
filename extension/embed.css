@@ -1,0 +1,116 @@
+/* embed.css — 悬浮在掘金页面上时的浮层版式
+ *
+ * 只在 html.embed 下生效（由 embed-boot.js 打标记），**站点原版式一行不改**。
+ *
+ * 坐标口径见 app.css 顶部：设计稿 1440x1000，
+ *   Hero 1440x230 @ y=0 ；抽卡舞台 1440x620 @ y=226 ；进度条(HUD) 1440x86 @ y=862
+ *
+ * ---- 窗口取哪一段（v0.2 改）----
+ * 取 **舞台顶 → HUD 底** 整段：page 坐标 x[0,1440] × y[226,948] → 窗口 1440x722。
+ *
+ * 为什么 x 不再裁：牌阵（左邻卡 424 + 右邻卡右缘 1016）的中心是 720，
+ * 而窗口中心也是 720 —— **主卡本来就该落在窗口正中**。
+ * v0.1 把窗口裁成 x[424,1440]（左移 424 去掉左侧留白），
+ * 结果牌阵中心 296 落在 1016 宽窗口的 29% 处，主卡明显偏左。
+ * 保留 424px 左侧留白是站点自己的构图，删了它构图就塌了 —— 别再裁回去。
+ *
+ * 为什么 HUD 要露出来：它是站点版式的一部分（洗牌钮、动效档、快捷键提示）。
+ * v0.1 用 `html.embed .hud{display:none}` 把它藏了 —— 已去掉。
+ *
+ * ⚠️ --k 由宿主以 !important 写入（见 embed-boot.js）。
+ * 原因是 app.js 的 fitStage() 按写死的 DESIGN_W=1440 反推 k，
+ * 一旦窗口尺寸和 stage 不一致，它算出的值就不再适用；而 author !important
+ * 能压过 fitStage 写的普通内联样式，从而保留站点自己那套「等比缩放」的观感。
+ *
+ * ---- 底板（v0.2.1 改）----
+ * 站点上 .page / .stage / .hud 各铺一层 #fff，三层叠起来就是那张大白纸。
+ * 浮层里改成**整片透明**，只留卡片 / 箭头 / AI 卡 / HUD 内容浮着，
+ * 空处透出父页面那层遮罩（半透明深色 + backdrop-filter 虚化）。
+ * ⚠️ 虚化不在这里做：iframe 内部的 backdrop-filter 糊不到父页面内容
+ *    （它只看得见 iframe 自己的透明画布），虚化统一由 content.js 的遮罩提供。
+ */
+
+html.embed { overflow: hidden; }
+html.embed body { background: transparent; overflow: hidden; }
+
+/* ---- --k 的接管方式（踩过坑，别改回内联 !important）----
+ * fitStage() 按**写死的** DESIGN_W=1440 反推 k。浮层窗口的高度和它不一致，
+ * 它算出来的值就不再适用 —— 所以必须由宿主接管 --k。
+ *
+ * ❌ 试过但不可行：embed-boot 里 de.style.setProperty('--k', v, 'important')。
+ *    因为 CSSStyleDeclaration.setProperty(name, value) 不带 priority 时，
+ *    会把该声明的 priority 一并重置；fitStage 下一次 setProperty('--k', …)
+ *    就把 !important 抹掉了。表现是「iframe 一变大，k 立刻被改回去」
+ *    （实测：展开瞬间 k 从 1 掉到 0.672 = (1016-48)/1440）。
+ *
+ * ✅ 现在这么做：宿主只写 --jb-k（fitStage 完全不碰这个名字），
+ *    再由下面这条 author !important 规则折算到 --k。
+ *    级联里 author !important 稳压**普通**内联声明，而 fitStage 只会写普通内联，
+ *    所以怎么 resize 都改不动它。 */
+html.embed { --k: var(--jb-k, 1) !important; }
+
+/* ---- 1) Hero 不要 ---- */
+html.embed .hero { display: none; }
+
+/* ---- 2) 窗口 = 舞台顶 → HUD 底 ----
+ * .page-inner 的 transform-origin 是 left top，
+ * scale(k) translate(0,-226px) → 屏幕坐标 = (x*k, (y-226)*k)，
+ * 于是 page y=226（舞台顶）落在窗口 y=0，page y=948（HUD 底）落在窗口 y=722k。
+ * x 方向不动：设计 x 直接映射到窗口 x*k，牌阵中心 720 就是窗口中心。 */
+html.embed .page-wrap {
+  height: calc(722px * var(--k, 1));
+  padding: 0;
+  /* 必留：邻卡来处 / 箭头缝隙只有在舞台内才不穿帮 */
+  overflow: hidden;
+}
+html.embed .page {
+  width: calc(1440px * var(--k, 1));
+  height: calc(722px * var(--k, 1));
+}
+html.embed .page-inner {
+  width: 1440px;
+  height: 1000px;
+  transform: scale(var(--k, 1)) translate(0, -226px);
+}
+
+/* ---- 3) HUD：位置照旧（page y 862 → 窗口 y 636），只是不再隐藏 ---- */
+
+/* ---- 4) 白色底板整片打透：卡片 / 箭头 / AI 卡 / HUD 直接浮在虚化背景上 ----
+ * 站点上这三层各铺一次 #fff（.page 整页 + .stage 舞台 + .hud 进度条），
+ * 叠出来就是那张盖满窗口的大白纸。这里全部改成透明。
+ *
+ * 为什么只打透、不在这里做虚化：
+ *   backdrop-filter 糊的是"元素背后的内容"，而 iframe 内部只看得见 iframe
+ *   自己的（透明的）画布 —— 在 iframe 里写 backdrop-filter 什么也糊不着，
+ *   反而会把卡片自己的边缘糊成一圈脏边。虚化统一由父页面那层遮罩提供
+ *   （content.js 的 #juejin-pin-gacha-mask），窗口透明正好把它透出来。
+ *
+ * 副作用（已权衡）：卡片不再有"面板底板"托着，只剩各自的描边 + 投影分层。
+ * 主卡/AI 卡本来就有 1px 描边 + 蓝调投影，脱离白底仍然立得住。 */
+html.embed .page,
+html.embed .stage,
+html.embed .hud { background: transparent; }
+
+/* HUD 的两行小字原来靠那条白底托着，打透后直接落在虚化背景上。
+ * 不给它加底色（那就把白条又请回来了），改用两条不改变版式的手段：
+ *   ① 极淡白色描边 —— 把字从灰底里"拎"出来（深底上还兼作反白）；
+ *   ② 把两级次要文字各提一档明度 —— 原来是 #A8AEB8/#8A9099 这种
+ *      "贴着白底才成立"的浅灰，落在约 #BDBEC0 的虚化灰上几乎读不出来
+ *      （实测截图里第二行整行糊掉）。提到 #4E555E/#3D444D 后才回到能读。
+ * 主行 .status 本来就是 #5C636D，足够，不动。 */
+html.embed .hud .status,
+html.embed .hud .keys {
+  text-shadow: 0 1px 2px rgba(255, 255, 255, .9), 0 0 1px rgba(255, 255, 255, .7);
+}
+html.embed .hud .keys { color: #4E555E; }
+html.embed .hud .keys b { color: #3D444D; }
+/* 小圆钮是「按钮」，要读得成按钮 —— 补一层半透明白底（能透出虚化，不是实心白条）。 */
+html.embed .hud .shuffle { background: rgba(255, 255, 255, .72); }
+
+/* ---- 5) 浮层里的弹窗要能在窗口里滚 ---- */
+html.embed .aicfg-mask {
+  align-items: start;
+  justify-items: center;
+  overflow-y: auto;
+  padding: 16px 0;
+}
