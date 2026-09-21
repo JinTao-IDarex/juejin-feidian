@@ -3,6 +3,8 @@ import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { extname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
+/* providers.js 是 CJS（UMD 双端写法），这里按默认导入拿整份导出对象 */
+import providers from './providers.js';
 
 const root = fileURLToPath(new URL('.', import.meta.url));
 const argv = process.argv.slice(2);
@@ -124,8 +126,11 @@ async function handleApiPins(res, fresh) {
 }
 
 /* ---------------- /api/roast AI 实时点评代理 ----------------
- * 前端把用户在页面里配置的 OpenAI 兼容接口（baseUrl / token / model）
- * 随请求带过来，由服务端转发到对应厂商的 chat/completions。
+ * 前端把用户配置的接口（providerId / baseUrl / token / model / api）
+ * 随请求带过来，由服务端**按协议**转发到对应厂商的端点 ——
+ * 请求长什么样由 site/providers.js 决定（chat / responses / anthropic 三种），
+ * 这一层只负责取配置、发请求、把错误原样透传回页面。
+ *
  * 走服务端转发的原因：1) 浏览器直连多数厂商会被 CORS 拦；
  * 2) 请求失败时能把真实错误透传回页面，方便排障。
  *
@@ -134,6 +139,13 @@ async function handleApiPins(res, fresh) {
  * 这样 Key 永远不会出现在浏览器控制台 / Network 面板里。
  * 注意：该文件已被静态服务的点文件规则拦截，无法通过 http 访问。 */
 const AI_CFG_FILE = join(root, '.ai-config.json');
+
+/* 本地厂商覆盖表 —— 对应 ZCode 的 ZCODE_BUILTIN_PROVIDER_CONFIG_FILE：
+ * 内置的厂商表写在 site/providers.js 里，这个文件可以覆盖同 id 的 baseUrl
+ * （例如公司内网网关），或补一个内置表里没有的厂商。
+ * 形如 [{"id":"deepseek","name":"公司网关","baseUrl":"https://gw.corp/v1"}] */
+const PROV_FILE = process.env.JB_PROVIDER_FILE || join(root, 'providers.local.json');
+
 let aiCfgFileCache = null; // { at, cfg }，2s 内复用，避免每次请求都读盘
 async function serverAiCfg() {
   if (aiCfgFileCache && Date.now() - aiCfgFileCache.at < 2000) return aiCfgFileCache.cfg;
@@ -141,6 +153,64 @@ async function serverAiCfg() {
   try { cfg = JSON.parse(await readFile(AI_CFG_FILE, 'utf8')); } catch { /* 没配置就算了 */ }
   aiCfgFileCache = { at: Date.now(), cfg };
   return cfg;
+}
+
+let provFileCache = null; // { at, list }
+async function serverProviders() {
+  if (provFileCache && Date.now() - provFileCache.at < 5000) return provFileCache.list;
+  let list = [];
+  try {
+    const raw = JSON.parse(await readFile(PROV_FILE, 'utf8'));
+    if (Array.isArray(raw)) list = raw;
+    else if (raw && Array.isArray(raw.providers)) list = raw.providers;
+  } catch { /* 没有覆盖表是常态 */ }
+  provFileCache = { at: Date.now(), list };
+  return list;
+}
+
+/* ---------------- AI 配置的四层来源 ----------------
+ *   ① 请求体        —— 页面弹窗 / localStorage，用户当场填的
+ *   ② 环境变量      —— JB_AI_*，临时切模型、跑 CI 时用，不必改文件
+ *   ③ site/.ai-config.json —— 本机长期配置，Key 不进浏览器
+ *   ④ 内置默认       —— providers.js 的表 + 各字段的缺省
+ *
+ * 这与 ZCode 的分层是同一个思路（内置 default.json → .env → .env.local → 运行时设置），
+ * 合并规则也一样：**逐字段取第一个非空值**，而不是整对象覆盖 ——
+ * 上层只填了模型名时，地址和 Key 要能继续从下层继承。
+ *
+ * JB_AI_BASE_URL / JB_AI_API_KEY（或 JB_AI_TOKEN）/ JB_AI_MODEL
+ * JB_AI_PROVIDER / JB_AI_API（chat|responses|anthropic）
+ */
+function aiEnvCfg() {
+  const e = process.env;
+  const cfg = {};
+  if (e.JB_AI_BASE_URL) cfg.baseUrl = e.JB_AI_BASE_URL;
+  if (e.JB_AI_API_KEY || e.JB_AI_TOKEN) cfg.token = e.JB_AI_API_KEY || e.JB_AI_TOKEN;
+  if (e.JB_AI_MODEL) cfg.model = e.JB_AI_MODEL;
+  if (e.JB_AI_PROVIDER) cfg.providerId = e.JB_AI_PROVIDER;
+  if (e.JB_AI_API) cfg.api = e.JB_AI_API;
+  return cfg;
+}
+
+function firstStr(...vals) {
+  for (const v of vals) if (v !== undefined && v !== null && String(v).trim()) return String(v).trim();
+  return '';
+}
+
+/** 合成三层配置并交给 providers.resolve() 归一化成「怎么调」 */
+async function resolveAiCfg(body = {}) {
+  const file = (await serverAiCfg()) || {};
+  const env = aiEnvCfg();
+  const merged = {
+    providerId: firstStr(body.providerId, env.providerId, file.provider, file.providerId),
+    baseUrl: firstStr(body.baseUrl, env.baseUrl, file.baseUrl),
+    token: firstStr(body.token, env.token, file.token, file.apiKey),
+    model: firstStr(body.model, env.model, file.model),
+    api: firstStr(body.api, env.api, file.api),
+    extra: (body.extra && typeof body.extra === 'object') ? body.extra
+      : ((file.extra && typeof file.extra === 'object') ? file.extra : null),
+  };
+  return providers.resolve(merged, { providers: await serverProviders() });
 }
 function readBody(req) {
   return new Promise((resolve, reject) => {
@@ -206,17 +276,14 @@ async function handleApiRoast(req, res) {
   let slotTaken = false;
   try {
     const body = JSON.parse(await readBody(req) || '{}');
-    /* 浏览器没带的字段（尤其是 token）用服务端 .ai-config.json 兜底 */
-    const fileCfg = (await serverAiCfg()) || {};
-    const base = (String(body.baseUrl || '') || String(fileCfg.baseUrl || '')).replace(/\/+$/, '');
-    const token = String(body.token || '') || String(fileCfg.token || '');
-    const model = String(body.model || '') || String(fileCfg.model || '');
+    /* 请求体 > 环境变量 > .ai-config.json 三层合成；协议(api) 也在这步定下来 */
+    const ai = await resolveAiCfg(body);
     const content = String(body.content || '').slice(0, 500);
     const topic = String(body.topic || '');
     /* 风格提示词由前端按所选风格卡牌传入；缺省用内置毒舌风格 */
     const sysPrompt = String(body.prompt || ROAST_PROMPT).slice(0, 800);
-    if (!base || !token || !model) {
-      throw new Error('请先配置 AI 接口：页面右上角 ✦，或写入 site/.ai-config.json');
+    if (!ai.baseUrl || !ai.model || (ai.needsKey && !ai.token)) {
+      throw new Error('请先配置 AI 接口：页面右上角 ✦，或写入 site/.ai-config.json / 设置 JB_AI_* 环境变量');
     }
 
     /* ---- 批量模式：items 数组 → 单次上游调用生成全部点评 ----
@@ -233,7 +300,7 @@ async function handleApiRoast(req, res) {
       const roasts = {};
       const misses = [];
       for (const it of norm) {
-        const key = model + '|' + sysPrompt.slice(0, 40) + '|' + it.content;
+        const key = ai.model + '|' + ai.api + '|' + sysPrompt.slice(0, 40) + '|' + it.content;
         const hit = srvCacheGet(key);
         if (hit && hit.roast) roasts[it.id] = hit.roast;
         else misses.push({ it, key });
@@ -248,32 +315,27 @@ async function handleApiRoast(req, res) {
           const listText = misses
             .map((m, i) => (i + 1) + '. ' + (m.it.topic ? '【' + m.it.topic + '】' : '') + m.it.content)
             .join('\n');
-          const upstream = await fetch(base + '/chat/completions', {
-            method: 'POST',
-            headers: { 'content-type': 'application/json', 'authorization': 'Bearer ' + token },
-            body: JSON.stringify({
-              model,
-              messages: [
-                { role: 'system', content: sysPrompt +
-                  '\n本次给你 ' + misses.length + ' 条沸点（编号 1~' + misses.length + '）。' +
-                  '逐条各写一句点评，严格按编号顺序输出一个 JSON 字符串数组，' +
-                  '数组长度必须等于 ' + misses.length + '。只输出 JSON 数组本身，' +
-                  '不要代码块标记、不要编号、不要任何额外文字。' },
-                { role: 'user', content: listText },
-              ],
-              temperature: 0.9,
-              max_tokens: Math.min(8000, 160 * misses.length + 200),
-            }),
+          /* 请求形状（url / 头 / body）由 providers 按协议拼，
+           * 这里只给「system / user / 长度 / 采样温度」四样原料 */
+          const q = providers.buildRequest(ai, {
+            system: sysPrompt +
+              '\n本次给你 ' + misses.length + ' 条沸点（编号 1~' + misses.length + '）。' +
+              '逐条各写一句点评，严格按编号顺序输出一个 JSON 字符串数组，' +
+              '数组长度必须等于 ' + misses.length + '。只输出 JSON 数组本身，' +
+              '不要代码块标记、不要编号、不要任何额外文字。',
+            user: listText,
+            maxTokens: Math.min(8000, 160 * misses.length + 200),
+            temperature: 0.9,
+          });
+          const upstream = await fetch(q.url, {
+            method: q.method,
+            headers: q.headers,
+            body: JSON.stringify(q.body),
             signal: AbortSignal.any([clientGone.signal, AbortSignal.timeout(60_000)]),
           });
           const data = await upstream.json().catch(() => ({}));
-          if (!upstream.ok) {
-            const msg = (data.error && (data.error.message || data.error.msg)) || ('HTTP ' + upstream.status);
-            throw new Error(msg);
-          }
-          const raw = String(
-            (data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || ''
-          ).trim();
+          if (!upstream.ok) throw new Error(providers.parseError(ai, upstream.status, data));
+          const raw = providers.parseReply(ai, data).trim();
           /* 容错提取 JSON 数组：有的模型爱包 ```json 代码块或在前后加废话 */
           const mArr = raw.match(/\[[\s\S]*\]/);
           if (!mArr) throw new Error('AI 未按要求返回 JSON 数组');
@@ -297,7 +359,7 @@ async function handleApiRoast(req, res) {
 
     if (!content) throw new Error('沸点内容为空');
 
-    const cacheKey = model + '|' + sysPrompt.slice(0, 40) + '|' + content;
+    const cacheKey = ai.model + '|' + ai.api + '|' + sysPrompt.slice(0, 40) + '|' + content;
     const hit = srvCacheGet(cacheKey);
     if (hit) {
       if (hit.roast) {
@@ -312,28 +374,21 @@ async function handleApiRoast(req, res) {
 
     if (!(await acquireSlot(10_000))) throw new Error('生成排队超时，翻慢一点点');
     slotTaken = true;
-    const upstream = await fetch(base + '/chat/completions', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'authorization': 'Bearer ' + token },
-      body: JSON.stringify({
-        model,
-        messages: [
-          { role: 'system', content: sysPrompt },
-          { role: 'user', content: (topic ? '【' + topic + '】' : '') + content },
-        ],
-        temperature: 0.9,
-        max_tokens: 120,
-      }),
+    const q = providers.buildRequest(ai, {
+      system: sysPrompt,
+      user: (topic ? '【' + topic + '】' : '') + content,
+      maxTokens: 120,
+      temperature: 0.9,
+    });
+    const upstream = await fetch(q.url, {
+      method: q.method,
+      headers: q.headers,
+      body: JSON.stringify(q.body),
       signal: AbortSignal.any([clientGone.signal, AbortSignal.timeout(20_000)]),
     });
     const data = await upstream.json().catch(() => ({}));
-    if (!upstream.ok) {
-      const msg = (data.error && (data.error.message || data.error.msg)) || ('HTTP ' + upstream.status);
-      throw new Error(msg);
-    }
-    const roast = String(
-      (data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || ''
-    ).trim().replace(/^["「『]+|["」』]+$/g, '');
+    if (!upstream.ok) throw new Error(providers.parseError(ai, upstream.status, data));
+    const roast = providers.parseReply(ai, data).trim().replace(/^["「『]+|["」』]+$/g, '');
     if (!roast) throw new Error('AI 返回了空内容');
     srvCacheSet(cacheKey, { roast });
     res.writeHead(200, { 'Content-Type': MIME['.json'], 'Cache-Control': 'no-store' });
@@ -349,6 +404,39 @@ async function handleApiRoast(req, res) {
     res.end(JSON.stringify({ error: msg }));
   } finally {
     if (slotTaken) releaseSlot();
+  }
+}
+
+/* ---------------- /api/models 拉取模型列表 ----------------
+ * 弹窗里「拉取模型列表」按钮用：让用户从接口真实可用的模型里挑，
+ * 省得手打模型名（打错只会得到一句 404）。
+ * ⚠️ 不是所有厂商都实现 /models（自建网关、部分代理常没有）——
+ *    拉不到就如实报错、让用户手填，不要静默回一份假列表。 */
+async function handleApiModels(req, res) {
+  const fail = (code, msg) => {
+    res.writeHead(code, { 'Content-Type': MIME['.json'], 'Cache-Control': 'no-store' });
+    res.end(JSON.stringify({ models: [], error: msg }));
+  };
+  try {
+    const body = JSON.parse(await readBody(req) || '{}');
+    const ai = await resolveAiCfg(body);
+    if (!ai.baseUrl) throw new Error('先填一个接口地址');
+    if (ai.needsKey && !ai.token) throw new Error('先填 API Key');
+    const q = providers.buildModelsRequest(ai);
+    const upstream = await fetch(q.url, {
+      method: q.method,
+      headers: q.headers,
+      signal: AbortSignal.timeout(15_000),
+    });
+    const data = await upstream.json().catch(() => ({}));
+    if (!upstream.ok) throw new Error(providers.parseError(ai, upstream.status, data));
+    const models = providers.parseModels(data);
+    if (!models.length) throw new Error('这个接口没返回模型列表，直接手填模型名即可');
+    res.writeHead(200, { 'Content-Type': MIME['.json'], 'Cache-Control': 'no-store' });
+    res.end(JSON.stringify({ models, provider: ai.providerName, api: ai.api }));
+  } catch (e) {
+    const isAbort = e && (e.name === 'AbortError' || e.name === 'TimeoutError');
+    fail(502, isAbort ? '拉取模型列表超时（15s）' : String((e && e.message) || e));
   }
 }
 
@@ -483,21 +571,35 @@ createServer(async (req, res) => {
     if (p === '/api/roast' && req.method === 'POST') { await handleApiRoast(req, res); return; }
     if (p === '/api/comment' && req.method === 'POST') { await handleApiComment(req, res); return; }
     if (p === '/api/comments') { await handleApiComments(res, u.searchParams.get('pinId') || ''); return; }
-    /* 供页面判断服务端是否已配 Key / Cookie（只回非敏感字段，绝不回 token 本体） */
+    if (p === '/api/models' && req.method === 'POST') { await handleApiModels(req, res); return; }
+    /* 供页面判断服务端是否已配 Key / Cookie / 厂商（只回非敏感字段，绝不回 token 本体） */
     if (p === '/api/roast/config') {
       const c = (await serverAiCfg()) || {};
+      const env = aiEnvCfg();
+      const provs = await serverProviders();
+      const sKey = firstStr(c.token, c.apiKey, env.token);
+      const sBase = firstStr(c.baseUrl, env.baseUrl);
+      const sModel = firstStr(c.model, env.model);
       res.writeHead(200, { 'Content-Type': MIME['.json'], 'Cache-Control': 'no-store' });
       res.end(JSON.stringify({
-        serverKey: !!c.token,
-        baseUrl: c.baseUrl || '',
-        model: c.model || '',
+        /* serverKey 只表示「服务端这层有没有 Key」，值的本体永远不回 */
+        serverKey: !!sKey,
+        serverCfg: !!(sBase || sModel),
+        baseUrl: sBase,
+        model: sModel,
+        providerId: firstStr(c.provider, c.providerId, env.providerId),
+        api: firstStr(c.api, env.api),
         jjCookie: !!c.jjCookie,
+        /* 本地厂商覆盖表是否生效（只回条数，不回内容） */
+        providersOverride: provs.length,
       }));
       return;
     }
     if (p === '/') p = '/index.html';
-    /* 点文件（.ai-config.json / .env 等）一律不伺候——Key 不能被 http 下载 */
-    if (p.split('/').some((seg) => seg.startsWith('.'))) {
+    /* 点文件（.ai-config.json / .env 等）一律不伺候——Key 不能被 http 下载。
+     * providers.local.json 不是点文件，但那是「本机配置」的同类，
+     * 万一有人在里面写了 key，也不该被 http 拉走，所以一并拦掉。 */
+    if (p === '/providers.local.json' || p.split('/').some((seg) => seg.startsWith('.'))) {
       res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
       res.end('404 Not Found');
       return;

@@ -49,6 +49,7 @@ site/data.js    ──copy───▶ extension/data.js     （逐字节，内�
 |---|---|
 | `handleApiPins` | `apiPins({ fresh })` |
 | `handleApiRoast` | `apiRoast(payload)` |
+| `handleApiModels` | `apiModels(payload)` |
 | `handleApiComment` | `apiComment(payload, ctx)` |
 | `handleApiComments` | `apiComments({ pinId }, ctx)` |
 | `/api/roast/config` 内联分支 | `apiRoastConfig()` |
@@ -56,6 +57,16 @@ site/data.js    ──copy───▶ extension/data.js     （逐字节，内�
 响应形状必须和 serve.mjs 一模一样，因为 `app.js` 就是按那个形状写的
 （`/api/pins` 要 `{pins:[…]}`、`/api/roast` 要 `{roast}` 或 `{roasts:{},error}`）。
 形状一对不上，站点前端就得改——那就不是复用了。
+
+**有一处不是移植，是共用**：请求怎么拼（`url` / 头 / body 字段）、响应怎么解、
+模型级参数怎么变，全在 `providers.js` 里一份实现，站点用 `<script src>` 加载、
+`api.mjs` 用 `import * as` 加载同一个文件（那份文件是 UMD：Node 下走 CJS 导出、
+Chrome 下挂 `globalThis.JBProviders`，两边都认）。
+所以扩展与站点**不可能各自漂移出一套协议** —— 从根上比"移植"更稳。
+
+扩展侧与站点侧剩下的唯一差别：扩展没有 `site/.ai-config.json`、也没有 `JB_AI_*`
+环境变量，所以站点那套「请求体 > 环境变量 > 配置文件」的三层合成在这里退化成一层
+（配置一律以弹窗传入为准）。其余逐字保留。
 
 ### 页面怎么拿到接口：只劫持 fetch
 
@@ -210,6 +221,54 @@ iframe 自己内部只看得见 iframe 的（透明）画布，在 iframe 里写
 同屏像素复核：面板内 / 面板外 / 屏幕四角全部取到同一个 `(126,128,132)`，
 原来那两道 `Δ59` / `Δ46` 的硬边归零；弹窗卡仍是纯白（被扫到 29,856 个 `≥248` 的像素，
 说明它在遮罩之上、没被压暗）。
+
+### 配置弹窗的骨架：头 / 底固定，只有中间滚（v0.2.10）
+
+用户报「AI 配置的页面乱掉了」。病根不是内容多少，是**骨架**：旧版 `.aicfg` 是
+「一整块 `overflow:auto` 的长纸」——头、字段、底部三个按钮全在同一个滚动区里，
+只有容器不够高才滚动。而浮层里容器高就是 iframe 高，**`100vh` = 722**：
+
+| | 弹窗尺寸 | 内容区 | 底部按钮 |
+|---|---|---|---|
+| 改前（浮层 1440×722） | 380×**674**（被 `max-height` 压住） | scrollHeight **709** > clientHeight 674 → **滚** | 被滚出可视区，**只露半截** |
+| 改后（同容器） | **440**×651 | 529 = 529，**不滚** | 底 667 ≤ 722 ✓ 完整 |
+
+做法（`site/app.css`）：
+
+```css
+.aicfg{width:440px;max-height:calc(100vh - 40px);
+       display:flex;flex-direction:column;overflow:hidden;padding:0}
+.aicfg-head{flex:none;padding:18px 22px 12px}     /* 固定 */
+.aicfg-body{flex:1 1 auto;min-height:0;overflow:auto;padding:0 22px 2px}  /* 只有它滚 */
+.aicfg-ops{flex:none;padding:13px 22px 16px;border-top:1px solid #F0F1F4} /* 固定 */
+```
+
+⚠️ **别退回「整块 `overflow:auto`」的写法**：浮层里 `100vh` 就是面板高（722），
+任何整块滚动的弹窗都会把底部按钮推出可视区。同理 `.style-grid` 那种
+「自带 `max-height` + 滚动」的写法只在内容短时成立。
+
+`.aicfg.wide`（风格弹窗）没有 `.aicfg-body` / `.aicfg-ops`，**单独退回 block 流**
+（`display:block;overflow:auto;padding:22px 24px 20px`，`.aicfg-head` 的 padding 归零），
+改骨架时别顺手把它一起改成 flex。
+
+窄高兜底实测（站点，高级区展开）：
+
+| 视口 | 弹窗 | 内容区 | 底部按钮 |
+|---|---|---|---|
+| 1280×900 | 440×651 | 529 = 529 | 底 844 ≤ 900 ✓ |
+| 1280×900 + 高级区展开 | 440×787 | 665 = 665 | 底 844 ≤ 900 ✓ |
+| 1220×**620** | 440×580 | 458 < 665 → **滚** | 底 600 ≤ 620 ✓ |
+
+同时顺手改掉的**信息层级**问题（这版"乱"的另一半）：
+
+- 弹窗从一列到底改成**两个分区**：`模型服务`（厂商 / 地址 / Key / 模型 / 高级）与
+  `掘金账号`（Cookie）。分区标题 = 蓝竖条 + 深色字 + 淡横线 —— 光靠字号
+  （11.5 vs 字段标签 12）分不出层级。
+- 两段长灰字说明（原顶部 4 行 + Cookie 3 行）压成**贴着字段的一句话** `.aicfg-note`。
+- **「实际协议」提示从高级区里挪到 `<summary>` 上常显**。原来它挂在高级区内的
+  「协议」label 上，而高级区默认收起 —— **收起来就看不见**，等于白写。
+- `summary` 一旦是 flex，浏览器自带的小三角会消失，所以自绘了 `::before` 箭头
+  （`[open]` 时 `rotate(90deg)`）。
 
 ### iframe 钉在宿主的**右上角**（v0.2.2）
 
@@ -368,6 +427,43 @@ v0.2.4 曾按"和页面更融合"的思路，把 `.dock` 的实心白底抠掉�
 
 ---
 
+## 图标：由主版 logo 生成（v0.2.9）
+
+源：`assets/logo-juejin-joker.jpg`（1254×1254，方形）。
+生成：`python scripts/build_icons.py` → `extension/icons/{16,32,48,128}.png`。
+
+**做法：整张主版直接用，不做裁切。** 主版本身就是满幅方卡
+（奶油底铺满到画布边，实测内容 bbox `4,7,1248,1253`），没有留白可裁，
+所以脚本做的就是**等比缩放 + 按主版自己的圆角收边**：
+
+- 缩放：整图 `resize` 到 16 / 32 / 48 / 128。
+- 收边：`CARD_RADIUS_PCT = 0.043` —— 由主版蓝色外框圆角实测
+  （≈54px / 1254 ≈ 4.3%）换算，保证 128px 下四角弧度和主版是同一条线，
+  不会在工具栏里出现"方角压着圆框"的错位。
+
+| 尺寸 | 128px | 48px | 32px | 16px |
+|---|---|---|---|---|
+| 效果 | 完整可辨 | 轮廓与配色清楚 | 「橙角色 + 蓝框」读得出 | 橙蓝双色块（16px 的物理极限） |
+
+小尺寸的糊是**整卡方案的固有代价**：卡面细节（角标 `JUEJIN`、小丑帽、
+时钟环刻度）在 48px 以下必然并成色块。取舍是**统一性优先** ——
+扩展图标、商店页、弹窗里出现的应当是**同一张主版**，而不是一个
+"只在小尺寸好看、放大就不像 logo"的特写版本。
+
+**备选方案（未启用）**：`python scripts/build_icons.py --medallion`
+会改为裁中央圆章（角色 + 蓝色时钟环，`RING_BOX` 常量）收成圆形、
+按奶油底 `rgb(245,241,229)` 铺底。该方案在 16–32px 更可读，
+但与主版不同形，故默认关闭。
+
+⚠️ **换主版 logo 后必须重设圆角**：`CARD_RADIUS_PCT` 是按当前这张主版实测的常量。
+换一张留白/圆角不同的源图，这个值就失效了，需要重新量新卡框的圆角半径 ÷ 边长。
+
+⚠️ **图标不再从 `_bak/extension-20260920/icons/` 拷贝**（v0.2.9 之前的做法）。
+`build_extension.py` 第 4 步现在改调 `build_icons.py` 现场生成 ——
+否则换完 logo 一重建，图标就被旧图盖回去了。
+
+---
+
 ## 文件
 
 | 文件 | 角色 | 要改吗 |
@@ -375,12 +471,14 @@ v0.2.4 曾按"和页面更融合"的思路，把 `.dock` 的实心白底抠掉�
 | `manifest.json` | MV3 清单 | 手写 |
 | `host.html` | 扩展页面（= `site/index.html`） | 由构建生成，勿手改 |
 | `app.css` / `app.js` / `data.js` | 站点前端 | 由构建生成，勿手改 |
+| `providers.js` | 厂商表 + 三种协议的请求/响应适配（全项目唯一实现） | 由构建生成，勿手改 |
 | `embed.css` | 浮层版式：去掉 Hero、窗口取「舞台顶→HUD 底」(1440×722)、展开态白底整片打透、接管 `--k`、收起态撤掉 `.dock` 自带投影（v0.2.6） | 手写 |
 | `embed-boot.js` | 浮层宿主桥：打 `html.embed`、接管 `--k`、与父窗口交换展开/收起尺寸、上报弹窗开合（v0.2.8） | 手写 |
 | `api-shim.js` | 把 `/api/*` 的 fetch 接到扩展宿主 | 手写 |
 | `background.js` | MV3 service worker：消息路由；需要登录态的接口转到页面上下文去发 | 手写 |
 | `api.mjs` | 移植自 `serve.mjs` 的 5 个接口 | 手写 |
 | `content.js` | 在 juejin.cn 注入宿主与遮罩、落位、同步展开/收起尺寸、收起态投影（父页面 `filter: drop-shadow` + hover 档）、遮罩两档浓度（常态 / 有弹窗） | 手写 |
+| `icons/{16,32,48,128}.png` | 工具栏 / 商店图标，由 `scripts/build_icons.py` 从 `assets/logo-juejin-joker.jpg` 生成（整张主版等比缩放 + 按主版圆角收边） | 由构建生成，勿手改 |
 
 ## 装法
 
@@ -391,12 +489,48 @@ v0.2.4 曾按"和页面更融合"的思路，把 `.dock` 的实心白底抠掉�
 工具栏图标等价于点浮层里的收起按钮（展开 ⇄ 缩略卡）。
 展开后**点遮罩也能收起**。
 
-**配置 AI 点评**：展开浮层后点右上角的 ✦，填任意 OpenAI 兼容接口
-（baseUrl / API Key / 模型），配置存在扩展页自己的 localStorage。
-站点那套「点评风格」弹窗（「风格」钮）也照常可用。
+**配置 AI 点评**：展开浮层后点右上角的 ✦。多数情况下「选个厂商 → 填 Key →
+模型已经带着了」三步就够，见下一节。站点那套「点评风格」弹窗（「风格」钮）也照常可用。
 
 > 「一键评论」在扩展里比站点更省事：请求在**掘金页面上下文**里发出，
 > 登录 Cookie 自动带上，**不用再手动复制 Cookie**。
+
+## AI 接口：厂商表与三种协议
+
+设计照着 [ZCode](https://github.com/zai-org/ZCode) 的 `config/provider/*.json`：
+**厂商只提供 baseUrl 和模型名，请求的形状由「协议」决定**，这两件事必须解耦 ——
+同一种协议被十几家厂商复用，同一个厂商也可能同时提供多种协议。
+
+| 概念 | ZCode | 这里 |
+|---|---|---|
+| 表结构与版本 | `schemaVersion` / `revision` | `SCHEMA` / `REV` |
+| 厂商 API 模板 | `templateRules[].config.api.{type,baseUrl}` | `PROVIDERS[].{api,baseUrl}` |
+| 去哪儿申请钥匙 | `config.access.apiKeyManagementUrl` | `PROVIDERS[].keyUrl` |
+| 模型级参数规则 | `modelConfigRules.modelRules`（`modelMatch` 正则） | `MODEL_RULES` |
+| 内置表可被本地文件替换 | `ZCODE_BUILTIN_PROVIDER_CONFIG_FILE` | `site/providers.local.json` |
+
+**表里没有、也永远不会放密钥** —— 只声明「要不要 Key、去哪申请」。Key 由用户在弹窗里填，
+存在扩展页自己的 localStorage；站点版还可以写在 `site/.ai-config.json` 或 `JB_AI_*`
+环境变量里，那样 Key 完全不进浏览器。
+
+支持的三种协议 —— 新增厂商 = 在表里加一条数据（遇到模型怪癖再补一条正则），
+**不用动调用代码**：
+
+| api.type | 端点 | 认证 | 用在哪儿 |
+|---|---|---|---|
+| `chat` | `POST /chat/completions` | `Authorization: Bearer` | 绝大多数厂商的 OpenAI 兼容接口 |
+| `responses` | `POST /responses` | `Authorization: Bearer` | OpenAI 新接口；Codex 系列只能在它上面跑 |
+| `anthropic` | `POST /messages` | `x-api-key` + `anthropic-version: 2023-06-01` | Claude 原生协议 |
+
+协议的判定优先级从高到低：**弹窗里手选** → 模型硬约束（Codex 只能 responses，
+这点压不过去就是 404）→ **厂商声明** → 模型弱暗示（`claude` 这类名字）→ 默认 `chat`。
+弹窗会把最后的判定结果当场显示出来，不用等上游报错再猜。
+
+模型级差异同理写在 `MODEL_RULES` 里：OpenAI o 系列与 gpt-5 起不接受 `temperature`，
+输出上限字段也改叫 `max_completion_tokens`；推理模型的思考 token 也算在输出上限内，
+所以单条点评的上限会被抬到 1024，否则表现成「AI 返回了空内容」。
+
+> 公司网关、one-api / new-api / LiteLLM 这类自建网关：选「自定义」，自己填地址和模型名。
 
 ## 改前端逻辑的正确姿势
 
@@ -408,6 +542,7 @@ v0.2.4 曾按"和页面更融合"的思路，把 `.dock` 的实心白底抠掉�
 ```bash
 python scripts/build_extension.py     # 从 site/ 重建扩展前端（补丁失配会报错退出）
 python scripts/check_extension.py     # 静态自检：清单引用、JS 语法、注入顺序、补丁次数
+python scripts/build_icons.py         # 从 assets/ 的主版 logo 生成 extension/icons/（加 --preview 出自查对照图）
 node   scripts/_ext_preview.mjs 7300 --mock-ai
                                       # 本地预览服务：同一份 extension/ + 同一份 api.mjs
                                       #   /panel.html  → 模拟掘金页面，真跑 content.js
@@ -417,6 +552,9 @@ node   scripts/_ext_preview.mjs 7300 --mock-ai
                                       #   /host.html  → 站点原页面（构图参照，k 由 fitStage 自己算）
                                       #   /host.html?embed=1 → 只有牌面本身
 node   scripts/_probe_api.mjs         # 接口层自测（假上游 + 真上游，不用真 Key）
+                                      #   内含三种协议的请求形状断言 20 条
+node   scripts/_probe_providers.mjs   # providers.js 离线自检 90 条（不打网络，全靠断言）
+                                      #   改厂商表 / 模型规则 / 协议适配后先跑这个
 ```
 
 > **`?tall=1` 不是装饰。** 默认那版预览页太短、压根不出滚动条，而浮层的

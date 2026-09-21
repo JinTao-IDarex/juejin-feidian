@@ -134,36 +134,72 @@
 
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
-<!-- AI 点评接口配置弹窗：OpenAI 兼容接口（Kimi / DeepSeek / 通义等都行） -->
+<!-- AI 点评接口配置弹窗：先选厂商（地址与协议自动带出），也可手填任意兼容接口。
+     厂商表与协议判定都在 providers.js（唯一实现），这里只是它的界面。 -->
 <div class="aicfg-mask" id="aiCfgMask" hidden>
   <div class="aicfg" role="dialog" aria-modal="true" aria-labelledby="aiCfgTitle">
     <div class="aicfg-head">
       <b id="aiCfgTitle">AI 实时点评</b>
+      <span class="aicfg-sub">选厂商即可，地址与协议自动带出</span>
       <button class="aicfg-x" id="aiCfgClose" aria-label="关闭">×</button>
     </div>
-    <p class="aicfg-tip">填入任意 OpenAI 兼容接口（Kimi、DeepSeek、通义、OpenAI…），
-      翻牌时就会用它实时生成点评；留空则用内置点评。<br>
-      不想让 Key 出现在浏览器控制台？把它写进 site/.ai-config.json（只存本机），
-      这里的 API Key 留空即可。</p>
-    <label class="aicfg-field">
-      <span>接口地址</span>
-      <input id="aiCfgBase" type="text" placeholder="https://api.openai.com/v1" autocomplete="off">
-    </label>
-    <label class="aicfg-field">
-      <span>API Key <em class="srv-tag" id="aiCfgSrvTag" hidden>服务端已配置，可留空</em></span>
-      <input id="aiCfgToken" type="password" placeholder="sk-...（可留空，由服务端文件提供）" autocomplete="off">
-    </label>
-    <label class="aicfg-field">
-      <span>模型</span>
-      <input id="aiCfgModel" type="text" placeholder="gpt-4o-mini / kimi-k2 / deepseek-chat…" autocomplete="off">
-    </label>
-    <label class="aicfg-field">
-      <span>掘金 Cookie <em class="srv-tag" id="aiCfgCookieTag" hidden>服务端已配置，可留空</em></span>
-      <input id="aiCfgCookie" type="password" placeholder="sessionid=...; （「一键评论」用，不评论可留空）" autocomplete="off">
-    </label>
-    <p class="aicfg-tip">「一键评论」需要掘金登录态：浏览器打开 juejin.cn 登录后，
-      F12 → Network 里任意请求的 Cookie 整段复制过来；
-      或写进 site/.ai-config.json 的 jjCookie 字段（只存本机）。</p>
+    <!-- 骨架：头 / 底固定，只有 .aicfg-body 滚动 —— 浮层里可视高度只有 700 出头，
+         旧版把所有内容塞进一个滚动区，底部三个按钮会被裁掉半截。 -->
+    <div class="aicfg-body">
+      <p class="aicfg-sec">模型服务</p>
+      <label class="aicfg-field">
+        <span>厂商</span>
+        <select id="aiCfgProvider"></select>
+      </label>
+      <label class="aicfg-field">
+        <span>接口地址</span>
+        <input id="aiCfgBase" type="text" placeholder="https://api.deepseek.com/v1" autocomplete="off">
+      </label>
+      <label class="aicfg-field">
+        <span>API Key <em class="srv-tag" id="aiCfgSrvTag" hidden>服务端已配置，可留空</em></span>
+        <input id="aiCfgToken" type="password" placeholder="sk-...（可留空）" autocomplete="off">
+      </label>
+      <p class="aicfg-note">不想让 Key 落在浏览器里？写进 site/.ai-config.json（只存本机）
+        或设 JB_AI_API_KEY，这里留空即可。</p>
+      <div class="aicfg-field">
+        <span>模型</span>
+        <div class="aicfg-row">
+          <input id="aiCfgModel" type="text" list="aiCfgModelList"
+                 placeholder="deepseek-chat / kimi-k2 / glm-4.5-flash…" autocomplete="off">
+          <button class="aicfg-mini" id="aiCfgFetchModels" type="button">拉取列表</button>
+        </div>
+        <datalist id="aiCfgModelList"></datalist>
+      </div>
+      <!-- 高级区默认收起：多数人只用厂商+模型，协议和额外参数是排障/自救用的。
+           实际协议挂在 summary 上常显 —— 收起来也看得见，别等人去翻。 -->
+      <details class="aicfg-adv" id="aiCfgAdv">
+        <summary>
+          <span>高级：协议与额外请求参数</span>
+          <em class="srv-tag api-tag" id="aiCfgApiTag" hidden>自动判定</em>
+        </summary>
+        <label class="aicfg-field">
+          <span>协议</span>
+          <select id="aiCfgApi">
+            <option value="">自动判定</option>
+            <option value="chat">chat — OpenAI Chat Completions</option>
+            <option value="responses">responses — OpenAI Responses</option>
+            <option value="anthropic">anthropic — Anthropic Messages</option>
+          </select>
+        </label>
+        <label class="aicfg-field">
+          <span>额外请求参数（JSON，可留空）</span>
+          <input id="aiCfgExtra" type="text" placeholder='{"top_p":0.5}' autocomplete="off">
+        </label>
+      </details>
+
+      <p class="aicfg-sec">掘金账号</p>
+      <label class="aicfg-field">
+        <span>Cookie <em class="srv-tag" id="aiCfgCookieTag" hidden>服务端已配置，可留空</em></span>
+        <input id="aiCfgCookie" type="password" placeholder="sessionid=...;（不评论可留空）" autocomplete="off">
+      </label>
+      <p class="aicfg-note">「一键评论」要登录态：juejin.cn 登录后 F12 → Network
+        任取一个请求，整段 Cookie 复制过来；或写进 .ai-config.json 的 jjCookie。</p>
+    </div>
     <div class="aicfg-ops">
       <button class="aicfg-btn plain" id="aiCfgClear">清除配置</button>
       <button class="aicfg-btn plain" id="aiCfgTest">测试一下</button>
@@ -187,6 +223,8 @@
 <script src="embed-boot.js"></script>
 <script src="api-shim.js"></script>
 <script src="data.js"></script>
+<!-- providers.js 必须早于 app.js：配置弹窗的厂商下拉/协议判定都靠它（window.JBProviders） -->
+<script src="providers.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

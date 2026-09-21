@@ -8,7 +8,7 @@
  * service worker 会被回收，缓存随之清空 —— 换来的是零存储、零残留，
  * 关掉浏览器什么也不留下，这正是这个项目「不登录、不上传」的定位。
  */
-import { apiPins, apiRoast, apiComment, apiComments, apiRoastConfig } from './api.mjs';
+import { apiPins, apiRoast, apiModels, apiComment, apiComments, apiRoastConfig } from './api.mjs';
 
 /* 在掘金页面上下文里发请求：content script 的 fetch 天然带上用户的登录 Cookie，
  * 所以「一键评论」不用再让用户手动贴 Cookie（这是扩展相对站点 dev server 的一个白捡的好处）。 */
@@ -34,6 +34,7 @@ function makePageFetch(sender) {
 const routes = {
   '/api/pins': (m) => apiPins({ fresh: /(?:^|&)fresh=1/.test(String(m.search || '')) }),
   '/api/roast': (m) => apiRoast(m.payload || {}),
+  '/api/models': (m) => apiModels(m.payload || {}),
   '/api/roast/config': () => apiRoastConfig(),
   '/api/comment': (m, sender) => apiComment(m.payload || {}, { pageFetch: makePageFetch(sender) }),
   '/api/comments': (m, sender) => {

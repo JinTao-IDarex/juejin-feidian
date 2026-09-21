@@ -729,16 +729,52 @@ body.folded .fab{
 }
 .aicfg-mask[hidden]{display:none}
 @keyframes aicfgMaskIn{from{opacity:0}to{opacity:1}}
+/* 弹窗骨架 = 头 / 底固定 + 中间 .aicfg-body 滚动。
+ * ⚠️ 别退回「整块 overflow:auto」的写法：浮层 iframe 可视高只有 722，
+ *    100vh 就是 722，整块滚动会把底部按钮裁掉半截（v0.3.0 修过）。
+ *    .aicfg.wide（风格弹窗）内容短、自带内部滚动，单独退回 block 流。 */
 .aicfg{
-  width:380px;max-width:calc(100vw - 48px);
+  width:440px;max-width:calc(100vw - 40px);
+  max-height:calc(100vh - 40px);
+  display:flex;flex-direction:column;overflow:hidden;
   background:#fff;border-radius:18px;
   box-shadow:0 24px 64px rgba(23,26,31,.22);
-  padding:22px 24px 20px;
+  padding:0;
   animation:aicfgIn .22s cubic-bezier(.2,.9,.3,1.2) both;
 }
 @keyframes aicfgIn{from{opacity:0;transform:translateY(14px) scale(.96)}to{opacity:1;transform:none}}
-.aicfg-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}
+.aicfg-head{
+  flex:none;display:flex;align-items:baseline;gap:9px;
+  padding:18px 22px 12px;
+}
 .aicfg-head b{font:700 16px/1.4 var(--font-cn);color:#1F2329}
+.aicfg-sub{
+  flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  font:400 11.5px/1.4 var(--font-cn);color:#A8AEB8;
+}
+.aicfg-body{flex:1 1 auto;min-height:0;overflow:auto;padding:0 22px 2px}
+/* 分区小标题：模型服务 / 掘金账号 —— 两件事别混成一列。
+ * 靠「蓝竖条 + 深色字 + 淡横线」立层级：光靠字号（12 vs 字段标签 11.5）分不出来。 */
+.aicfg-sec{
+  display:flex;align-items:center;gap:8px;
+  margin:2px 0 11px;
+  font:700 11.5px/1 var(--font-cn);color:#1F2329;
+}
+.aicfg-sec::before{
+  content:'';flex:none;width:3px;height:11px;border-radius:2px;background:var(--blue);
+}
+.aicfg-sec::after{content:'';flex:1;height:1px;background:#E9EBEF}
+.aicfg-sec:not(:first-child){margin-top:18px}
+/* 字段下方的一句灰字说明（比原来的长段落短，且贴着它解释的那个字段） */
+.aicfg-note{
+  margin:-6px 0 12px;
+  font:400 11.5px/1.62 var(--font-cn);color:#A8AEB8;
+}
+/* 内容区滚动条收细，别在弹窗右侧糊一条粗黑边 */
+.aicfg-body{scrollbar-width:thin;scrollbar-color:#D8DBE0 transparent;overscroll-behavior:contain}
+.aicfg-body::-webkit-scrollbar{width:6px}
+.aicfg-body::-webkit-scrollbar-thumb{background:#D8DBE0;border-radius:99px}
+.aicfg-body::-webkit-scrollbar-track{background:transparent}
 .aicfg-x{
   width:28px;height:28px;border-radius:8px;
   display:grid;place-items:center;
@@ -771,7 +807,11 @@ body.folded .fab{
   outline:none;border-color:var(--blue);
   box-shadow:0 0 0 3px rgba(30,128,255,.12);
 }
-.aicfg-ops{display:flex;justify-content:flex-end;gap:8px;margin-top:16px}
+.aicfg-ops{
+  flex:none;display:flex;justify-content:flex-end;gap:8px;
+  margin-top:0;padding:13px 22px 16px;
+  border-top:1px solid #F0F1F4;background:#fff;
+}
 .aicfg-btn{
   height:34px;padding:0 14px;border-radius:9px;
   font:600 12.5px/1 var(--font-cn);
@@ -782,6 +822,52 @@ body.folded .fab{
 .aicfg-btn.primary{background:var(--blue);color:#fff}
 .aicfg-btn.primary:hover{background:#0B6FE8}
 .aicfg-btn[disabled]{opacity:.5;pointer-events:none}
+
+/* ---- 配置弹窗的扩充件：厂商/协议下拉、模型行、高级折叠区 ----
+ * 这三块的选项都来自 providers.js（window.JBProviders），
+ * 样式跟着 .aicfg-field 走，别单独换一套视觉。 */
+.aicfg-field select{
+  width:100%;height:38px;padding:0 10px;
+  border:1px solid #E6E7EA;border-radius:9px;background:#fff;cursor:pointer;
+  font:400 13px/1 var(--font-cn);color:#1F2329;
+  transition:border-color .14s,box-shadow .14s;
+}
+.aicfg-field select:focus{
+  outline:none;border-color:var(--blue);
+  box-shadow:0 0 0 3px rgba(30,128,255,.12);
+}
+.aicfg-row{display:flex;gap:8px}
+.aicfg-row input{flex:1;min-width:0}
+.aicfg-mini{
+  flex:none;height:38px;padding:0 11px;border-radius:9px;
+  border:1px solid #E6E7EA;background:#fff;white-space:nowrap;
+  font:600 12px/1 var(--font-cn);color:#5C636D;
+  transition:background .14s,color .14s,border-color .14s;
+}
+.aicfg-mini:hover{border-color:var(--blue);color:var(--blue)}
+.aicfg-mini[disabled]{opacity:.5;pointer-events:none}
+.aicfg-adv{
+  margin:2px 0 12px;padding:11px 12px 2px;
+  border:1px solid #E6E7EA;border-radius:9px;background:#FAFBFC;
+}
+.aicfg-adv summary{
+  display:flex;align-items:center;gap:8px;
+  margin-bottom:10px;cursor:pointer;user-select:none;list-style:none;
+  font:600 12px/1.3 var(--font-cn);color:#5C636D;
+}
+.aicfg-adv summary::-webkit-details-marker{display:none}
+/* 自绘折叠箭头：summary 一旦是 flex，浏览器自带的三角就没了 */
+.aicfg-adv summary::before{
+  content:'';flex:none;
+  width:0;height:0;border-left:4.5px solid #A8AEB8;
+  border-top:4px solid transparent;border-bottom:4px solid transparent;
+  transition:transform .16s;
+}
+.aicfg-adv[open] summary::before{transform:rotate(90deg)}
+.aicfg-adv summary > span{flex:1;min-width:0}
+.aicfg-adv summary .api-tag{margin-left:auto;flex:none;text-transform:none}
+.aicfg-adv summary:hover{color:var(--blue)}
+.aicfg-adv[open] summary{margin-bottom:12px}
 
 /* AI 点评生成中的加载态（在 .roast 里） */
 .roast .ai-loading{
@@ -807,7 +893,10 @@ body.folded .fab{
 }
 
 /* ---- 点评风格弹窗：卡牌式选择 ---- */
-.aicfg.wide{width:560px}
+/* 风格弹窗：内容短，且 .style-grid 自带 max-height 滚动，所以退回 block 流，
+ * 不走「头/底固定 + 中间滚动」那套骨架（它没有 .aicfg-body / .aicfg-ops）。 */
+.aicfg.wide{width:560px;display:block;overflow:auto;padding:22px 24px 20px}
+.aicfg.wide .aicfg-head{padding:0;margin-bottom:8px}
 .style-grid{
   display:grid;grid-template-columns:1fr 1fr;gap:12px;
   max-height:min(56vh,430px);overflow:auto;padding:2px;

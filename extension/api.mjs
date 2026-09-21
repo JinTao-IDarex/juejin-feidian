@@ -20,6 +20,17 @@
  * 形状一对不上，站点前端就得改 —— 那就不是复用了。
  */
 
+/* 协议适配与厂商表在 providers.js 里（与站点同源，由 build_extension.py 复制过来）。
+ *
+ * ⚠️ 这一行必须用 `import * as`，不能写 `import providers from './providers.js'`：
+ *    · 在 Chrome 里 providers.js 被当 ES module 解析 → 没有导出，
+ *      命名空间对象是空的，得从 globalThis.JBProviders 取（UMD 的浏览器分支）；
+ *    · 在 Node 里同一个文件是 CJS → 命名空间对象带 default = module.exports。
+ *    两种都认，才能让站点与扩展共用同一份实现，而不是各写一份然后慢慢漂移。 */
+import * as provMod from './providers.js';
+const providers = (provMod && provMod.default) || globalThis.JBProviders || null;
+if (!providers) throw new Error('providers.js 未加载（扩展包内应存在该文件）');
+
 /* ---------------- 共用 ---------------- */
 
 const JJ_HEADERS = {
@@ -119,13 +130,18 @@ export async function apiPins({ fresh } = {}) {
 }
 
 /* ---------------- /api/roast AI 实时点评 ----------------
- * 页面把用户配的 OpenAI 兼容接口（baseUrl / token / model）随请求带过来。
+ * 页面把用户配的接口（providerId / baseUrl / token / model / api / extra）随请求带过来。
  * 站点版是「浏览器 → serve.mjs → 厂商」，扩展版是
  * 「扩展页 → background service worker → 厂商」：
  * service worker 发请求没有 CORS 限制，也不需要把 Key 交给页面之外的第三方。
  *
- * 注：扩展里没有 site/.ai-config.json 这种服务端配置文件，
- * 所以 serve.mjs 里 fileCfg 兜底的那几行去掉了，配置一律以页面传入为准。
+ * 【请求形状由 providers.js 决定】chat / responses / anthropic 三种协议，
+ * 以及模型级参数差异（推理模型不传 temperature 等）全在那份表里。
+ * 这里只负责：取配置 → 拼请求 → 发出去 → 把错误翻译成人话。
+ *
+ * 【与 serve.mjs 的差别】扩展里没有 site/.ai-config.json，也没有 JB_AI_* 环境变量，
+ * 所以那边「请求体 > 环境变量 > 配置文件」的三层合成在这里退化成一层：
+ * 配置一律以页面传入为准。其余（并发闸门、两级缓存、批量 JSON 容错）逐字保留。
  */
 
 const ROAST_PROMPT =
@@ -173,35 +189,38 @@ function srvCacheSet(key, val) {
   roastSrvCache.set(key, Object.assign({ at: Date.now() }, val));
 }
 
-/** 调上游 chat/completions，返回解析后的 JSON；失败抛出可读错误 */
-async function callUpstream(base, token, model, messages, maxTokens, timeoutMs) {
-  const upstream = await fetch(base + '/chat/completions', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', 'authorization': 'Bearer ' + token },
-    body: JSON.stringify({ model, messages, temperature: 0.9, max_tokens: maxTokens }),
+/** 按协议调上游，返回解析后的响应对象；失败抛出可读错误 */
+async function callUpstream(ai, opts, timeoutMs) {
+  const q = providers.buildRequest(ai, opts);
+  const upstream = await fetch(q.url, {
+    method: q.method,
+    headers: q.headers,
+    body: JSON.stringify(q.body),
     signal: AbortSignal.timeout(timeoutMs),
   });
   const data = await upstream.json().catch(() => ({}));
-  if (!upstream.ok) {
-    const msg = (data.error && (data.error.message || data.error.msg)) || ('HTTP ' + upstream.status);
-    throw new Error(msg);
-  }
+  if (!upstream.ok) throw new Error(providers.parseError(ai, upstream.status, data));
   return data;
 }
-const pickContent = (data) =>
-  String((data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || '');
 
 export async function apiRoast(body = {}) {
   let slotTaken = false;
   try {
-    const base = String(body.baseUrl || '').replace(/\/+$/, '');
-    const token = String(body.token || '');
-    const model = String(body.model || '');
+    /* 归一化成「怎么调」：厂商表 → 地址，模型规则 → 协议与参数 */
+    const ai = providers.resolve({
+      providerId: String(body.providerId || ''),
+      baseUrl: String(body.baseUrl || ''),
+      token: String(body.token || ''),
+      model: String(body.model || ''),
+      api: String(body.api || ''),
+      extra: (body.extra && typeof body.extra === 'object') ? body.extra : null,
+    });
     const content = String(body.content || '').slice(0, 500);
     const topic = String(body.topic || '');
     /* 风格提示词由前端按所选风格卡牌传入；缺省用内置毒舌风格 */
     const sysPrompt = String(body.prompt || ROAST_PROMPT).slice(0, 800);
-    if (!base || !token || !model) {
+    /* needsKey=false 的（本地 Ollama）不要求填 Key */
+    if (!ai.baseUrl || !ai.model || (ai.needsKey && !ai.token)) {
       throw new Error('请先配置 AI 接口：浮层右上角 ✦');
     }
 
@@ -219,7 +238,8 @@ export async function apiRoast(body = {}) {
       const roasts = {};
       const misses = [];
       for (const it of norm) {
-        const key = model + '|' + sysPrompt.slice(0, 40) + '|' + it.content;
+        /* 缓存键带上 api：同一个模型换协议=换了上游形状，不能算同一份结果 */
+        const key = ai.model + '|' + ai.api + '|' + sysPrompt.slice(0, 40) + '|' + it.content;
         const hit = srvCacheGet(key);
         if (hit && hit.roast) roasts[it.id] = hit.roast;
         else misses.push({ it, key });
@@ -234,16 +254,18 @@ export async function apiRoast(body = {}) {
           const listText = misses
             .map((m, i) => (i + 1) + '. ' + (m.it.topic ? '【' + m.it.topic + '】' : '') + m.it.content)
             .join('\n');
-          const data = await callUpstream(base, token, model, [
-            { role: 'system', content: sysPrompt +
+          const data = await callUpstream(ai, {
+            system: sysPrompt +
               '\n本次给你 ' + misses.length + ' 条沸点（编号 1~' + misses.length + '）。' +
               '逐条各写一句点评，严格按编号顺序输出一个 JSON 字符串数组，' +
               '数组长度必须等于 ' + misses.length + '。只输出 JSON 数组本身，' +
-              '不要代码块标记、不要编号、不要任何额外文字。' },
-            { role: 'user', content: listText },
-          ], Math.min(8000, 160 * misses.length + 200), 60_000);
+              '不要代码块标记、不要编号、不要任何额外文字。',
+            user: listText,
+            maxTokens: Math.min(8000, 160 * misses.length + 200),
+            temperature: 0.9,
+          }, 60_000);
 
-          const raw = pickContent(data).trim();
+          const raw = providers.parseReply(ai, data).trim();
           /* 容错提取 JSON 数组：有的模型爱包 ```json 代码块或在前后加废话 */
           const mArr = raw.match(/\[[\s\S]*\]/);
           if (!mArr) throw new Error('AI 未按要求返回 JSON 数组');
@@ -263,7 +285,7 @@ export async function apiRoast(body = {}) {
 
     if (!content) throw new Error('沸点内容为空');
 
-    const cacheKey = model + '|' + sysPrompt.slice(0, 40) + '|' + content;
+    const cacheKey = ai.model + '|' + ai.api + '|' + sysPrompt.slice(0, 40) + '|' + content;
     const hit = srvCacheGet(cacheKey);
     if (hit) {
       if (hit.roast) return ok({ roast: hit.roast });
@@ -272,11 +294,13 @@ export async function apiRoast(body = {}) {
 
     if (!(await acquireSlot(10_000))) throw new Error('生成排队超时，翻慢一点点');
     slotTaken = true;
-    const data = await callUpstream(base, token, model, [
-      { role: 'system', content: sysPrompt },
-      { role: 'user', content: (topic ? '【' + topic + '】' : '') + content },
-    ], 120, 20_000);
-    const roast = pickContent(data).trim().replace(/^["「『]+|["」』]+$/g, '');
+    const data = await callUpstream(ai, {
+      system: sysPrompt,
+      user: (topic ? '【' + topic + '】' : '') + content,
+      maxTokens: 120,
+      temperature: 0.9,
+    }, 20_000);
+    const roast = providers.parseReply(ai, data).trim().replace(/^["「『]+|["」』]+$/g, '');
     if (!roast) throw new Error('AI 返回了空内容');
     srvCacheSet(cacheKey, { roast });
     return ok({ roast });
@@ -285,6 +309,41 @@ export async function apiRoast(body = {}) {
     return fail(502, isAbort ? 'AI 接口超时（20s）' : String((e && e.message) || e));
   } finally {
     if (slotTaken) releaseSlot();
+  }
+}
+
+/* ---------------- /api/models 拉取模型列表 ----------------
+ * 弹窗里的「拉取列表」用，语义与 serve.mjs 的同名路由完全一致：
+ * 不是每家厂商都实现了 /models，拉不到就如实报错、让人手填，
+ * 不要静默回一份假列表 —— 那比报错更难查。 */
+export async function apiModels(body = {}) {
+  try {
+    const ai = providers.resolve({
+      providerId: String(body.providerId || ''),
+      baseUrl: String(body.baseUrl || ''),
+      token: String(body.token || ''),
+      model: String(body.model || ''),
+      api: String(body.api || ''),
+    });
+    if (!ai.baseUrl) throw new Error('先填一个接口地址');
+    if (ai.needsKey && !ai.token) throw new Error('先填 API Key');
+    const q = providers.buildModelsRequest(ai);
+    const upstream = await fetch(q.url, {
+      method: q.method,
+      headers: q.headers,
+      signal: AbortSignal.timeout(15_000),
+    });
+    const data = await upstream.json().catch(() => ({}));
+    if (!upstream.ok) throw new Error(providers.parseError(ai, upstream.status, data));
+    const models = providers.parseModels(data);
+    if (!models.length) throw new Error('这个接口没返回模型列表，直接手填模型名即可');
+    return ok({ models, provider: ai.providerName, api: ai.api });
+  } catch (e) {
+    const isAbort = e && (e.name === 'AbortError' || e.name === 'TimeoutError');
+    return {
+      status: 502,
+      body: { models: [], error: isAbort ? '拉取模型列表超时（15s）' : String((e && e.message) || e) },
+    };
   }
 }
 
@@ -430,5 +489,16 @@ export async function apiComments({ pinId } = {}, ctx = {}) {
  * 用户就在弹窗里正常填 OpenAI 兼容接口，配置存在扩展页自己的 localStorage 里。
  * 保留这个路由是为了让 app.js 的探测逻辑拿到 200，而不是 404。 */
 export function apiRoastConfig() {
-  return ok({ serverKey: false, baseUrl: '', model: '', jjCookie: false });
+  /* 字段形状与 serve.mjs 的同名路由对齐（多了 serverCfg / providerId / api /
+   * providersOverride 这几个新字段），这样前端那份探测代码在两端跑同一套逻辑。 */
+  return ok({
+    serverKey: false,
+    serverCfg: false,
+    baseUrl: '',
+    model: '',
+    providerId: '',
+    api: '',
+    jjCookie: false,
+    providersOverride: 0,
+  });
 }

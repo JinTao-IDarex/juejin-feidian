@@ -127,9 +127,18 @@
   var batchTicker = null;
 
   /* ---------------- AI 实时点评配置 ----------------
-   * 配置存在 localStorage（只存本机浏览器）：OpenAI 兼容接口三要素。
+   * 配置存在 localStorage（只存本机浏览器）。字段与 providers.resolve() 的入参一一对应：
+   *   providerId  厂商 id（表在 providers.js）        可空
+   *   baseUrl     接口地址                            留空时由 providerId 推出
+   *   token       API Key                             留空则由服务端 / 环境变量补（不进浏览器）
+   *   model       模型名                              必填
+   *   api         协议覆盖 chat|responses|anthropic   留空按厂商+模型自动判定
+   *   extra       额外请求参数对象                     留空不传
    * 配了之后翻牌时经同源 /api/roast（serve.mjs 转发，避免 CORS）实时生成点评；
-   * 没配就用 data.js 里的手写点评兜底。 */
+   * 没配就用 data.js 里的手写点评兜底。
+   *
+   * ⚠️ 老版本只存了 baseUrl/token/model 三要素 —— 那份配置**继续可用**，
+   *    协议会按 baseUrl/模型名自动判成 chat（老配置全是 OpenAI 兼容接口）。 */
   var AI_CFG_KEY = 'juejin-boom:ai-cfg';
   /* 掘金登录态 Cookie（一键评论用）：可存浏览器 localStorage，
    * 也可写进服务端 site/.ai-config.json 的 jjCookie 字段（不进浏览器） */
@@ -142,8 +151,9 @@
   function loadAiCfg() {
     try {
       var c = JSON.parse(localStorage.getItem(AI_CFG_KEY) || 'null');
-      /* token 允许为空：空 token 时由服务端 .ai-config.json 补上（Key 不进浏览器） */
-      return (c && c.baseUrl && c.model) ? c : null;
+      /* token 允许为空：空 token 时由服务端 .ai-config.json（或 JB_AI_API_KEY）补上。
+       * providerId 本身能推出地址，所以「只选了个厂商」也算配置好了。 */
+      return (c && (c.baseUrl || c.providerId) && c.model) ? c : null;
     } catch (e) { return null; }
   }
 
@@ -858,7 +868,11 @@
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
+        /* providerId / api / extra 一并交给服务端：协议由 providers.js 判定，
+         * 前端只负责如实上报「用户选了什么」 */
+        providerId: aiCfg.providerId || '', api: aiCfg.api || '',
         baseUrl: aiCfg.baseUrl, token: aiCfg.token, model: aiCfg.model,
+        extra: aiCfg.extra || null,
         prompt: currentStyle().prompt,
         items: queue.map(function (p) { return { id: p.id, content: p.content, topic: p.topic }; }),
       }),
@@ -1219,30 +1233,168 @@
     var mo = $('#btnMotion');
     if (mo) mo.onclick = cycleMotion;
 
-    /* ---- AI 点评接口配置弹窗 ---- */
+    /* ---- AI 点评接口配置弹窗 ----
+     * 界面只是 providers.js 的一层皮：厂商清单、协议判定、模型规则全部来自
+     * window.JBProviders。**不要在这里另写一份厂商表** ——
+     * 扩展的 host.html 加载的是同一份 providers.js，写两份迟早对不上。 */
     var cfgMask = $('#aiCfgMask');
+    var JB = window.JBProviders || null;
+
+    function provList() { return JB ? JB.listProviders() : []; }
+    function provById(id) { return JB ? JB.findProvider(id) : null; }
+
+    /* 老配置没存 providerId：按 baseUrl 反查是哪一家，查不到就是「自定义」 */
+    function matchProviderByBase(baseUrl) {
+      var b = String(baseUrl || '').replace(/\/+$/, '').toLowerCase();
+      if (!b) return 'custom';
+      var list = provList();
+      for (var i = 0; i < list.length; i++) {
+        if (String(list[i].baseUrl || '').replace(/\/+$/, '').toLowerCase() === b) return list[i].id;
+      }
+      return 'custom';
+    }
+
+    function fillProviderOptions(curId) {
+      var sel = $('#aiCfgProvider');
+      if (!sel) return;
+      var list = provList();
+      if (!list.length) { sel.innerHTML = '<option value="custom">自定义（自填地址）</option>'; return; }
+      sel.innerHTML = list.map(function (p) {
+        return '<option value="' + esc(p.id) + '">' + esc(p.name) + '</option>';
+      }).join('');
+      sel.value = curId || 'custom';
+      if (!sel.value) sel.value = 'custom';
+    }
+
+    function fillModelList(providerId) {
+      var dl = $('#aiCfgModelList');
+      if (!dl) return;
+      var p = provById(providerId);
+      var ms = (p && p.models) || [];
+      dl.innerHTML = ms.map(function (m) { return '<option value="' + esc(m) + '"></option>'; }).join('');
+    }
+
+    /* 表单 → 配置对象（形状与 providers.resolve() 的入参一致） */
+    function readCfgForm() {
+      var extra = null;
+      var extraTxt = $('#aiCfgExtra') ? $('#aiCfgExtra').value.trim() : '';
+      if (extraTxt) {
+        try { extra = JSON.parse(extraTxt); } catch (e) { return { error: '额外参数不是合法 JSON' }; }
+        if (!extra || typeof extra !== 'object' || extra.length !== undefined) {
+          return { error: '额外参数要是一个 JSON 对象，例如 {"top_p":0.5}' };
+        }
+      }
+      var cfg = {
+        providerId: $('#aiCfgProvider') ? $('#aiCfgProvider').value : '',
+        baseUrl: $('#aiCfgBase').value.trim(),
+        token: $('#aiCfgToken').value.trim(),
+        model: $('#aiCfgModel').value.trim(),
+        api: $('#aiCfgApi') ? $('#aiCfgApi').value : '',
+      };
+      if (extra) cfg.extra = extra;
+      return { cfg: cfg };
+    }
+
+    /* 把「实际会用哪个协议 / 这条模型有没有特殊规则」当场显示出来。
+     * 这正是 modelRules 存在的意义：与其等上游回一句 404，不如填的时候就讲清楚。 */
+    function syncApiTag() {
+      var tag = $('#aiCfgApiTag');
+      if (!tag) return;
+      var f = readCfgForm();
+      if (!JB || f.error) { tag.hidden = true; return; }
+      var r = JB.resolve(f.cfg);
+      var bits = ['实际协议：' + r.api];
+      if (r.rule && r.rule.dropTemperature) bits.push('该模型不传 temperature');
+      if (r.rule && r.rule.minOutput) bits.push('输出上限至少 ' + r.rule.minOutput);
+      if (r.needsKey === false) bits.push('不需要 Key');
+      tag.hidden = false;
+      tag.textContent = bits.join(' · ');
+    }
+
     function syncCfgBtn() {
       var b = $('#btnAiCfg');
       if (b) b.classList.toggle('on', !!aiCfg);
     }
     function openCfg() {
-      $('#aiCfgBase').value = aiCfg ? aiCfg.baseUrl : '';
-      $('#aiCfgToken').value = aiCfg ? aiCfg.token : '';
-      $('#aiCfgModel').value = aiCfg ? aiCfg.model : '';
+      var cur = aiCfg;
+      var pid = (cur && cur.providerId) || matchProviderByBase(cur && cur.baseUrl);
+      fillProviderOptions(pid);
+      fillModelList(pid);
+      $('#aiCfgBase').value = cur ? (cur.baseUrl || '') : '';
+      $('#aiCfgToken').value = cur ? (cur.token || '') : '';
+      $('#aiCfgModel').value = cur ? (cur.model || '') : '';
+      if ($('#aiCfgApi')) $('#aiCfgApi').value = (cur && cur.api) || '';
+      if ($('#aiCfgExtra')) $('#aiCfgExtra').value = (cur && cur.extra) ? JSON.stringify(cur.extra) : '';
       $('#aiCfgCookie').value = localStorage.getItem(JJ_COOKIE_KEY) || '';
-      /* 探测服务端 .ai-config.json：已配 Key / Cookie 则提示「可留空」，并预填地址/模型 */
+      /* 探测服务端这一层（.ai-config.json / JB_AI_* 环境变量）：配了就把标签点亮，
+       * 并把空着的地址/模型/协议预填上 —— 只回非敏感字段，Key 本体永不回。 */
       fetch('/api/roast/config').then(function (r) { return r.ok ? r.json() : null; })
         .then(function (c) {
           if (!c) return;
           $('#aiCfgSrvTag').hidden = !c.serverKey;
           $('#aiCfgCookieTag').hidden = !c.jjCookie;
-          if (c.serverKey) {
+          if (c.serverCfg) {
             if (!$('#aiCfgBase').value && c.baseUrl) $('#aiCfgBase').value = c.baseUrl;
             if (!$('#aiCfgModel').value && c.model) $('#aiCfgModel').value = c.model;
+            if ($('#aiCfgApi') && !$('#aiCfgApi').value && c.api) $('#aiCfgApi').value = c.api;
+            if (!cur && c.providerId) { fillProviderOptions(c.providerId); fillModelList(c.providerId); }
           }
+          syncApiTag();
         })
         .catch(function () {});
+      syncApiTag();
       cfgMask.hidden = false;
+    }
+
+    /* 换厂商 = 换一整套默认值（地址 + 预置模型），用户随后可以随便改。
+     * 只在用户主动切换时触发，所以「选厂商」这个动作本身就是「用它的默认组合」。 */
+    var provSel = $('#aiCfgProvider');
+    if (provSel) {
+      provSel.onchange = function () {
+        var p = provById(this.value);
+        if (!p) { syncApiTag(); return; }
+        if (p.baseUrl) $('#aiCfgBase').value = p.baseUrl;
+        fillModelList(p.id);
+        if (p.models && p.models.length) $('#aiCfgModel').value = p.models[0];
+        if ($('#aiCfgApi')) $('#aiCfgApi').value = '';
+        syncApiTag();
+      };
+    }
+    var baseIn = $('#aiCfgBase');
+    if (baseIn) baseIn.oninput = syncApiTag;
+    var modelIn = $('#aiCfgModel');
+    if (modelIn) modelIn.oninput = syncApiTag;
+    var apiSel = $('#aiCfgApi');
+    if (apiSel) apiSel.onchange = syncApiTag;
+
+    /* 「拉取列表」：问上游 /models 拿真实可用的模型名，填进 datalist。
+     * 不是每家都实现了这个端点，拉不到就老实报错，让人手填。 */
+    var fetchMb = $('#aiCfgFetchModels');
+    if (fetchMb) {
+      fetchMb.onclick = function () {
+        var btn = this;
+        var f = readCfgForm();
+        if (f.error) { toast(f.error); return; }
+        if (!f.cfg.baseUrl) { toast('先选个厂商，或填一个接口地址'); return; }
+        btn.disabled = true;
+        btn.textContent = '拉取中…';
+        fetch('/api/models', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(f.cfg),
+        })
+          .then(parseRoastRes)
+          .then(function (res) {
+            if (!res.ok || !res.d.models) throw new Error((res.d && res.d.error) || '接口异常');
+            var dl = $('#aiCfgModelList');
+            dl.innerHTML = res.d.models.map(function (m) {
+              return '<option value="' + esc(m.id) + '"></option>';
+            }).join('');
+            toast('拉到 ' + res.d.models.length + ' 个模型，点模型输入框就能选');
+          })
+          .catch(function (e) { toast('拉取失败：' + ((e && e.message) || e)); })
+          .finally(function () { btn.disabled = false; btn.textContent = '拉取列表'; });
+      };
     }
     function closeCfg() { cfgMask.hidden = true; }
     function applyCfg(next) {
@@ -1262,26 +1414,35 @@
     $('#aiCfgClose').onclick = closeCfg;
     cfgMask.addEventListener('click', function (e) { if (e.target === cfgMask) closeCfg(); });
     $('#aiCfgSave').onclick = function () {
-      var next = {
-        baseUrl: $('#aiCfgBase').value.trim(),
-        token: $('#aiCfgToken').value.trim(),
-        model: $('#aiCfgModel').value.trim(),
-      };
+      var f = readCfgForm();
+      if (f.error) { toast(f.error); return; }
+      var next = f.cfg;
       /* 掘金 Cookie 独立保存：不参与「是否配置 AI 接口」的判断 */
       var ck = $('#aiCfgCookie').value.trim();
       if (ck) localStorage.setItem(JJ_COOKIE_KEY, ck);
       else localStorage.removeItem(JJ_COOKIE_KEY);
-      if (!next.baseUrl && !next.token && !next.model) {
+
+      if (!next.providerId && !next.baseUrl && !next.token && !next.model) {
         applyCfg(null);
+        closeCfg();
         toast('未配置 AI 接口，使用内置点评');
-      } else if (!next.baseUrl || !next.model) {
-        toast('接口地址和模型必填；Key 可留空（由服务端文件提供）');
         return;
-      } else {
-        applyCfg(next);
-        toast(next.token ? '已保存，翻牌时实时生成点评' : '已保存，Key 由服务端文件提供');
       }
+      /* 选了厂商就等于填了地址（地址能从表里推出来），所以这里校验的是
+       * 「最终能不能推出一个地址」，而不是表单里那一格有没有字 */
+      var p = provById(next.providerId);
+      var effBase = next.baseUrl || (p ? p.baseUrl : '');
+      if (!effBase || !next.model) {
+        toast('接口地址和模型必填；Key 可留空（由服务端文件 / 环境变量提供）');
+        return;
+      }
+      var r = JB ? JB.resolve(next) : null;
+      applyCfg(next);
       closeCfg();
+      /* 协议与模型规则冲突这类问题必须当场说，别留到翻牌时报 404 */
+      if (r && r.warnings && r.warnings.length) toast(r.warnings[0]);
+      else if (r) toast('已保存：' + JB.describe(r) + (next.token ? '' : ' · Key 由服务端提供'));
+      else toast('已保存，翻牌时实时生成点评');
     };
     $('#aiCfgClear').onclick = function () {
       applyCfg(null);
@@ -1291,20 +1452,23 @@
     };
     $('#aiCfgTest').onclick = function () {
       var btn = this;
-      var cfg = {
-        baseUrl: $('#aiCfgBase').value.trim(),
-        token: $('#aiCfgToken').value.trim(),
-        model: $('#aiCfgModel').value.trim(),
-      };
-      if (!cfg.baseUrl || !cfg.model) { toast('接口地址和模型必填'); return; }
-      if (!cfg.token) { toast('Key 为空，将使用服务端 .ai-config.json 里的'); }
+      var f = readCfgForm();
+      if (f.error) { toast(f.error); return; }
+      var cfg = f.cfg;
+      var p = provById(cfg.providerId);
+      if ((!cfg.baseUrl && !(p && p.baseUrl)) || !cfg.model) { toast('接口地址和模型必填'); return; }
+      if (!cfg.token) { toast('Key 为空，将使用服务端配置（.ai-config.json / JB_AI_API_KEY）'); }
       btn.disabled = true;
       btn.textContent = '测试中…';
+      /* 走的是和正式生成完全一样的请求路径（同样带 providerId / api / extra），
+       * 否则「测试通过、翻牌报错」就白测了 */
       fetch('/api/roast', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
+          providerId: cfg.providerId || '', api: cfg.api || '',
           baseUrl: cfg.baseUrl, token: cfg.token, model: cfg.model,
+          extra: cfg.extra || null,
           content: '今天又是周一，感觉人生无望。', topic: '测试',
         }),
       })
@@ -1364,8 +1528,13 @@
     if (!aiCfg) {
       fetch('/api/roast/config').then(function (r) { return r.ok ? r.json() : null; })
         .then(function (c) {
-          if (c && c.serverKey && c.baseUrl && c.model && !aiCfg) {
-            aiCfg = { baseUrl: c.baseUrl, token: '', model: c.model };
+          /* 服务端这层（.ai-config.json 或 JB_AI_* 环境变量）配全了就接手，
+           * Key 全程不进浏览器：这里拿到的是空 token。 */
+          if (c && c.serverCfg && c.baseUrl && c.model && !aiCfg) {
+            aiCfg = {
+              baseUrl: c.baseUrl, token: '', model: c.model,
+              providerId: c.providerId || '', api: c.api || '',
+            };
             syncCfgBtn();
             render(false, 0);
             startBatch(true);

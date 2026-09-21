@@ -20,7 +20,8 @@ import sys
 ROOT = r"D:\2workspace\codex\juejin-boom"
 SITE = os.path.join(ROOT, "site")
 EXT = os.path.join(ROOT, "extension")
-BAK_ICONS = os.path.join(ROOT, "_bak", "extension-20260920", "icons")
+# 图标不再从 _bak/ 拷旧图，改为由 scripts/build_icons.py 从主版 logo 生成
+# （源：assets/logo-juejin-joker.jpg）。见本文件第 4 步。
 
 # ---------------------------------------------------------------- 补丁表
 # 每项：(说明, 原文, 替换成, 期望命中次数)
@@ -57,7 +58,9 @@ def main():
     log = []
 
     # ---- 1) 逐字节复制 ----
-    for name in ("app.css", "data.js"):
+    # providers.js 也进这一组：它是「厂商表 + 协议适配」的唯一实现，
+    # 站点用 <script src> 加载、扩展的 api.mjs 用 import 加载同一份文件。
+    for name in ("app.css", "data.js", "providers.js"):
         src, dst = os.path.join(SITE, name), os.path.join(EXT, name)
         shutil.copyfile(src, dst)
         log.append("copy  %-12s %d bytes" % (name, os.path.getsize(dst)))
@@ -104,14 +107,18 @@ def main():
     log.append("write host.html %d bytes" % os.path.getsize(os.path.join(EXT, "host.html")))
 
     # ---- 4) 图标 ----
-    icon_dir = os.path.join(EXT, "icons")
-    os.makedirs(icon_dir, exist_ok=True)
-    if os.path.isdir(BAK_ICONS):
-        for f in sorted(os.listdir(BAK_ICONS)):
-            shutil.copyfile(os.path.join(BAK_ICONS, f), os.path.join(icon_dir, f))
-            log.append("copy  icons/%-8s %d bytes" % (f, os.path.getsize(os.path.join(icon_dir, f))))
-    else:
-        log.append("warn  icons 源目录不存在：%s" % BAK_ICONS)
+    # 图标由 scripts/build_icons.py 从 assets/logo-juejin-joker.jpg 现场生成，
+    # 不再从 _bak/ 拷旧图 —— 否则换 logo 后一重建就被旧图标盖回去。
+    try:
+        import build_icons
+        n = build_icons.build_all(verbose=False)
+        log.append("icons  从 assets/logo-juejin-joker.jpg 生成 %d 个" % n)
+        for f in sorted(os.listdir(os.path.join(EXT, "icons"))):
+            p = os.path.join(EXT, "icons", f)
+            log.append("  icons/%-9s %d bytes" % (f, os.path.getsize(p)))
+    except Exception as e:
+        log.append("ERROR icons 生成失败：%r" % (e,))
+        raise
 
     log.append("--- extension/ 现有文件 ---")
     for f in sorted(os.listdir(EXT)):

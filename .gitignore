@@ -12,3 +12,6 @@ data/_view.txt
 
 # 本地密钥配置（模板见 site/.ai-config.example.json）
 site/.ai-config.json
+
+# 本地供应商覆盖（模板见 site/providers.local.example.json）
+providers.local.json

@@ -15,8 +15,9 @@ import { apiPins, apiRoast, apiComments, apiComment } from '../extension/api.mjs
 const out = [];
 const log = (s) => { out.push(s); console.log(s); };
 
-/* ---------------- 1) 假上游：OpenAI 兼容 ---------------- */
+/* ---------------- 1) 假上游：三种协议都装作会 ---------------- */
 let upstreamHits = [];
+let seen = [];          // 每次上游调用都记 { path, headers, body }，供形状断言
 const fake = createServer((req, res) => {
   let body = '';
   req.on('data', (c) => { body += c; });
@@ -28,6 +29,34 @@ const fake = createServer((req, res) => {
       return;
     }
     const payload = JSON.parse(body || '{}');
+    seen.push({ path: req.url, headers: req.headers, body: payload });
+
+    /* ---- Anthropic Messages 形状 ---- */
+    if (req.url === '/v1/messages') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        content: [
+          { type: 'thinking', thinking: '（这段必须被忽略）' },
+          { type: 'text', text: '「anthropic 测试点评」' },
+        ],
+      }));
+      return;
+    }
+    /* ---- OpenAI Responses 形状 ----
+     * 故意把正文放在 output[1]，并在前面塞一个 reasoning 项：
+     * 官方文档明确说不能假设文本在 output[0].content[0].text，
+     * 解析要是只会取 [0] 这条用例就会红。 */
+    if (req.url === '/v1/responses') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        output: [
+          { type: 'reasoning', content: [] },
+          { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: '「responses 测试点评」' }] },
+        ],
+      }));
+      return;
+    }
+
     upstreamHits.push(payload.messages && payload.messages[0] && payload.messages[0].content.slice(0, 12));
     const sys = String(payload.messages[0].content);
     let content;
@@ -85,6 +114,58 @@ const CFG = { baseUrl: BASE, token: 't', model: 'mock' };
   const e = await apiRoast(Object.assign({ content: '空内容测试' }, CFG, { baseUrl: 'http://127.0.0.1:7399/bad' }));
   log(`[roast] 上游 404 status=${e.status} msg=${String(e.body.error).slice(0, 60)}`);
   log(`[roast] 上游总命中次数=${upstreamHits.length}（单条首问 1 + 批量 1；/bad 那条在计数前就早返回了，不计入）`);
+}
+
+/* ---------------- 3b) 三种协议的请求形状与解析 ----------------
+ * 适配层 providers.js 是站点与扩展**共用**的：形状一旦漂，两端同时坏，
+ * 而且坏在浏览器里很难当场看出来。所以在这里把三条路径各断言一遍。
+ * 关键在于「请求打到哪个路径、带什么头、body 用什么字段」—— 这些才是协议。 */
+let checks = 0, bad = 0;
+function chk(cond, label, extra) {
+  checks++;
+  if (cond) log(`  ok   ${label}`);
+  else { bad++; log(`  FAIL ${label}${extra ? '  → ' + extra : ''}`); }
+}
+{
+  /* chat：模型名不命中任何规则 → 默认协议（也是老配置的路径） */
+  const a = await apiRoast({ baseUrl: BASE, token: 'tk', model: 'mock', content: '形状 chat', topic: 'T' });
+  const q = seen[seen.length - 1];
+  chk(a.status === 200 && a.body.roast === '单条测试点评', 'chat：状态与正文解析正确', JSON.stringify(a.body));
+  chk(q.path === '/v1/chat/completions', 'chat：打到 /chat/completions', q.path);
+  chk(q.headers.authorization === 'Bearer tk', 'chat：用 Authorization: Bearer');
+  chk(Array.isArray(q.body.messages) && q.body.messages.length === 2, 'chat：body 用 messages(system+user)');
+  chk(q.body.max_tokens > 0, 'chat：用 max_tokens');
+  chk(typeof q.body.temperature === 'number', 'chat：带 temperature');
+
+  /* anthropic：只靠模型名（claude）弱暗示到 Messages 协议 */
+  const b = await apiRoast({ baseUrl: BASE, token: 'tk', model: 'claude-sonnet-4-20250514', content: '形状 anthropic', topic: 'T' });
+  const q2 = seen[seen.length - 1];
+  chk(b.status === 200 && b.body.roast === 'anthropic 测试点评',
+    'anthropic：正文解析正确（跳过 thinking 块）', JSON.stringify(b.body));
+  chk(q2.path === '/v1/messages', 'anthropic：打到 /messages', q2.path);
+  chk(q2.headers['x-api-key'] === 'tk', 'anthropic：用 x-api-key 而不是 Bearer');
+  chk(q2.headers['anthropic-version'] === '2023-06-01', 'anthropic：带 anthropic-version');
+  chk(!q2.headers.authorization, 'anthropic：不出现 Authorization');
+  chk(q2.body.max_tokens > 0, 'anthropic：max_tokens 必填项有值');
+  chk(q2.body.system === undefined || typeof q2.body.system === 'string',
+    'anthropic：system 走顶层字段');
+  chk(q2.body.messages.length === 1 && q2.body.messages[0].role === 'user',
+    'anthropic：messages 里只有 user');
+
+  /* responses：codex 模型是硬约束，压过一切 */
+  const c = await apiRoast({ baseUrl: BASE, token: 'tk', model: 'gpt-5-codex', content: '形状 responses', topic: 'T' });
+  const q3 = seen[seen.length - 1];
+  chk(c.status === 200 && c.body.roast === 'responses 测试点评',
+    'responses：正文解析正确（正文在 output[1]，不是 [0]）', JSON.stringify(c.body));
+  chk(q3.path === '/v1/responses', 'responses：打到 /responses', q3.path);
+  chk(!!q3.body.input && !('messages' in q3.body), 'responses：用 input 而不是 messages');
+  chk(typeof q3.body.instructions === 'string' && q3.body.instructions.length > 0,
+    'responses：system 走 instructions');
+  chk(!('temperature' in q3.body), 'responses：gpt-5 系不传 temperature');
+  chk(q3.body.max_output_tokens >= 1024, 'responses：输出上限抬到 minOutput', String(q3.body.max_output_tokens));
+
+  log(`[协议] 请求形状断言 ${checks - bad}/${checks} 通过`);
+  if (bad) process.exitCode = 1;
 }
 fake.close();
 

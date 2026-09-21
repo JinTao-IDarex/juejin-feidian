@@ -1,0 +1,22 @@
+{
+  "_说明": [
+    "复制到同目录的 providers.local.json 后生效。",
+    "同 id 覆盖内置厂商（未提供的字段保留原值），新 id 追加。",
+    "字段：id / name / api(chat|responses|anthropic) / baseUrl / keyUrl / models[] / needsKey",
+    "别把 Key 写进这个文件 —— 它和 .ai-config.json 一样只用于本机配置。"
+  ],
+  "providers": [
+    {
+      "id": "deepseek",
+      "name": "公司网关（走内网）",
+      "baseUrl": "https://gw.corp.example.com/v1"
+    },
+    {
+      "id": "selfhost",
+      "name": "自建 vLLM",
+      "api": "chat",
+      "baseUrl": "http://10.0.0.5:8000/v1",
+      "models": ["Qwen2.5-7B-Instruct"]
+    }
+  ]
+}
