@@ -10,6 +10,7 @@
  *
  * 两态（v0.2）：
  *   · 收起 —— 右上角一张缩略卡（站点自己的 dock 卡），点一下展开；
+ *             **不贴角**：右缘距视口右 188px、顶边距视口顶 86px（v0.2.3 按用户标注定，见 FOLD_* 常量）
  *   · 展开 —— 牌阵 + HUD，**水平垂直居中落在页面正中**，底下铺一层全屏遮罩
  *             （半透明底 + 背景虚化），点遮罩收起。
  *   展开态是「把站点那一整段版式端到页面中间」，所以主卡正好在正中 ——
@@ -26,6 +27,21 @@
   const DESIGN_H = 722;    // 舞台 620 + 间隔 16 + HUD 86
   const FOLD_W = 196, FOLD_H = 236;
   const MARGIN = 12;
+  /* 收起态停在哪：右上角，但**不贴角**（v0.2.3 按用户标注的红框改）。
+   *
+   * 口径说明：缩略卡是站点自己的 .dock，在 196x236 的 iframe 里 `top:20; right:24`，
+   * 尺寸 148x196 —— 所以「缩略卡距视口右 188」换算到宿主盒子要**减去**那 24：
+   *   宿主右缘距视口右 = 188 - 24 = 164
+   *   宿主顶边距视口顶 =  86 - 20 =  66
+   * （校验：旧值「卡距右 36」→ 宿主 36-24 = 12 = 原来的 MARGIN ✓）
+   *
+   * 这两个数怎么来的：用户在自己的浏览器（视口 clientWidth≈1898）上画了红框
+   * x[1560,1714] y[79,278]，而截图里缩略卡当时在 x[1715,1862]、顶边 y=27
+   * （= 原来的 MARGIN 12 + dock 的 24 / 20，模型对得上）。
+   * 把 148x196 的卡摆进红框 → 卡右缘距视口右 188、顶边距顶 86，即相对原位置
+   * **左移 152、下移 54**。 */
+  const FOLD_INSET_RIGHT = 164;
+  const FOLD_INSET_TOP = 66;
   const Z = 2147483000;
   const MOVE_MS = 280;     // 面板在「右上角 ⇄ 页面正中」之间滑动的时长
   /* 遮罩观感：半透明深色底 + 背景虚化。
@@ -33,6 +49,26 @@
    * 一片白，看不出"遮罩"，面板也浮不起来；这里取中等深度，让白色卡面立住。 */
   const MASK_ALPHA = 0.28;
   const MASK_BLUR = 'blur(12px) saturate(115%)';
+  /* 收起态缩略卡的投影 —— 写在**父页面**这层（挂在 iframe 上），不写在卡上。
+   *
+   * 站点把这份投影做在 .dock 自己身上（app.css `body.folded .dock{box-shadow:0 14px 36px …}`），
+   * 而 .dock 是在 196x236 的 iframe 里 `top:20; right:24` —— 卡外只剩 24/20px 余量，
+   * 36px 模糊的投影根本铺不下，会在 iframe 的**矩形边界**上被硬切一刀。
+   * 白底页实测那条边上的台阶：左 4 / 右 3 / 上 1 / **下 12**
+   * （rgb 243,246,251 → 255,255,255，肉眼就是卡片下方横着一条突然消失的蓝灰带）。
+   * 用户报的「缩略卡四周和主页面有割裂感」就是它 —— 不是底色，是**被切掉的投影**。
+   *
+   * 所以这里改挂 `filter: drop-shadow(...)`：它沿 iframe 内容的 **alpha 轮廓**
+   * （= 那张 148x196 圆角卡，收起态 iframe 里除了它没别的实体）投影，不受 iframe
+   * 盒子约束，能像正常投影那样溢出到页面上平滑衰减。实测同一张白底页：
+   * 四条边台阶 1/1/1/**0**，且卡外 30/44/60px 仍有 Δ6→Δ4→Δ2 的自然衰减。
+   *
+   * ⚠️ 和 embed.css 第 5 节那条 `box-shadow: none` 是**同一个投影的两半**，必须成对改：
+   *    只关不挂 = 卡没投影；只挂不关 = iframe 里那份被切的 + 父页面这份，双投影。
+   * ⚠️ 两个值要和 app.css 一一对得上：基线对 `body.folded .dock`，
+   *    hover 对 `body.folded .dock:hover`。改 app.css 就要同步改这里。 */
+  const FOLD_SHADOW = 'drop-shadow(0 14px 36px rgba(30, 89, 191, .14))';
+  const FOLD_SHADOW_HOVER = 'drop-shadow(0 20px 44px rgba(30, 89, 191, .20))';
   /* 一打开 juejin.cn 时先给哪一态？
    * true  = 缩略卡（右上角那张竖版纸牌），点一下展开 —— 默认。
    * false = 直接铺开整块牌阵。
@@ -45,6 +81,7 @@
   let host = null, frame = null, mask = null;
   let maskTimer = null;
   let cur = { w: 0, h: 0, folded: START_FOLDED };
+  let hovered = false;     // 指针是否在 iframe 上（收起态的投影为此分两档，见 paintShadow）
   let useFixed = true;
 
   /* 展开态停在哪：'center'（默认，主卡落在页面正中）| 'topright'。
@@ -84,7 +121,28 @@
                 'width ' + MOVE_MS + 'ms ease, height ' + MOVE_MS + 'ms ease'
   };
 
+  /* ⚠️ iframe 必须钉在宿主的**右上角**（right:0 / top:0），不能留在默认的左上角。
+   *
+   * 原因（v0.2.2 修的坑，用户报「切到缩略卡时会闪一下，然后从左边闪到最终位置」）：
+   * 缩略卡是站点自己的 .dock，`position:fixed; top:20; right:24` —— 它钉的是
+   * **iframe 视口的右缘**。而宿主收起时是「left 233→1697 且 width 1440→196」一起过渡的，
+   * 于是 iframe 视口右缘 = 宿主右缘 = left+width，本来是一条平滑的 220px 位移。
+   * 但 iframe 是左上角对齐的静态流，`resize()` 又把它的 width **一帧内**改成 196
+   * → iframe 右缘当帧从 1673 掉到 233+196=429 → 缩略卡一帧内被瞬移到左边 1244px，
+   * 随后宿主 left 的过渡再把整块（含那张卡）横穿面板扫回右边 1464px。
+   * 实测逐帧确实如此：t=461ms 卡在 x=1501，t=494ms 跳到 x=257，t=773ms 才回到 1721。
+   *
+   * 钉右上角之后，iframe 右缘 == 宿主右缘，尺寸瞬变的瞬间右缘**不动**
+   * （宿主此时还停在展开态，右缘 = 1673），缩略卡原地不动、再跟着宿主右缘平滑滑到 1893。
+   * 顺带把展开方向也修了：原来是「面板从屏幕右外侧 1464px 冲进来」，
+   * 现在变成 220px 的落位位移。
+   *
+   * 左上是 absolute 的默认对齐方向，这里必须显式写 left:auto，否则会和 right:0 打架。 */
   const FRAME_BASE = {
+    position: 'absolute',
+    right: '0',
+    top: '0',
+    left: 'auto',
     display: 'block',
     border: '0',
     background: 'transparent',
@@ -166,12 +224,15 @@
     /* fixed → 视口坐标；absolute → 文档坐标（加滚动量） */
     const ox = useFixed ? 0 : window.scrollX;
     const oy = useFixed ? 0 : window.scrollY;
+    /* 收起态用 FOLD_INSET_*（右上角内缩），展开态居中。
+     * 两边都要 Math.max(MARGIN, …) 兜底：视口太窄/太矮时别把面板挤到看不见。
+     * 收起态的 top 还要再跟 vp.h - MARGIN - h 取小，否则矮视口下缩略卡会掉出下边界。 */
     const left = center
       ? Math.max(MARGIN, Math.round((vp.w - w) / 2))
-      : vp.w - MARGIN - w;
+      : Math.max(MARGIN, vp.w - FOLD_INSET_RIGHT - w);
     const top = center
       ? Math.max(MARGIN, Math.round((vp.h - h) / 2))
-      : MARGIN;
+      : Math.max(MARGIN, Math.min(FOLD_INSET_TOP, vp.h - MARGIN - h));
 
     setCss(host, {
       position: useFixed ? 'fixed' : 'absolute',
@@ -224,12 +285,28 @@
     }
   }
 
+  /* ---- 收起态缩略卡的外投影（挂在 iframe 上，理由见 FOLD_SHADOW 注释）----
+   * 只在收起态挂：展开态 iframe 铺满整块面板，再挂 filter 等于给整个面板套一圈
+   * 外发光（而且那么大的面积让浏览器白掏一次 drop-shadow，很贵）。
+   *
+   * cur.folded 天然就是「折叠动画已经播完」的态：iframe 报告收起态时，站点那边
+   * 已经等满了 .45s 动画（embed-boot.js 的 FOLD_MS 才 report），所以 embed.css
+   * 撤掉卡上那份投影、和这里挂上父页面这份，是**同一时刻**换手，不会出现
+   * 「两头都没投影」或「两份投影叠着」的中间帧。 */
+  function paintShadow() {
+    if (!frame) return;
+    let v = 'none';
+    if (cur.folded) v = hovered ? FOLD_SHADOW_HOVER : FOLD_SHADOW;
+    setCss(frame, { filter: v });
+  }
+
   function resize(w, h, folded) {
     if (!host || !frame) return;
     cur = { w: w, h: h, folded: folded };
     setCss(frame, { width: w + 'px', height: h + 'px' });
     place(w, h, folded);
     showMask(!folded);
+    paintShadow();
   }
 
   function mount() {
@@ -258,6 +335,18 @@
       width: w0 + 'px',
       height: h0 + 'px'
     }));
+    /* 投影在挂载时就摆好：否则为首帧就是收起态时，卡会先"光秃秃"地闪一下
+     * （embed.css 已经把卡自己那份投影关了，父页面这份必须同帧到位）。 */
+    paintShadow();
+
+    /* 指针进出 iframe 换一档投影 —— 顶上的是站点 `.dock:hover` 那条「投影加深」：
+     * 它写在 .dock 上，被 embed.css 一起关掉了，所以在父页面补这一档。
+     * hover 的另一半（translateY(-3px) 上浮）不受影响，而且 drop-shadow 会跟着
+     * 卡一起动，比原来"卡动、影子不动"更贴。
+     * ⚠️ 颗粒度是 iframe 的 196x236，不是那张 148x196 的卡 —— 卡外那 24/20px 余量
+     *    也算"卡上"，指针扫过就会提前一档。这点误差不值得再搭一套坐标换算。 */
+    frame.addEventListener('mouseenter', () => { hovered = true; paintShadow(); }, false);
+    frame.addEventListener('mouseleave', () => { hovered = false; paintShadow(); }, false);
 
     host.appendChild(frame);
     document.documentElement.appendChild(host);

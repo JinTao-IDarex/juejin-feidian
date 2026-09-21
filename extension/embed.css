@@ -28,7 +28,15 @@
  * 空处透出父页面那层遮罩（半透明深色 + backdrop-filter 虚化）。
  * ⚠️ 虚化不在这里做：iframe 内部的 backdrop-filter 糊不到父页面内容
  *    （它只看得见 iframe 自己的透明画布），虚化统一由 content.js 的遮罩提供。
- */
+ *
+ * ⚠️ 收起态缩略卡（.dock）的**实心白底是有意保留的，别再去"打透"它**。
+ *    v0.2.4 试过把它的白底抠掉、在父页面垫一层毛玻璃，视觉上确实更融合，
+ *    但用户看过之后不要这个效果，v0.2.5 已完整回滚。
+ *    「白底整片打透」只针对展开态那三层（.page / .stage / .hud），不含 .dock。
+ *
+ * ⚠️ 但**它的投影**是另一回事：v0.2.6 把它从 .dock 挪到了父页面（见下面第 5 节）。
+ *    用户说的「四周和主页面有割裂感」指的是投影被 iframe 矩形切出的直角，
+ *    不是卡的底色 —— 底色要留、投影要换地方，这两件事别混在一起改。 */
 
 html.embed { overflow: hidden; }
 html.embed body { background: transparent; overflow: hidden; }
@@ -91,6 +99,31 @@ html.embed .page,
 html.embed .stage,
 html.embed .hud { background: transparent; }
 
+/* ---- 5) 收起态缩略卡的投影：从 iframe 里挪到父页面（v0.2.6）----
+ * 站点把这份投影做在 .dock 自己身上（app.css `body.folded .dock` 的 `0 14px 36px`）。
+ * 而 .dock 是在 196x236 的 iframe 里 `top:20; right:24` —— 卡外只剩 24/20px 余量，
+ * 36px 模糊的投影铺不下，会在 iframe 的**矩形边界**上被硬切一刀：
+ * 白底页实测那条边上（边界内外各 1px）的台阶是 左 4 / 右 3 / 上 1 / **下 12**
+ * （rgb 243,246,251 → 255,255,255）。肉眼就是卡片下方横着一条突然消失的蓝灰带，
+ * 用户报的「缩略卡四周和主页面有割裂感」就是它 —— 不是底色，是被切掉的投影。
+ *
+ * 修法：把 iframe 里这份**关掉**，换 content.js 在父页面给 iframe 挂
+ * `filter: drop-shadow(...)`。drop-shadow 沿 iframe 内容的 **alpha 轮廓**（= 那张
+ * 148x196 圆角卡）投影，不受 iframe 盒子约束，能像正常投影那样溢出到页面上衰减。
+ * 实测同一张白底页：四条边台阶 1/1/1/0，卡外 30/44/60px 仍有 Δ6→Δ4→Δ2 的衰减。
+ *
+ * ⚠️ 这是**同一个投影的两半**，必须成对改（另一半在 content.js 的 FOLD_SHADOW）：
+ *    只关不挂 = 卡没投影；只挂不关 = 被切的那份 + 父页面那份，双投影。
+ * ⚠️ 代价：`.dock:hover` 那条「投影加深」连坐被关掉了，所以 content.js 在父页面
+ *    补了一个 hover 档（FOLD_SHADOW_HOVER）。hover 的 translateY(-3px) 上浮不受影响，
+ *    而且 drop-shadow 会跟着卡一起动，比原来更贴。
+ * ⚠️ 顺手别把这条写成 `body.folded .dock{box-shadow:0 14px 36px transparent}` 之类
+ *    "留个透明影子"的写法 —— 透明投影的 alpha 会进 iframe 内容的轮廓，
+ *    drop-shadow 投出来的就不是卡、而是那个矩形了。 */
+html.embed body.folded .dock {
+  box-shadow: none;
+}
+
 /* HUD 的两行小字原来靠那条白底托着，打透后直接落在虚化背景上。
  * 不给它加底色（那就把白条又请回来了），改用两条不改变版式的手段：
  *   ① 极淡白色描边 —— 把字从灰底里"拎"出来（深底上还兼作反白）；
@@ -107,7 +140,7 @@ html.embed .hud .keys b { color: #3D444D; }
 /* 小圆钮是「按钮」，要读得成按钮 —— 补一层半透明白底（能透出虚化，不是实心白条）。 */
 html.embed .hud .shuffle { background: rgba(255, 255, 255, .72); }
 
-/* ---- 5) 浮层里的弹窗要能在窗口里滚 ---- */
+/* ---- 6) 浮层里的弹窗要能在窗口里滚 ---- */
 html.embed .aicfg-mask {
   align-items: start;
   justify-items: center;
