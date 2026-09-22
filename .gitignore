@@ -15,3 +15,7 @@ site/.ai-config.json
 
 # 本地供应商覆盖（模板见 site/providers.local.example.json）
 providers.local.json
+
+# CRX 打包产物与私钥（pem 泄露 = 别人可伪造你的扩展，绝不入库）
+extension.pem
+extension.crx
