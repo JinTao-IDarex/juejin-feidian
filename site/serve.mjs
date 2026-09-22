@@ -267,6 +267,32 @@ function srvCacheSet(key, val) {
   roastSrvCache.set(key, Object.assign({ at: Date.now() }, val));
 }
 
+/* ---- 批量点评会话：把同一批的多次请求串成一场多轮对话 ----
+ * 键 = session id + 模型 + 协议 + 风格；值 = 已发生的 messages 历史。
+ * 扩展端（api.mjs）有一份逐字镜像，改这里记得同步那边。
+ * 内存里最多留 40 场、每场 5 分钟不动就淘汰 —— 会话只是「格式接续」的
+ * 载体，丢了也只是下一轮从头开一场，点评照常出。 */
+const AI_SESSION_TTL = 5 * 60_000;
+const AI_SESSION_MAX = 40;
+const aiSessions = new Map(); // sessionKey -> { at, messages: [{role, content}] }
+function aiSessionGet(key) {
+  if (aiSessions.size > AI_SESSION_MAX) {
+    const now = Date.now();
+    for (const [k, v] of aiSessions) {
+      if (now - v.at > AI_SESSION_TTL) aiSessions.delete(k);
+    }
+    while (aiSessions.size > AI_SESSION_MAX) {
+      aiSessions.delete(aiSessions.keys().next().value);
+    }
+  }
+  const s = aiSessions.get(key);
+  if (s) s.at = Date.now();
+  return s || null;
+}
+function aiSessionSet(key, messages) {
+  aiSessions.set(key, { at: Date.now(), messages });
+}
+
 async function handleApiRoast(req, res) {
   /* 浏览器（翻牌离开时）断开连接 → 同步取消上游请求，不占厂商配额。
    * 注意必须挂在 res 上判断 writableFinished：req 的 close 在请求体读完时就触发，
@@ -306,54 +332,101 @@ async function handleApiRoast(req, res) {
         else misses.push({ it, key });
       }
       /* 部分成功也要返回：已经命中缓存的那部分点评，不该因为剩余几条
-       * 失败就整批丢掉（前端拿不到就只能显示失败，白算一遍还推高请求数）。 */
-      let batchErr = null;
-      if (misses.length) {
+       * 失败就整批丢掉（前端拿不到就只能显示失败，白算一遍还推高请求数）。
+       *
+       * 队列逐轮发：每轮只送 5 条，且在【同一个对话】里接续 —— 上一轮的
+       * 问答原样入列 history，模型每轮都能看到自己之前用了什么输出格式，
+       * JSON 遵从率更高，也能吃到厂商的上下文缓存。单轮请求小而快
+       * （不易超时）、并发闸门保证任意时刻最多 2 个上游请求（不打爆限流）。
+       * 某轮失败就停下（不推进对话、不硬冲后续轮），前端重试从断点继续。 */
+      const TURN = 10;
+      /* 会话键：前端为每批生成一个 session id；模型/协议/风格任一变了
+       * 都是新对话，不能把旧格式的历史带进新任务 */
+      const sessKey = String(body.session || '').slice(0, 64) +
+        '|' + ai.model + '|' + ai.api + '|' + sysPrompt.slice(0, 40);
+      const sess = aiSessionGet(sessKey) || { messages: [] };
+      const errs = [];
+      let retryAfter = 0;   // 上游 429 时带出的等待秒数，透传给前端做精确退避
+      let rateLimited = false; // 命中厂商限流（429）
+      let timedOut = false;    // 单轮超时（前端据此拆半重试）
+      for (let off = 0; off < misses.length; off += TURN) {
+        const chunk = misses.slice(off, off + TURN);
+        let taken = false;
         try {
           if (!(await acquireSlot(10_000))) throw new Error('生成排队超时，稍后再试');
-          slotTaken = true;
-          const listText = misses
+          taken = true;
+          const listText = chunk
             .map((m, i) => (i + 1) + '. ' + (m.it.topic ? '【' + m.it.topic + '】' : '') + m.it.content)
             .join('\n');
+          /* 点评不需要更深的历史，只带最近 5 轮，控制上下文成本 */
+          const history = sess.messages.slice(-10);
           /* 请求形状（url / 头 / body）由 providers 按协议拼，
-           * 这里只给「system / user / 长度 / 采样温度」四样原料 */
+           * 这里只给「system / user / 长度 / 采样温度 / 历史」几样原料 */
           const q = providers.buildRequest(ai, {
             system: sysPrompt +
-              '\n本次给你 ' + misses.length + ' 条沸点（编号 1~' + misses.length + '）。' +
+              '\n本次给你 ' + chunk.length + ' 条沸点（编号 1~' + chunk.length + '）。' +
               '逐条各写一句点评，严格按编号顺序输出一个 JSON 字符串数组，' +
-              '数组长度必须等于 ' + misses.length + '。只输出 JSON 数组本身，' +
+              '数组长度必须等于 ' + chunk.length + '。只输出 JSON 数组本身，' +
               '不要代码块标记、不要编号、不要任何额外文字。',
             user: listText,
-            maxTokens: Math.min(8000, 160 * misses.length + 200),
-            temperature: 0.9,
+            maxTokens: Math.min(3000, 260 * chunk.length + 200),
+            temperature: 0.7,
+            history,
           });
+          /* 超时按组大小动态：8s 底 + 6s/条（10 条 = 68s），不再一刀切 */
+          const timeoutMs = Math.min(90_000, 8_000 + chunk.length * 6_000);
           const upstream = await fetch(q.url, {
             method: q.method,
             headers: q.headers,
             body: JSON.stringify(q.body),
-            signal: AbortSignal.any([clientGone.signal, AbortSignal.timeout(60_000)]),
+            signal: AbortSignal.any([clientGone.signal, AbortSignal.timeout(timeoutMs)]),
           });
+          if (upstream.status === 429) {
+            /* 厂商限流：把 Retry-After 带回前端，让它精确等待而不是盲猜 */
+            retryAfter = Number(upstream.headers.get('retry-after')) || 0;
+          }
           const data = await upstream.json().catch(() => ({}));
-          if (!upstream.ok) throw new Error(providers.parseError(ai, upstream.status, data));
+          if (!upstream.ok) {
+            const err = new Error(providers.parseError(ai, upstream.status, data));
+            if (upstream.status === 429) err.rateLimited = true;
+            throw err;
+          }
           const raw = providers.parseReply(ai, data).trim();
-          /* 容错提取 JSON 数组：有的模型爱包 ```json 代码块或在前后加废话 */
-          const mArr = raw.match(/\[[\s\S]*\]/);
-          if (!mArr) throw new Error('AI 未按要求返回 JSON 数组');
-          let arr;
-          try { arr = JSON.parse(mArr[0]); } catch { throw new Error('AI 返回的 JSON 无法解析'); }
-          if (!Array.isArray(arr)) throw new Error('AI 返回格式异常');
-          misses.forEach((mm, i) => {
+          /* 容错提取 JSON 数组（代码块 / 截断 / 纯文本都能救），见 providers.js */
+          const arr = providers.extractJsonArray(raw, chunk.length);
+          if (!arr) throw new Error(raw ? 'AI 未按要求返回 JSON 数组' : 'AI 返回了空内容');
+          chunk.forEach((mm, i) => {
             const t = String(arr[i] || '').trim().replace(/^["「『]+|["」』]+$/g, '');
             if (t) { roasts[mm.it.id] = t; srvCacheSet(mm.key, { roast: t }); }
           });
+          /* 成功才推进对话：本轮问答入列，下一轮接在同一段对话后面 */
+          sess.messages = history.concat([
+            { role: 'user', content: listText },
+            { role: 'assistant', content: raw.slice(0, 4000) },
+          ]);
+          aiSessionSet(sessKey, sess.messages);
         } catch (e) {
           /* 客户端主动断开（翻牌走了）就不回错误了——连接已关闭，写了也写不进去 */
           if (clientGone.signal.aborted) return;
-          batchErr = String((e && e.message) || e);
+          /* 错误分类透传（独立布尔字段，不污染文案）：前端据此选
+           * 「拆半重试 / 退避等待 / 放弃」 */
+          const isTimeout = e && (e.name === 'AbortError' || e.name === 'TimeoutError');
+          if (isTimeout) timedOut = true;
+          if (e && e.rateLimited) rateLimited = true;
+          errs.push(isTimeout
+            ? 'AI 接口超时（' + Math.round((8_000 + chunk.length * 6_000) / 1000) + 's）'
+            : String((e && e.message) || e));
+          break; // 队列等待语义：上游出问题就停下，别硬冲后面几轮
+        } finally {
+          if (taken) releaseSlot();
         }
       }
+      const batchErr = errs.length ? errs.join('；') : null;
       res.writeHead(200, { 'Content-Type': MIME['.json'], 'Cache-Control': 'no-store' });
-      res.end(JSON.stringify(batchErr ? { roasts, error: batchErr } : { roasts }));
+      res.end(JSON.stringify(batchErr
+        ? { roasts, error: batchErr, retryAfter: retryAfter || 0,
+            rateLimited: rateLimited || false, timedOut: timedOut || false }
+        : { roasts }));
       return;
     }
 
@@ -388,8 +461,11 @@ async function handleApiRoast(req, res) {
     });
     const data = await upstream.json().catch(() => ({}));
     if (!upstream.ok) throw new Error(providers.parseError(ai, upstream.status, data));
+    /* 正文为空时不给笼统的「返回了空内容」：有些网关（智谱 Coding Plan）把
+     * 路径错误包成 HTTP 200 + {"code":500,"msg":"404 NOT_FOUND"}，
+     * 错误真相在 body 里，交给 parseError 挖出来 */
     const roast = providers.parseReply(ai, data).trim().replace(/^["「『]+|["」』]+$/g, '');
-    if (!roast) throw new Error('AI 返回了空内容');
+    if (!roast) throw new Error(providers.parseError(ai, upstream.status, data) || 'AI 返回了空内容');
     srvCacheSet(cacheKey, { roast });
     res.writeHead(200, { 'Content-Type': MIME['.json'], 'Cache-Control': 'no-store' });
     res.end(JSON.stringify({ roast }));

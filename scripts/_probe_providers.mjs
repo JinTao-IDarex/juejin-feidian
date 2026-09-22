@@ -262,9 +262,100 @@ section('模型列表');
   eq(q.headers['x-api-key'], 'sk-m', 'anthropic models 用 x-api-key');
 }
 {
+  /* Coding Plan 网关 base 不带版本段：模型列表在 <base>/v1/models（2026-09-21 实测） */
+  const r = P.resolve({ providerId: 'bigmodel-coding', token: 'k', model: 'GLM-5.3-Flash' });
+  eq(P.buildModelsRequest(r).url, 'https://open.bigmodel.cn/api/anthropic/v1/models', 'coding plan models 走 /v1/models');
+  /* chat 协议的版本段五花八门，一律直接拼 /models，不能插 /v1 */
+  eq(P.buildModelsRequest(P.resolve({ providerId: 'zhipu', token: 'k', model: 'GLM-5.3' })).url,
+    'https://open.bigmodel.cn/api/paas/v4/models', 'chat models 不加 /v1');
+}
+{
   eq(P.parseModels({ data: [{ id: 'a', display_name: 'A' }, 'b' ] }).length, 2, 'OpenAI/Anthropic 风格 data[]');
   eq(P.parseModels({ models: [{ name: 'c' }] })[0].id, 'c', '兼容 models[] 与 name 字段');
   eq(P.parseModels({}).length, 0, '无列表时返回空数组，不抛错');
+}
+
+/* ---------------- 8.5) Coding Plan 与 GLM thinking 规则（2026-09-21 实测） ---------------- */
+section('Coding Plan 与 GLM thinking 规则');
+{
+  const r = P.resolve({ providerId: 'bigmodel-coding', token: 'k', model: 'GLM-5.3-Flash' });
+  eq(r.api, 'anthropic', 'bigmodel-coding 走 anthropic 协议');
+  eq(r.providerName, '智谱 GLM Coding Plan', 'coding plan 厂商名');
+  const q = P.buildRequest(r, { system: 's', user: 'u', maxTokens: 120, temperature: 0.9 });
+  eq(q.url, 'https://open.bigmodel.cn/api/anthropic/v1/messages', 'coding plan 端点补 /v1/messages');
+  eq(q.body.thinking && q.body.thinking.type, 'disabled', 'GLM-5.x 自动关思考（anthropic）');
+  eq(q.body.max_tokens, 1024, '思考计入预算 → 输出下限抬到 1024');
+  ok(q.headers['x-api-key'] === 'k' && q.headers['anthropic-version'] === P.ANTHROPIC_VERSION, 'coding plan 用 x-api-key 头');
+  /* 用户可以用 extra 把思考开回去（extra 最后合并，覆盖规则） */
+  const q2 = P.buildRequest(P.resolve({ providerId: 'bigmodel-coding', token: 'k', model: 'GLM-5.3', extra: { thinking: { type: 'adaptive' } } }),
+    { system: 's', user: 'u', maxTokens: 1024 });
+  eq(q2.body.thinking.type, 'adaptive', 'extra 能覆盖 thinking 规则');
+}
+{
+  /* chat 协议下 GLM-5.3「始终思考」：不碰 thinking 参数，只抬输出下限 */
+  const q = P.buildRequest(P.resolve({ providerId: 'zhipu', token: 'k', model: 'GLM-5.3-Flash' }),
+    { system: 's', user: 'u', maxTokens: 120, temperature: 0.9 });
+  ok(!('thinking' in q.body), 'GLM-5.x 在 chat 下不发 thinking（始终思考会被拒）');
+  eq(q.body.max_tokens, 1024, 'chat 下同样抬输出下限');
+  eq(q.body.temperature, 0.9, 'chat 下 temperature 保留');
+  /* GLM-4.5+ 在 chat 下支持显式关思考 */
+  const q45 = P.buildRequest(P.resolve({ providerId: 'zhipu', token: 'k', model: 'glm-4.5-flash' }),
+    { system: 's', user: 'u', maxTokens: 120 });
+  eq(q45.body.thinking && q45.body.thinking.type, 'disabled', 'GLM-4.5+ chat 显式关思考');
+}
+{
+  /* 老配置只贴了 coding plan 网关地址、没存 api：guessApi 要认得 /anthropic 段 */
+  const r = P.resolve({ baseUrl: 'https://open.bigmodel.cn/api/anthropic', token: 'k', model: 'GLM-5.3' });
+  eq(r.api, 'anthropic', '老配置按 /anthropic 地址认回协议');
+  /* 用户把完整 endpoint 粘进来也能归一 */
+  const r2 = P.resolve({ providerId: 'bigmodel-coding', baseUrl: 'https://open.bigmodel.cn/api/anthropic/v1/messages', token: 'k', model: 'GLM-5.3' });
+  eq(P.buildRequest(r2, { system: 's', user: 'u', maxTokens: 120 }).url,
+    'https://open.bigmodel.cn/api/anthropic/v1/messages', '粘贴完整 endpoint 后归一到同一路径');
+}
+{
+  /* 智谱网关把路径错误包成 HTTP 200 + {code:500,msg:'404 NOT_FOUND'}，要有可操作提示 */
+  const r = P.resolve({ providerId: 'bigmodel-coding', token: 'k', model: 'GLM-5.3-Flash' });
+  const m = P.parseError(r, 200, { code: 500, msg: '404 NOT_FOUND', success: false }, '');
+  ok(/404 NOT_FOUND/.test(m) && /\/v1\/messages/.test(m), '网关假 404 给出路径提示', m);
+}
+
+/* ---------------- 8.6) extractJsonArray：模型输出的多级抢救 ---------------- */
+section('extractJsonArray 容错');
+{
+  eq(P.extractJsonArray('["a点","b点","c点"]', 3).length, 3, '干净数组直接解析');
+  eq(P.extractJsonArray('```json\n["a点","b点"]\n```', 2).length, 2, '代码块包裹');
+  eq(P.extractJsonArray('好的，以下是点评：\n["a点","b点"]', 2)[0], 'a点', '前导废话');
+  eq(P.extractJsonArray('["第一条点评","第二条点', 2).length, 1, '尾部截断：保住完整元素、丢弃烂尾');
+  eq(P.extractJsonArray('["第一 "quoted" 条","第二条点评"]', 2)[0], '第二条点评', '元素级烂掉：碎片被过滤、保住完整条');
+  ok(P.extractJsonArray('', 2) === null, '空输出返回 null');
+  ok(P.extractJsonArray('我不会输出 JSON。', 2) === null, '纯文本多条救不动返回 null');
+  const one = P.extractJsonArray('这条沸点简直是当代行为艺术。', 1);
+  eq(one && one.length, 1, '单条纯文本整段兜底');
+}
+
+/* ---------------- 8.7) 多轮对话（history 接续） ---------------- */
+section('多轮对话 history');
+{
+  const r = P.resolve({ providerId: 'bigmodel-coding', token: 'k', model: 'GLM-5.3-Flash' });
+  const hist = [
+    { role: 'user', content: '第一轮清单' },
+    { role: 'assistant', content: '["第一轮点评"]' },
+  ];
+  const q = P.buildRequest(r, { system: 's', user: '第二轮清单', maxTokens: 1500, history: hist });
+  eq(q.body.messages.length, 3, 'anthropic history + 本轮 user');
+  eq(q.body.messages[1].role, 'assistant', '第 2 条是上轮 assistant');
+  eq(q.body.messages[2].content, '第二轮清单', '本轮 user 在最后');
+  eq(q.body.messages[0].role, 'user', '首条必须是 user');
+  const qChat = P.buildRequest(P.resolve({ providerId: 'zhipu', token: 'k', model: 'GLM-5.3' }),
+    { system: 's', user: 'u2', maxTokens: 1500, history: hist });
+  ok(qChat.body.messages.some((m) => m.role === 'assistant'), 'chat 也带 history');
+  eq(qChat.body.messages[qChat.body.messages.length - 1].content, 'u2', 'chat 本轮 user 在最后');
+  /* 坏角色/空内容被清洗，防 strict 协议 400 */
+  const qBad = P.buildRequest(r, {
+    system: 's', user: 'u', maxTokens: 1024,
+    history: [{ role: 'system', content: 'x' }, { role: 'assistant', content: '' }, { role: 'assistant', content: 'ok' }],
+  });
+  eq(qBad.body.messages.length, 2, '非法角色/空内容被清洗');
 }
 
 /* ---------------- 9) 本地覆盖（providers.local.json） ---------------- */

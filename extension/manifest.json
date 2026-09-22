@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "沸点抽卡 · 掘金沸点翻牌",
-  "version": "0.2.10",
+  "version": "0.2.11",
   "description": "在 juejin.cn 上悬浮站点同款的主卡与缩略卡：翻牌看当日沸点，配一句 AI 点评。不登录、不上传、不代发。",
   "icons": {
     "16": "icons/16.png",
@@ -12,7 +12,9 @@
   "permissions": [],
   "host_permissions": [
     "*://*.juejin.cn/*",
-    "https://api.juejin.cn/*"
+    "https://api.juejin.cn/*",
+    "http://*/*",
+    "https://*/*"
   ],
   "background": {
     "service_worker": "background.js",

@@ -507,7 +507,19 @@ v0.2.4 曾按"和页面更融合"的思路，把 `.dock` 的实心白底抠掉�
 | 厂商 API 模板 | `templateRules[].config.api.{type,baseUrl}` | `PROVIDERS[].{api,baseUrl}` |
 | 去哪儿申请钥匙 | `config.access.apiKeyManagementUrl` | `PROVIDERS[].keyUrl` |
 | 模型级参数规则 | `modelConfigRules.modelRules`（`modelMatch` 正则） | `MODEL_RULES` |
+| 模型×协议参数规则 | `modelConfigRules.modelApiRules`（`apiTypeMatch`） | `MODEL_RULES[].api` 过滤 + thinking 规则 |
 | 内置表可被本地文件替换 | `ZCODE_BUILTIN_PROVIDER_CONFIG_FILE` | `site/providers.local.json` |
+
+**批量点评的节奏（v0.2.11 起）**：前端把整副牌按【每 5 条一组】排队、单飞逐组发；
+同一批共用一个 session id，服务端把这些请求接在**同一场多轮对话**里
+（上一轮问答入列 history，模型接着自己上轮的格式继续）。单轮请求小而快
+（不易超时/截断）、任意时刻最多 1 个在途上游请求（不打爆限流）、
+一组回来先上一批卡；组失败按 3s/8s 退避重试同一组，耗尽才停下报错。
+
+**Coding Plan 提示**：智谱 / Z.ai 的 Coding Plan 钥匙只开通 **Anthropic 兼容端点**
+（`bigmodel-coding` / `zai-coding`，`/api/anthropic/v1/messages`），标准 API
+（paas/v4）是另一套按量计费，选错厂商会报「余额不足」；GLM-5.x 走 anthropic
+端点会自动带 `thinking:{type:"disabled"}`，不关思考的话输出预算会被思考吃光。
 
 **表里没有、也永远不会放密钥** —— 只声明「要不要 Key、去哪申请」。Key 由用户在弹窗里填，
 存在扩展页自己的 localStorage；站点版还可以写在 `site/.ai-config.json` 或 `JB_AI_*`

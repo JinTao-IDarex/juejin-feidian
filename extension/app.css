@@ -892,6 +892,46 @@ body.folded .fab{
   border-left:3px solid var(--blue);padding-left:10px;
 }
 
+/* ---- 批量点评进度圆环（在 .roast 里，AI 卡正中）----
+ * 结构：.ai-progress > .ringwrap( svg.ring + b.num 环心数字 ) + .hint 状态行
+ * 进度 = svg .ring-fg 的 stroke-dashoffset（由 ringSVG() 内联计算），
+ * 起点 rotate(-90deg) 钉在顶部，顺时针走。等待（限流/退避）时整环变琥珀。 */
+.roast .ai-progress{
+  display:flex;flex-direction:column;align-items:center;gap:8px;
+  padding:6px 0;width:100%;
+}
+.roast .ai-progress .ringwrap{position:relative;width:64px;height:64px}
+.roast .ai-progress .ring{width:64px;height:64px;display:block;transform:rotate(-90deg)}
+.roast .ai-progress .ring-bg{fill:none;stroke:var(--hair-2);stroke-width:4}
+.roast .ai-progress .ring-fg{
+  fill:none;stroke:var(--blue);stroke-width:4;stroke-linecap:round;
+  transition:stroke-dashoffset .6s ease;
+}
+.roast .ai-progress .num{
+  position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+  font-size:15px;font-weight:700;color:var(--ink);letter-spacing:-.02em;
+  font-variant-numeric:tabular-nums;
+}
+.roast .ai-progress .num i{font-style:normal;font-weight:500;font-size:11px;color:var(--ink-3)}
+.roast .ai-progress .hint{font-size:12px;color:#A8AEB8}
+/* 限流/退避等待：环变琥珀 + 呼吸，文案由 JS 换成「限流等待 Xs…」 */
+.roast .ai-progress.waiting .ring-fg{stroke:#F5A623;animation:aiWait 1.4s ease-in-out infinite}
+@keyframes aiWait{0%,100%{opacity:1}50%{opacity:.45}}
+
+/* ---- 批量点评失败态：明确告警，区别于「暂无点评」的灰字占位 ---- */
+.roast .ai-roast-fail{
+  display:inline-flex;align-items:center;gap:8px;
+  color:#D54941;background:#FDEEEE;
+  border:1px solid #F5C6C2;border-radius:10px;
+  padding:7px 11px;font-size:13px;line-height:1.4;
+}
+.roast .ai-roast-fail i.mark{
+  font-style:normal;flex:0 0 auto;
+  width:16px;height:16px;border-radius:99px;
+  display:inline-flex;align-items:center;justify-content:center;
+  background:#D54941;color:#fff;font-size:11px;font-weight:700;
+}
+
 /* ---- 点评风格弹窗：卡牌式选择 ---- */
 /* 风格弹窗：内容短，且 .style-grid 自带 max-height 滚动，所以退回 block 流，
  * 不走「头/底固定 + 中间滚动」那套骨架（它没有 .aicfg-body / .aicfg-ops）。 */

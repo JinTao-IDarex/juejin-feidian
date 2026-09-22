@@ -11,7 +11,14 @@
  *   templateRules[].config.access.apiKeyManagementUrl  PROVIDERS[].keyUrl  （钥匙去哪申请）
  *   templateRules[].config.builtinModelIds          PROVIDERS[].models     （候选，仅提示）
  *   modelConfigRules.modelRules（modelMatch 正则）   MODEL_RULES
+ *   modelConfigRules.modelApiRules（apiTypeMatch）  MODEL_RULES[].api 过滤
  *   config/provider/zcode-builtin.json 可被本地文件替换  → providers.local.json（在 serve.mjs 读，覆盖同 id 条目）
+ *
+ * 「一家厂商两条 templateRule」的拆法也照搬了：ZCode 把智谱拆成
+ * bigmodel-api（Coding Plan，anthropic-messages + /api/anthropic）和
+ * bigmodel-standard-api（openai-chat-completions + /api/paas/v4），因为
+ * **Coding Plan 的钥匙只开通了 Anthropic 兼容端点**，与按量付费的标准 API
+ * 是两套端点两套计费。这里同样拆成 bigmodel-coding / zhipu、zai-coding / zai。
  *
  * 三条硬规矩，都是 ZCode 那套的核心，别改：
  *
@@ -53,7 +60,7 @@
   'use strict';
 
   var SCHEMA = 1; // 表结构版本；字段增删要 +1（对齐 schemaVersion）
-  var REV = 1;    // 表内容修订号；加厂商/改规则请 +1（对齐 revision）
+  var REV = 2;    // 表内容修订号；加厂商/改规则请 +1（对齐 revision）
 
   var ANTHROPIC_VERSION = '2023-06-01';
 
@@ -69,8 +76,8 @@
       note: 'OpenAI 新接口，推理模型官方推荐；Codex 系列只能用这个',
     },
     {
-      id: 'anthropic', name: 'Anthropic Messages', path: '/messages',
-      note: 'Claude 原生协议（x-api-key + anthropic-version）',
+      id: 'anthropic', name: 'Anthropic Messages', path: '/v1/messages',
+      note: 'Claude 原生协议（x-api-key + anthropic-version）；国内 Coding Plan（智谱/Z.ai/Kimi 等）兼容端点也是它',
     },
   ];
   var API_IDS = ['chat', 'responses', 'anthropic'];
@@ -97,14 +104,36 @@
     {
       id: 'moonshot', name: '月之暗面 Kimi', api: 'chat',
       baseUrl: 'https://api.moonshot.cn/v1',
-      keyUrl: 'https://platform.moonshot.cn/console/api-keys',
-      models: ['kimi-k2-turbo-preview', 'moonshot-v1-8k'],
+      keyUrl: 'https://platform.kimi.com/console/api-keys',
+      models: ['kimi-k3', 'kimi-k2.7-code', 'kimi-k2-turbo-preview', 'moonshot-v1-8k'],
+    },
+    /* 智谱按 ZCode 的拆法分两条：Coding Plan 的钥匙只开通 Anthropic 兼容端点
+     * （实测 2026-09-21：同一把钥匙打 paas/v4 会报「余额不足或无可用资源包」），
+     * 标准 API 是另一套按量计费。条目顺序 = 弹窗下拉顺序，Coding Plan 放最前。 */
+    {
+      id: 'bigmodel-coding', name: '智谱 GLM Coding Plan', api: 'anthropic',
+      baseUrl: 'https://open.bigmodel.cn/api/anthropic',
+      keyUrl: 'https://bigmodel.cn/coding-plan/personal/overview',
+      models: ['GLM-5.3', 'GLM-5.3-Flash', 'GLM-5.3-FlashX'],
+      note: 'Coding Plan 钥匙只通 Anthropic 兼容端点；模型可用 /models 接口拉取',
     },
     {
-      id: 'zhipu', name: '智谱 GLM', api: 'chat',
+      id: 'zhipu', name: '智谱 BigModel API', api: 'chat',
       baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
-      keyUrl: 'https://open.bigmodel.cn/usercenter/apikeys',
-      models: ['glm-4.5-flash', 'glm-4-plus'],
+      keyUrl: 'https://bigmodel.cn/usercenter/proj-mgmt/apikeys',
+      models: ['GLM-5.3-Flash', 'GLM-5.3', 'GLM-4.7-Flash', 'GLM-4.6', 'glm-4.5-flash'],
+    },
+    {
+      id: 'zai-coding', name: 'Z.ai Coding Plan', api: 'anthropic',
+      baseUrl: 'https://api.z.ai/api/anthropic',
+      keyUrl: 'https://z.ai/manage-apikey/apikey-list',
+      models: ['GLM-5.3', 'GLM-5.3-Flash', 'GLM-5.3-FlashX'],
+    },
+    {
+      id: 'zai', name: 'Z.ai API', api: 'chat',
+      baseUrl: 'https://api.z.ai/api/paas/v4',
+      keyUrl: 'https://z.ai/manage-apikey/apikey-list',
+      models: ['GLM-5.3', 'GLM-5.3-Flash', 'GLM-4.7'],
     },
     {
       id: 'dashscope', name: '阿里百炼（通义）', api: 'chat',
@@ -164,14 +193,18 @@
     },
   ];
 
-  /* ---------------- 模型级规则（对应 modelApiRules） ----------------
+  /* ---------------- 模型级规则（对应 modelRules + modelApiRules） ----------------
    * match     模型名的正则
+   * api       协议过滤（对应 modelApiRules 的 apiTypeMatch）：
+   *             省略 = 任意协议都生效；写了 = 只有最终协议对上才参与参数改写
    * api       协议覆盖：
    *             apiForce = 硬约束，压过 provider 的声明（否则接口直接 404）
    *             apiHint  = 弱暗示，只在 provider 没声明协议时生效
    * params    dropTemperature  不传 temperature（传了会被拒或行为异常）
    *             tokenParam        chat 协议下输出上限的字段名
    *             minOutput        输出上限的下限值（推理模型专治「正文被思考挤空」）
+   *             thinkingDisabled  显式带上 thinking:{type:'disabled'} 关思考
+   *             thinkingLocked   该模型「始终思考」、不接受关闭（只提示，不碰参数）
    * why       依据（写清楚，别留"据说"）
    */
   var MODEL_RULES = [
@@ -203,6 +236,30 @@
       dropTemperature: true, minOutput: 1024,
       why: '推理型模型对采样参数普遍不敏感或直接拒绝，不传最稳',
     },
+
+    /* ---- GLM-5.x（实测 2026-09-21，Coding Plan 钥匙）----
+     * ① Anthropic 兼容端点默认开「思考」且思考计入 max_tokens：不关时 120 的
+     *    预算被 thinking 块整个吃掉（stop_reason=max_tokens、正文为空），
+     *    所以自动带 thinking:{type:'disabled'}（用户可用 extra 覆盖回去）。
+     *    这与 ZCode 对 anthropic-messages 协议默认下发 thinking:disabled 一致。
+     * ② 标准端点（paas/v4）上 GLM-5.3-Flash 这类模型「始终思考」、直接拒绝
+     *    disabled（错误 1210：「请使用 low、high 或 max」），所以 chat 协议下
+     *    不碰 thinking 参数，只抬输出下限，正文靠 reasoning_content 兜底。 */
+    {
+      match: /^glm-5/i, api: 'anthropic',
+      thinkingDisabled: true, minOutput: 1024,
+      why: 'GLM-5.x 走 Anthropic 端点默认开思考且计入 max_tokens，不关会把小预算吃空（实测复现）',
+    },
+    {
+      match: /^glm-5/i, api: 'chat',
+      thinkingLocked: true, minOutput: 1024,
+      why: 'GLM-5.x 在标准端点始终思考（关掉会被拒），只抬输出下限并从 reasoning_content 兜底',
+    },
+    {
+      match: /^glm-4\.[5-9]|^glm-4v/i, api: 'chat',
+      thinkingDisabled: true,
+      why: 'GLM-4.5+ 混合推理模型支持 thinking:{type:"disabled"}，显式关掉省输出预算（官方文档参数）',
+    },
   ];
 
   /* ---------------- 基础工具 ---------------- */
@@ -216,7 +273,7 @@
     /* 用户常把完整 endpoint 直接贴进来（…/v1/chat/completions），剥掉后缀。
      * 各家版本段五花八门（/v1、/api/paas/v4、/api/v3、/compatible-mode/v1），
      * 所以除了下面那条 OpenAI 特例，一律不猜、不自动补版本段。 */
-    s = s.replace(/\/(chat\/completions|responses|messages|completions)$/i, '');
+    s = s.replace(/\/(v1\/)?(chat\/completions|responses|messages|completions)$/i, '');
     s = s.replace(/\/+$/, '');
     if (/^https?:\/\/api\.openai\.com$/i.test(s)) s += '/v1';
     return s;
@@ -251,18 +308,26 @@
     return out;
   }
 
-  function modelRule(model) {
+  /* api 传入「最终协议」：带 api 过滤的规则只在协议对上时参与参数改写；
+   * apiForce / apiHint 不受过滤影响 —— 它们是协议本身的来源，必须先参与计算。 */
+  function modelRule(model, api) {
     var m = String(model || '');
-    var out = { dropTemperature: false, tokenParam: '', apiForce: '', apiHint: '', minOutput: 0, why: [] };
+    var out = {
+      dropTemperature: false, tokenParam: '', apiForce: '', apiHint: '',
+      minOutput: 0, thinkingDisabled: false, thinkingLocked: false, why: [],
+    };
     if (!m) return out;
     for (var i = 0; i < MODEL_RULES.length; i++) {
       var r = MODEL_RULES[i];
       if (!r.match.test(m)) continue;
-      if (r.dropTemperature) out.dropTemperature = true;
-      if (r.tokenParam && !out.tokenParam) out.tokenParam = r.tokenParam;
       if (r.apiForce && !out.apiForce) out.apiForce = r.apiForce;
       if (r.apiHint && !out.apiHint) out.apiHint = r.apiHint;
+      if (r.api && r.api !== api) continue;
+      if (r.dropTemperature) out.dropTemperature = true;
+      if (r.tokenParam && !out.tokenParam) out.tokenParam = r.tokenParam;
       if (r.minOutput > out.minOutput) out.minOutput = r.minOutput;
+      if (r.thinkingDisabled) out.thinkingDisabled = true;
+      if (r.thinkingLocked) out.thinkingLocked = true;
       if (r.why) out.why.push(r.why);
     }
     return out;
@@ -271,7 +336,8 @@
   /* 老配置没有 api 字段时的兜底判断（向后兼容用） */
   function guessApi(model, baseUrl) {
     var m = String(model || ''), b = String(baseUrl || '');
-    if (/anthropic\.com|\/messages$/i.test(b)) return 'anthropic';
+    /* Coding Plan 网关的 baseUrl 都带 /anthropic 段，老配置靠它认回协议 */
+    if (/anthropic|\/messages$/i.test(b)) return 'anthropic';
     if (/^claude/i.test(m)) return 'anthropic';
     return 'chat';
   }
@@ -296,6 +362,8 @@
      * 因为压不过去就是直接 404 —— 那是错误，不是选择。 */
     var api = String(cfg.api || '') || rule.apiForce || (p && p.api) || rule.apiHint || guessApi(model, baseUrl);
     if (API_IDS.indexOf(api) < 0) api = 'chat';
+    /* 协议定下来后再取一次规则：带 api 过滤的 thinking / 输出规则依赖最终协议 */
+    rule = modelRule(model, api);
     if (rule.apiForce && cfg.api && cfg.api !== rule.apiForce) {
       warnings.push('这个模型通常只支持 ' + rule.apiForce + ' 协议，已在按 ' + cfg.api + ' 发送，若报 404 请改回');
     }
@@ -333,8 +401,11 @@
   function clamp(n, lo, hi) { return n < lo ? lo : (n > hi ? hi : n); }
 
   /* ---------------- 组装请求 ----------------
-   * opts: { system, user, maxTokens, temperature }
-   * 返回 { url, method, headers, body }，直接喂给 fetch 即可。
+   * opts: { system, user, maxTokens, temperature, history }
+   * history 多轮对话的既往消息（[{role:'user'|'assistant', content}]，不含本轮
+   * user）—— 批量点评的「同一对话逐轮接续」靠它把上一轮的问答带给模型，
+   * 格式更稳，也能吃到厂商的上下文缓存。返回 { url, method, headers, body }，
+   * 直接喂给 fetch 即可。
    */
   function buildRequest(r, opts) {
     opts = opts || {};
@@ -342,6 +413,18 @@
     var user = String(opts.user || '');
     var maxTokens = Number(opts.maxTokens) || 0;
     var hasTemp = (typeof opts.temperature === 'number');
+    /* 只认 user/assistant 两种角色：别的角色（如 system）与空内容一律丢弃，
+     * 混进去会让 strict 协议（anthropic 要求 user/assistant 严格交替）直接 400 */
+    var history = [];
+    if (Array.isArray(opts.history)) {
+      for (var hi = 0; hi < opts.history.length; hi++) {
+        var hm = opts.history[hi] || {};
+        var hr = String(hm.role || '').toLowerCase();
+        if (hr !== 'user' && hr !== 'assistant') continue;
+        var hc = String(hm.content || '');
+        if (hc) history.push({ role: hr, content: hc });
+      }
+    }
     var rule = r.rule || {};
     /* 推理模型去掉 temperature —— 不是设成 1，是整个字段不出现 */
     var keepTemp = hasTemp && !rule.dropTemperature;
@@ -354,13 +437,20 @@
     var url;
 
     if (r.api === 'anthropic') {
-      url = r.baseUrl + '/messages';
+      /* Claude Code 系的路径约定：baseUrl 自带版本段（…/v1）时端点是 <base>/messages，
+       * 不带时（智谱 /api/anthropic、Z.ai /api/anthropic、Kimi /anthropic 这类
+       * Coding Plan 网关）真实路径是 <base>/v1/messages —— 实测 2026-09-21：
+       * 打 /api/anthropic/messages 会被网关以 HTTP 200 包一层 {"code":500} 的假 404。 */
+      url = r.baseUrl + (/\/v1$/i.test(r.baseUrl) ? '/messages' : '/v1/messages');
       headers['x-api-key'] = r.token;
       headers['anthropic-version'] = ANTHROPIC_VERSION;
       /* max_tokens 是必填项，缺了直接 400，所以这里一定要给值 */
       body.max_tokens = maxTokens || 1024;
+      if (rule.thinkingDisabled) body.thinking = { type: 'disabled' };
       if (sys) body.system = sys;
-      body.messages = [{ role: 'user', content: user }];
+      /* messages 必须严格 user/assistant 交替：history 末尾若是 assistant，
+       * 正好接本轮 user；空 history 则本轮 user 就是第一条 */
+      body.messages = history.concat([{ role: 'user', content: user }]);
       if (keepTemp) body.temperature = clamp(opts.temperature, 0, 1);
     } else if (r.api === 'responses') {
       url = r.baseUrl + '/responses';
@@ -368,7 +458,7 @@
       /* Responses 用 instructions 承载 system，用 input 承载对话，
        * 输出上限叫 max_output_tokens（不是 max_tokens） */
       if (sys) body.instructions = sys;
-      body.input = [{ role: 'user', content: user }];
+      body.input = history.concat([{ role: 'user', content: user }]);
       body.max_output_tokens = maxTokens || 4096;
       if (keepTemp) body.temperature = clamp(opts.temperature, 0, 2);
     } else {
@@ -376,9 +466,13 @@
       headers.authorization = 'Bearer ' + r.token;
       body.messages = [];
       if (sys) body.messages.push({ role: 'system', content: sys });
+      body.messages = body.messages.concat(history);
       body.messages.push({ role: 'user', content: user });
       if (maxTokens) body[rule.tokenParam || 'max_tokens'] = maxTokens;
       if (keepTemp) body.temperature = clamp(opts.temperature, 0, 2);
+      /* GLM-4.5+ 混合推理模型支持显式关思考（省输出预算）；
+       * 「始终思考」的 GLM-5.x 在 chat 下命中 thinkingLocked 规则，不会走到这里 */
+      if (rule.thinkingDisabled) body.thinking = { type: 'disabled' };
     }
 
     /* 逃生舱：模型规则没覆盖到的怪参数，让用户自己塞（对应 modelApiRules 的 config） */
@@ -436,6 +530,39 @@
     return text;
   }
 
+  /* ---------------- 模型 JSON 数组输出的容错提取 ----------------
+   * 批量点评要求模型「只输出一个 JSON 字符串数组」，但模型偶发不守格式：
+   * 包 ```json 代码块、前后加废话、输出预算耗尽把数组截断、甚至直接回纯文本。
+   * 逐级抢救，实在救不动返回 null：
+   *   1) 抓 [...] 整体 JSON.parse          —— 覆盖代码块 / 前后废话
+   *   2) 只有 [ 没闭合，补 ] 再 parse      —— 覆盖数组尾部截断（max_tokens 掐断）
+   *   3) 抓所有成对双引号字符串按顺序取    —— 覆盖元素级烂掉；过滤 <4 字的
+   *                                           碎片，防止把前导废话当点评
+   *   4) want===1 时整段当一个字符串       —— 模型把单条任务当普通问答答了
+   * want = 这批应有几条，仅第 4 级用它。
+   */
+  function extractJsonArray(raw, want) {
+    var s = String(raw || '').trim();
+    if (!s) return null;
+    var m = s.match(/\[[\s\S]*\]/);
+    if (m) { try { var a = JSON.parse(m[0]); if (Array.isArray(a)) return a; } catch (e) { /* 落到下一级 */ } }
+    var m2 = s.match(/\[[\s\S]*/);
+    if (m2) { try { var b = JSON.parse(m2[0] + ']'); if (Array.isArray(b)) return b; } catch (e) { /* 落到下一级 */ } }
+    var strs = [];
+    var re = /"((?:[^"\\]|\\.)*)"/g;
+    var mm;
+    while ((mm = re.exec(s))) {
+      if (mm[1].length < 4) continue;
+      try { strs.push(JSON.parse('"' + mm[1] + '"')); } catch (e) { /* 坏转义跳过 */ }
+    }
+    if (strs.length) return strs;
+    if (want === 1) {
+      var t = s.replace(/^["「『]+|["」』]+$/g, '').trim();
+      if (t) return [t];
+    }
+    return null;
+  }
+
   /* ---------------- 错误翻译 ----------------
    * 上游原文照旧带出来（排障要靠它），只补一句可操作的提示。
    */
@@ -453,6 +580,11 @@
     else if (http === 404) hint = '（接口地址或模型名不对：多数厂商的 baseUrl 要以 /v1 结尾，模型名要与厂商文档一致）';
     else if (http === 429) hint = '（触发限流或余额不足）';
     else if (http >= 500) hint = '（上游服务故障，稍后重试）';
+    /* 智谱等 Coding Plan 网关会把路径错误包成 HTTP 200 + {"code":500,"msg":"404 NOT_FOUND"}，
+     * 走不到上面的状态码分支，只能看正文 */
+    else if (/404|not_found/i.test(msg) && r && r.api === 'anthropic') {
+      hint = '（Anthropic 兼容端点路径不对：真实路径是 <baseUrl>/v1/messages，检查 baseUrl 是否完整）';
+    }
 
     return (msg || ('HTTP ' + http)) + hint;
   }
@@ -460,6 +592,11 @@
   /* ---------------- 模型列表（可选的便利功能） ---------------- */
 
   function buildModelsRequest(r) {
+    /* 与 /messages 同一条路径约定，但只对 anthropic 协议启用：Coding Plan 网关的
+     * base 不带版本段，模型列表在 <base>/v1/models（智谱 Coding Plan 实测 2026-09-21
+     * 可用，返回 GLM-4.5 ~ GLM-5.3 全系）。chat 协议的版本段五花八门
+     * （/v1、/api/v3、/compatible-mode/v1），一律直接拼 /models。 */
+    var path = (r.api === 'anthropic' && !/\/v1$/i.test(r.baseUrl)) ? '/v1/models' : '/models';
     var headers = {};
     if (r.api === 'anthropic') {
       headers['x-api-key'] = r.token;
@@ -467,7 +604,7 @@
     } else {
       headers.authorization = 'Bearer ' + r.token;
     }
-    return { url: r.baseUrl + '/models', method: 'GET', headers: headers };
+    return { url: r.baseUrl + path, method: 'GET', headers: headers };
   }
 
   function parseModels(data) {
@@ -502,6 +639,7 @@
     describe: describe,
     buildRequest: buildRequest,
     parseReply: parseReply,
+    extractJsonArray: extractJsonArray,
     parseError: parseError,
     buildModelsRequest: buildModelsRequest,
     parseModels: parseModels,

@@ -486,14 +486,38 @@
   }
 
   /* AI 点评的正文（三种状态：已生成 / 批量进行中 / 内置占位） */
+  /* 批量进度圆环（SVG）：r=20 → 周长 2πr≈125.66，
+   * stroke-dashoffset = 周长 ×(1-进度)，起点经 CSS rotate(-90deg) 钉在圆环顶部 */
+  function ringSVG(done, total) {
+    var C = 125.66;
+    var pct = total > 0 ? Math.min(1, done / total) : 0;
+    var off = (C * (1 - pct)).toFixed(1);
+    return '<svg class="ring" viewBox="0 0 48 48" aria-hidden="true">' +
+      '<circle class="ring-bg" cx="24" cy="24" r="20"/>' +
+      '<circle class="ring-fg" cx="24" cy="24" r="20"' +
+      ' stroke-dasharray="' + C + '" stroke-dashoffset="' + off + '"/>' +
+      '</svg>';
+  }
+
   function roastBodyHTML(p) {
     var r = roastFor(p);
     if (r.loading) {
-      return batchCtl
-        ? '<span class="ai-loading"><i class="spin"></i>AI 正在一次性点评 ' +
-          batchCtl.total + ' 条 · 已等 ' +
-          Math.round((Date.now() - batchCtl.start) / 1000) + 's</span>'
-        : '<span class="ai-loading"><i class="dot"></i><i class="dot"></i><i class="dot"></i>AI 正在看这条沸点…</span>';
+      if (batchCtl) {
+        /* 批量进度圆环：环=整体进度，环心=已评条数；
+         * 限流/退避等待时环变琥珀色、提示剩余等待秒数 —— 让「卡住」变成可见的等待 */
+        var waitS = batchCtl.waitingUntil
+          ? Math.ceil((batchCtl.waitingUntil - Date.now()) / 1000) : 0;
+        return '<span class="ai-progress' + (waitS > 0 ? ' waiting' : '') + '">' +
+          '<span class="ringwrap">' + ringSVG(batchCtl.done, batchCtl.total) +
+          '<b class="num">' + batchCtl.done + '<i>/' + batchCtl.total + '</i></b></span>' +
+          '<span class="hint">' + (waitS > 0 ? '限流等待 ' + waitS + 's…' : 'AI 正在逐批点评…') + '</span>' +
+          '</span>';
+      }
+      return '<span class="ai-loading"><i class="dot"></i><i class="dot"></i><i class="dot"></i>AI 正在看这条沸点…</span>';
+    }
+    /* 明确的失败态：这批评失败了（30s 冷却后可洗牌重试），区别于「暂无点评」 */
+    if (r.failed) {
+      return '<span class="ai-roast-fail"><i class="mark">!</i>这批 AI 点评失败了 · 点「洗牌」重试</span>';
     }
     return '<span' + (r.live ? ' class="roast-live"' : '') + '>' + esc(r.text) + '</span>';
   }
@@ -770,8 +794,10 @@
    * 批量生成——逐条补点评会按牌数产生 N 次请求，是限流的主要来源。 */
   function roastFor(p) {
     if (aiCfg) {
-      if (roastCache[p.id]) return { text: roastCache[p.id], live: true };
+      if (roastCache[p.id] && String(roastCache[p.id]).trim()) return { text: roastCache[p.id], live: true };
       if (batchCtl) return { loading: true };
+      /* 30s 内失败过 → 明确的失败态，不再和「暂无点评」混为一谈 */
+      if (roastFail[p.id] && Date.now() - roastFail[p.id] < 30000) return { failed: true };
       return { text: p.roast || '（这条暂无 AI 点评，可点「洗牌」重试）', live: false };
     }
     return { text: p.roast || '（这条还没配点评）', live: false };
@@ -803,18 +829,23 @@
    * 没评到的牌显示内置点评/占位文案，点「洗牌」即可重新批量补齐。 */
 
   /* ---------------- 批量点评（唯一的点评生成路径） ----------------
-   * 一次动作把当前所有还没点评过的牌全部生成完（启动 / 洗牌 / 换配置 /
-   * 换风格后自动触发）。整副牌打包发给 /api/roast，服务端拼成【一次】
-   * 上游调用、JSON 数组一次拿回——请求数与牌数无关，天然避开限流。
-   * 失败或部分失败都不逐条补打，见 startBatch()。 */
+   * 一次动作把当前所有还没点评过的牌生成完（启动 / 洗牌 / 换配置 /
+   * 换风格后自动触发）。自适应单飞流水线：
+   *  · 任意时刻最多 1 个在途请求 —— 并发限流从根上不可能触发；
+   *  · 批次大小自适应（AIMD）：首批 3 条快速首显，连续成功逐次加大
+   *    （3→5→7→10），遇到限流/超时减半 —— 快时少请求、慢时不超时；
+   *  · 限流（429）按服务端透传的 retryAfter 精确等待（指数退避兜底 +
+   *    随机抖动），等待期间进度条显示「限流等待 Xs」；
+   *  · 超时把该组拆半重试（后半塞回队首），拆到单条仍超时才放弃；
+   *  · 同一批共用一个 session id，服务端把这些请求串成一场多轮对话，
+   *    模型每轮都接着自己上一轮的格式继续，输出更稳、吃到上下文缓存；
+   *  · 翻到未点评的牌 → 该牌插到队列队首（当前牌优先），见 prioritizePin。 */
 
   /* 逐条兜底已取消。
    * ----------------------------------------------------------------
    * 原实现：批量失败后 runSerial() 把队列逐条重打一遍 /api/roast
-   * （间隔 300ms、限流退避 2.8s）。串行虽然不会打爆并发配额，
-   * 但请求数仍然等于牌数——一次洗牌失败就会产生 N 次请求，
-   * 既慢又正好踩在服务商的「短时间请求数」限流上。
-   * 现在批量失败就如实失败：提示用户，重试入口是「洗牌」（会重新批量）。 */
+   * （间隔 300ms、限流退避 2.8s）。请求数等于牌数，正好踩在服务商的
+   * 「短时间请求数」限流上。现在失败只记 30s 负缓存，随批自动跳过。 */
 
   /* 就地刷新「AI 点评」那一张的正文（批量进度变化 / 点评已生成时）。
    * 只动第 1 张的 .roast，【不重建整块面板】—— 重建会把用户正在读的
@@ -833,15 +864,24 @@
     if (batchTicker) { clearInterval(batchTicker); batchTicker = null; }
   }
 
-  /* 把整副牌里「还没点评」的牌打包成【一次】请求交给 /api/roast。
+  /* 翻到未点评的牌时把它插到批量队列队首 —— 用户翻牌的动作本身就是
+   * 优先级信号。只在批量进行中生效；批间（batchCtl 为空）无需处理，
+   * 下一批自然会带上它。 */
+  function prioritizePin(pinId) {
+    if (!batchCtl || !batchCtl.queue || !pinId) return;
+    var q = batchCtl.queue;
+    for (var i = 0; i < q.length; i++) {
+      if (q[i] && q[i].id === pinId) {
+        if (i > 0) q.unshift(q.splice(i, 1)[0]);
+        return;
+      }
+    }
+  }
+
+  /* 把整副牌里「还没点评」的牌按自适应批次排队、单飞逐组发。
    * ----------------------------------------------------------------
-   * 这是全站唯一的点评生成路径：不逐条、不并发、不重试单条。
-   * 服务端把这一批拼成一次上游调用、JSON 数组一次拿回，
-   * 所以「一次洗牌 = 最多一次 AI 请求」，从根上避开限流。
-   *
+   * 这是全站唯一的点评生成路径：不逐条、不并发。
    * force=true —— 抢占：洗牌 / 换配置 / 换风格时必须传。
-   *   否则会被进行中的旧批量挡住（`if (batchCtl) return`），
-   *   新牌堆永远评不上，翻牌时又只能靠单条凑——正是要消除的场景。
    * force=false —— 幂等：同一批的重复触发直接忽略。 */
   function startBatch(force) {
     if (!aiCfg) return;
@@ -852,59 +892,181 @@
     var queue = [];
     for (var i = 0; i < S.order.length; i++) {
       var p = PINS[S.order[i]];
-      if (!p || roastCache[p.id]) continue;
+      if (!p) continue;
+      /* 已有有效点评的跳过（空字符串不算有效） */
+      if (roastCache[p.id] && String(roastCache[p.id]).trim()) continue;
+      /* 30 秒内失败过的也跳过，避免频繁重试打爆限流 */
       if (roastFail[p.id] && Date.now() - roastFail[p.id] < 30000) continue;
       queue.push(p);
     }
-    if (!queue.length) return;
+    if (!queue.length) {
+      /* 全是无效空缓存就清掉重跑；否则如实告诉用户卡在哪 */
+      var hasEmptyCache = false;
+      for (var i = 0; i < S.order.length; i++) {
+        var p = PINS[S.order[i]];
+        if (p && roastCache[p.id] && !String(roastCache[p.id]).trim()) {
+          delete roastCache[p.id];
+          hasEmptyCache = true;
+        }
+      }
+      if (hasEmptyCache) {
+        toast('清空无效缓存，重新获取 AI 点评…');
+        startBatch(true);
+        return;
+      }
+      var cooling = false;
+      for (var i = 0; i < S.order.length; i++) {
+        var p = PINS[S.order[i]];
+        if (p && !roastCache[p.id] && roastFail[p.id] && Date.now() - roastFail[p.id] < 30000) { cooling = true; break; }
+      }
+      toast(cooling ? 'AI 点评刚失败过，请等 30 秒后再点「洗牌」重试' : '所有沸点已有 AI 点评');
+      return;
+    }
     var myId = ++batchSeq;
-    batchCtl = { id: myId, total: queue.length, start: Date.now() };
+    /* 本批的会话 id：服务端把同一批的多组请求串成一场多轮对话
+     * （换模型/换风格时服务端会按配置另开新对话，前端无需感知） */
+    var session = 'b' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
+    batchCtl = { id: myId, total: queue.length, done: 0, start: Date.now(), queue: queue, waitingUntil: 0 };
     refreshAiCard();
-    /* 单次请求可能等十几秒，每秒刷一次「已等 Xs」让等待可感知 */
+    /* 每秒刷一次进度（n/total + 等待/限流状态）让等待可感知 */
     batchTicker = setInterval(function () {
       if (batchCtl && batchCtl.id === myId) refreshAiCard();
     }, 1000);
-    fetch('/api/roast', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        /* providerId / api / extra 一并交给服务端：协议由 providers.js 判定，
-         * 前端只负责如实上报「用户选了什么」 */
-        providerId: aiCfg.providerId || '', api: aiCfg.api || '',
-        baseUrl: aiCfg.baseUrl, token: aiCfg.token, model: aiCfg.model,
-        extra: aiCfg.extra || null,
-        prompt: currentStyle().prompt,
-        items: queue.map(function (p) { return { id: p.id, content: p.content, topic: p.topic }; }),
-      }),
-    })
-      .then(parseRoastRes)
-      .then(function (res) {
-        if (!batchCtl || batchCtl.id !== myId) return; // 已被取消/替换
-        var d = res.d || {};
-        /* 服务端可能「部分成功」：已算好的 roasts 会连同 error 一起回来 */
-        if (!d.roasts) throw new Error(d.error || 'AI 接口异常');
-        var got = d.roasts;
-        var okCount = 0;
-        for (var i = 0; i < queue.length; i++) {
-          var p = queue[i];
-          if (got[p.id]) { roastCache[p.id] = got[p.id]; delete roastFail[p.id]; okCount++; }
-          else roastFail[p.id] = Date.now(); // 模型漏答的记负缓存，30s 后可重试
-        }
-        stopBatch();
-        refreshAiCard();
-        if (d.error) {
-          toast('AI 点评完成 ' + okCount + '/' + queue.length + ' 条 · 其余未成功：' + d.error);
-        } else {
-          toast('AI 批量点评完成 · ' + okCount + '/' + queue.length + ' 条');
-        }
+
+    var okCount = 0;
+    var failCount = 0;
+    /* AIMD 批次：首批小（快速首显），成功 +2（上限 10），限流/超时减半 */
+    var MAXB = 10, MINB = 2;
+    var batchN = 3;
+    /* 各类重试上限：限流等待可以久（厂商说了算），其他错误快速放弃 */
+    var MAX_RATE_ATTEMPTS = 6;
+    var MAX_ERR_ATTEMPTS = 2;
+
+    function grow() { batchN = Math.min(MAXB, batchN + 2); }
+    function shrink() { batchN = Math.max(MINB, Math.ceil(batchN / 2)); }
+    function markFail(p) { roastFail[p.id] = Date.now(); }
+
+    function fill(res, group) {
+      var d = res.d || {};
+      var got = (res.ok && d.roasts) || {};
+      for (var i = 0; i < group.length; i++) {
+        var p = group[i];
+        if (got[p.id]) { roastCache[p.id] = got[p.id]; delete roastFail[p.id]; okCount++; }
+        else { markFail(p); failCount++; } // 模型漏答记负缓存，30s 后可重试
+      }
+    }
+
+    function finish(msg) {
+      stopBatch();
+      refreshAiCard();
+      if (msg) toast(msg);
+      else if (okCount) toast('AI 批量点评完成 · ' + okCount + ' 条' +
+        (failCount ? ('（' + failCount + ' 条未成功，稍后洗牌可补）') : ''));
+    }
+
+    /* 队列单飞主循环：发一组 → 分类处理结果 → 成功则加大批次继续。
+     * group 为空表示从队列取新一批；重试走同一 group 原样再发。 */
+    (function next(group, attempt) {
+      if (!batchCtl || batchCtl.id !== myId) return; // 已被抢占/清配置
+      if (!group) group = queue.splice(0, batchN);
+      if (!group.length) { finish(); return; }
+
+      fetch('/api/roast', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          /* providerId / api / extra 一并交给服务端：协议由 providers.js 判定，
+           * 前端只负责如实上报「用户选了什么」；session 让服务端接续同一对话 */
+          providerId: aiCfg.providerId || '', api: aiCfg.api || '',
+          baseUrl: aiCfg.baseUrl, token: aiCfg.token, model: aiCfg.model,
+          extra: aiCfg.extra || null,
+          prompt: currentStyle().prompt,
+          session: session,
+          items: group.map(function (p) { return { id: p.id, content: p.content, topic: p.topic }; }),
+        }),
       })
-      .catch(function (e) {
-        if (!batchCtl || batchCtl.id !== myId) return;
-        /* 整批失败就如实失败，不逐条补打。重试入口 = 再点一次「洗牌」 */
-        stopBatch();
-        refreshAiCard();
-        toast('AI 点评未生成（' + ((e && e.message) || e) + '）· 点「洗牌」可重试');
-      });
+        .then(parseRoastRes)
+        .then(function (res) {
+          if (!batchCtl || batchCtl.id !== myId) return;
+          var d = res.d || {};
+          if (res.ok && d.roasts) {
+            fill(res, group);
+            batchCtl.done += group.length;
+            grow();                       // AIMD：成功就逐步加大批次
+            refreshAiCard();
+            render(false, 0);             // 先到先上卡
+            next();
+            return;
+          }
+
+          var errText = d.error || 'AI 接口异常';
+
+          /* ---- 限流（429）：精确等待后重试同一组，批次减半 ---- */
+          if (d.rateLimited || d.retryAfter) {
+            if (attempt >= MAX_RATE_ATTEMPTS) {
+              for (var i = 0; i < group.length; i++) markFail(group[i]);
+              batchCtl.done += group.length;
+              finish('AI 点评被限流，已完成 ' + okCount + '/' + batchCtl.total +
+                ' 条 · 稍后点「洗牌」继续');
+              return;
+            }
+            shrink();
+            /* 优先用厂商的 Retry-After；没有就指数退避 + 抖动 */
+            var waitMs = d.retryAfter > 0
+              ? d.retryAfter * 1000
+              : Math.min(30000, 2000 * Math.pow(2, attempt)) + Math.round(Math.random() * 500);
+            batchCtl.waitingUntil = Date.now() + waitMs;
+            setTimeout(function () {
+              if (!batchCtl || batchCtl.id !== myId) return;
+              batchCtl.waitingUntil = 0;
+              next(group, attempt + 1);
+            }, waitMs);
+            return;
+          }
+
+          /* ---- 超时：拆半重试（前半立即重发，后半塞回队首），不等待 ---- */
+          if (d.timedOut && group.length > 1) {
+            shrink();
+            var half = Math.ceil(group.length / 2);
+            var head = group.slice(0, half);
+            queue.unshift.apply(queue, group.slice(half));
+            next(head, 0);      // 重试计数归零：拆半本身就是一次新机会
+            return;
+          }
+
+          /* ---- 其他错误：短退避重试，耗尽放弃该组、继续队列 ---- */
+          if (attempt < MAX_ERR_ATTEMPTS) {
+            var waitMs2 = 1000 + attempt * 1500;
+            batchCtl.waitingUntil = Date.now() + waitMs2;
+            setTimeout(function () {
+              if (!batchCtl || batchCtl.id !== myId) return;
+              batchCtl.waitingUntil = 0;
+              next(group, attempt + 1);
+            }, waitMs2);
+            return;
+          }
+          for (var i = 0; i < group.length; i++) markFail(group[i]);
+          batchCtl.done += group.length;
+          next(); // 放弃该组但不拖垮队列：剩余的牌继续评
+        })
+        .catch(function (e) {
+          if (!batchCtl || batchCtl.id !== myId) return;
+          /* 网络层异常（fetch 抛错）：与「其他错误」同策略 */
+          if (attempt < MAX_ERR_ATTEMPTS) {
+            var waitMs2 = 1000 + attempt * 1500;
+            batchCtl.waitingUntil = Date.now() + waitMs2;
+            setTimeout(function () {
+              if (!batchCtl || batchCtl.id !== myId) return;
+              batchCtl.waitingUntil = 0;
+              next(group, attempt + 1);
+            }, waitMs2);
+            return;
+          }
+          group.forEach(markFail);
+          batchCtl.done += group.length;
+          finish('AI 点评未生成（' + msg + '）· 点「洗牌」可重试');
+        });
+    })(null, 0);
   }
 
   /* ---------------- 渲染 ----------------
@@ -1119,6 +1281,12 @@
       return;
     }
     S.pos = n;
+    /* 当前牌优先：翻到未点评的牌就把它插到批量队列队首，
+     * 下一组请求立刻带上它 —— 用户翻牌的动作本身就是优先级信号 */
+    var cur = PINS[S.order[S.pos]];
+    if (cur && !(roastCache[cur.id] && String(roastCache[cur.id]).trim())) {
+      prioritizePin(cur.id);
+    }
     render(true, delta);
   }
 
@@ -1305,6 +1473,8 @@
       var r = JB.resolve(f.cfg);
       var bits = ['实际协议：' + r.api];
       if (r.rule && r.rule.dropTemperature) bits.push('该模型不传 temperature');
+      if (r.rule && r.rule.thinkingLocked) bits.push('该模型始终开思考');
+      else if (r.rule && r.rule.thinkingDisabled) bits.push('自动关闭思考');
       if (r.rule && r.rule.minOutput) bits.push('输出上限至少 ' + r.rule.minOutput);
       if (r.needsKey === false) bits.push('不需要 Key');
       tag.hidden = false;

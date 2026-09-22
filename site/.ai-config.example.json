@@ -1,10 +1,21 @@
 {
-  "provider": "deepseek",
-  "baseUrl": "https://api.deepseek.com/v1",
-  "token": "sk-把你的真实Key放这里",
-  "model": "deepseek-chat",
-  "api": "",
+  "provider": "bigmodel-coding",
+  "baseUrl": "https://open.bigmodel.cn/api/anthropic",
+  "token": "把你的真实 Key 放这里（Coding Plan：https://bigmodel.cn/coding-plan/personal/overview）",
+  "model": "GLM-5.3-Flash",
+  "api": "anthropic",
   "extra": null,
   "jjCookie": "sessionid=...; sessionid_ss=...; （一键评论用，掘金登录后整段 Cookie）",
-  "jjCsrf": "（可选）掘金 x-secsdk-csrf-token，一般留空即可"
+  "jjCsrf": "（可选）掘金 x-secsdk-csrf-token，一般留空即可",
+
+  "_说明": [
+    "复制到同目录的 .ai-config.json 后生效（已被 .gitignore 拦住，不会进仓库）。",
+    "provider 可选值见 providers.js 的 id：bigmodel-coding / zhipu / zai-coding / zai /",
+    "deepseek / moonshot / openai / anthropic / ollama / custom 等。",
+    "⚠️ Coding Plan 钥匙（智谱 / Z.ai）只开通 Anthropic 兼容端点：provider 填",
+    "bigmodel-coding 或 zai-coding、api 填 anthropic，别填标准 API 的 paas/v4。",
+    "GLM-5.x 会按模型规则自动关思考（anthropic 端点）或抬高输出下限（chat 端点），",
+    "想改回默认行为可在 extra 里塞 {\"thinking\":{\"type\":\"adaptive\"}} 覆盖。",
+    "也可以不写这个文件，用环境变量：JB_AI_PROVIDER / JB_AI_BASE_URL / JB_AI_API_KEY / JB_AI_MODEL / JB_AI_API。"
+  ]
 }

@@ -22,11 +22,12 @@
 
 /* 协议适配与厂商表在 providers.js 里（与站点同源，由 build_extension.py 复制过来）。
  *
- * ⚠️ 这一行必须用 `import * as`，不能写 `import providers from './providers.js'`：
- *    · 在 Chrome 里 providers.js 被当 ES module 解析 → 没有导出，
- *      命名空间对象是空的，得从 globalThis.JBProviders 取（UMD 的浏览器分支）；
- *    · 在 Node 里同一个文件是 CJS → 命名空间对象带 default = module.exports。
- *    两种都认，才能让站点与扩展共用同一份实现，而不是各写一份然后慢慢漂移。 */
+ * ⚠️ 这一行必须组合两种取法，缺一不可：
+ *    · Node：providers.js 是 CJS → `import * as` 命名空间带 default = module.exports；
+ *    · Chrome 扩展（ESM）：UMD 没有 export 语句 → 命名空间是空的，
+ *      但 UMD 的 IIFE 已把结果挂到 self.JBProviders（service worker 里
+ *      self === globalThis），所以从 globalThis 兜底。
+ *    先试 default 再试 globalThis，两端都能拿到同一份实现。 */
 import * as provMod from './providers.js';
 const providers = (provMod && provMod.default) || globalThis.JBProviders || null;
 if (!providers) throw new Error('providers.js 未加载（扩展包内应存在该文件）');
@@ -189,7 +190,33 @@ function srvCacheSet(key, val) {
   roastSrvCache.set(key, Object.assign({ at: Date.now() }, val));
 }
 
-/** 按协议调上游，返回解析后的响应对象；失败抛出可读错误 */
+/* ---- 批量点评会话：把同一批的多次请求串成一场多轮对话 ----
+ * 键 = session id + 模型 + 协议 + 风格；值 = 已发生的 messages 历史。
+ * 与 serve.mjs 逐字镜像，改这里记得同步那边。
+ * MV3 的 service worker 空闲可能被回收：会话丢了也只是下一轮从头开一场，
+ * 点评照常出，属于优雅降级 —— 页面连续翻牌时 worker 几乎总是热的。 */
+const AI_SESSION_TTL = 5 * 60_000;
+const AI_SESSION_MAX = 40;
+const aiSessions = new Map(); // sessionKey -> { at, messages: [{role, content}] }
+function aiSessionGet(key) {
+  if (aiSessions.size > AI_SESSION_MAX) {
+    const now = Date.now();
+    for (const [k, v] of aiSessions) {
+      if (now - v.at > AI_SESSION_TTL) aiSessions.delete(k);
+    }
+    while (aiSessions.size > AI_SESSION_MAX) {
+      aiSessions.delete(aiSessions.keys().next().value);
+    }
+  }
+  const s = aiSessions.get(key);
+  if (s) s.at = Date.now();
+  return s || null;
+}
+function aiSessionSet(key, messages) {
+  aiSessions.set(key, { at: Date.now(), messages });
+}
+
+/** 按协议调上游，返回解析后的响应对象；失败抛出可读错误（带分类标记） */
 async function callUpstream(ai, opts, timeoutMs) {
   const q = providers.buildRequest(ai, opts);
   const upstream = await fetch(q.url, {
@@ -198,6 +225,14 @@ async function callUpstream(ai, opts, timeoutMs) {
     body: JSON.stringify(q.body),
     signal: AbortSignal.timeout(timeoutMs),
   });
+  if (upstream.status === 429) {
+    /* 厂商限流：把 Retry-After 秒数带回前端，让它精确等待而不是盲猜 */
+    const data = await upstream.json().catch(() => ({}));
+    const err = new Error(providers.parseError(ai, 429, data));
+    err.rateLimited = true;
+    err.retryAfter = Number(upstream.headers.get('retry-after')) || 0;
+    throw err;
+  }
   const data = await upstream.json().catch(() => ({}));
   if (!upstream.ok) throw new Error(providers.parseError(ai, upstream.status, data));
   return data;
@@ -215,13 +250,26 @@ export async function apiRoast(body = {}) {
       api: String(body.api || ''),
       extra: (body.extra && typeof body.extra === 'object') ? body.extra : null,
     });
+    /* 调试日志：帮助排查配置问题 */
+    console.log('[jb-api] resolve:', {
+      providerId: ai.providerId,
+      baseUrl: ai.baseUrl,
+      model: ai.model,
+      api: ai.api,
+      needsKey: ai.needsKey,
+      hasToken: !!ai.token,
+    });
     const content = String(body.content || '').slice(0, 500);
     const topic = String(body.topic || '');
     /* 风格提示词由前端按所选风格卡牌传入；缺省用内置毒舌风格 */
     const sysPrompt = String(body.prompt || ROAST_PROMPT).slice(0, 800);
     /* needsKey=false 的（本地 Ollama）不要求填 Key */
     if (!ai.baseUrl || !ai.model || (ai.needsKey && !ai.token)) {
-      throw new Error('请先配置 AI 接口：浮层右上角 ✦');
+      const missing = [];
+      if (!ai.baseUrl) missing.push('baseUrl');
+      if (!ai.model) missing.push('model');
+      if (ai.needsKey && !ai.token) missing.push('token');
+      throw new Error('请先配置 AI 接口：浮层右上角 ✦（缺：' + missing.join(', ') + '）');
     }
 
     /* ---- 批量模式：items 数组 → 单次上游调用生成全部点评 ----
@@ -245,42 +293,82 @@ export async function apiRoast(body = {}) {
         else misses.push({ it, key });
       }
       /* 部分成功也要返回：已经命中缓存的那部分点评，不该因为剩余几条
-       * 失败就整批丢掉。 */
-      let batchErr = null;
-      if (misses.length) {
+       * 失败就整批丢掉。
+       *
+       * 队列逐轮发：每轮最多 10 条（前端自适应批次的上限），且在【同一个对话】
+       * 里接续 —— 上一轮的问答原样入列 history，模型每轮都能看到自己之前
+       * 用了什么输出格式，JSON 遵从率更高，也能吃到厂商的上下文缓存。
+       * 超时按组大小动态（8s 底 + 6s/条），错误分类（限流/超时）随响应透传，
+       * 前端据此选退避策略。与 serve.mjs 逐字对齐。 */
+      const TURN = 10;
+      const sessKey = String(body.session || '').slice(0, 64) +
+        '|' + ai.model + '|' + ai.api + '|' + sysPrompt.slice(0, 40);
+      const sess = aiSessionGet(sessKey) || { messages: [] };
+      const errs = [];
+      let retryAfter = 0;   // 上游 429 时带出的等待秒数
+      let rateLimited = false;
+      let timedOut = false;
+      for (let off = 0; off < misses.length; off += TURN) {
+        const chunk = misses.slice(off, off + TURN);
+        /* 超时按组大小动态：8s 底 + 6s/条（10 条 = 68s），不再一刀切
+         * （声明在 try 外：catch 的超时文案要用） */
+        const timeoutMs = Math.min(90_000, 8_000 + chunk.length * 6_000);
+        let taken = false;
         try {
           if (!(await acquireSlot(10_000))) throw new Error('生成排队超时，稍后再试');
-          slotTaken = true;
-          const listText = misses
+          taken = true;
+          const listText = chunk
             .map((m, i) => (i + 1) + '. ' + (m.it.topic ? '【' + m.it.topic + '】' : '') + m.it.content)
             .join('\n');
+          const history = sess.messages.slice(-10);
           const data = await callUpstream(ai, {
             system: sysPrompt +
-              '\n本次给你 ' + misses.length + ' 条沸点（编号 1~' + misses.length + '）。' +
+              '\n本次给你 ' + chunk.length + ' 条沸点（编号 1~' + chunk.length + '）。' +
               '逐条各写一句点评，严格按编号顺序输出一个 JSON 字符串数组，' +
-              '数组长度必须等于 ' + misses.length + '。只输出 JSON 数组本身，' +
+              '数组长度必须等于 ' + chunk.length + '。只输出 JSON 数组本身，' +
               '不要代码块标记、不要编号、不要任何额外文字。',
             user: listText,
-            maxTokens: Math.min(8000, 160 * misses.length + 200),
-            temperature: 0.9,
-          }, 60_000);
+            maxTokens: Math.min(3000, 260 * chunk.length + 200),
+            temperature: 0.7,
+            history,
+          }, timeoutMs);
 
           const raw = providers.parseReply(ai, data).trim();
-          /* 容错提取 JSON 数组：有的模型爱包 ```json 代码块或在前后加废话 */
-          const mArr = raw.match(/\[[\s\S]*\]/);
-          if (!mArr) throw new Error('AI 未按要求返回 JSON 数组');
-          let arr;
-          try { arr = JSON.parse(mArr[0]); } catch { throw new Error('AI 返回的 JSON 无法解析'); }
-          if (!Array.isArray(arr)) throw new Error('AI 返回格式异常');
-          misses.forEach((mm, i) => {
+          /* 容错提取 JSON 数组（代码块 / 截断 / 纯文本都能救），见 providers.js */
+          const arr = providers.extractJsonArray(raw, chunk.length);
+          if (!arr) throw new Error(raw ? 'AI 未按要求返回 JSON 数组' : 'AI 返回了空内容');
+          chunk.forEach((mm, i) => {
             const t = String(arr[i] || '').trim().replace(/^["「『]+|["」』]+$/g, '');
             if (t) { roasts[mm.it.id] = t; srvCacheSet(mm.key, { roast: t }); }
           });
+          /* 成功才推进对话：本轮问答入列，下一轮接在同一段对话后面 */
+          sess.messages = history.concat([
+            { role: 'user', content: listText },
+            { role: 'assistant', content: raw.slice(0, 4000) },
+          ]);
+          aiSessionSet(sessKey, sess.messages);
         } catch (e) {
-          batchErr = String((e && e.message) || e);
+          /* 错误分类透传（独立布尔字段，不污染文案）：前端据此选
+           * 「拆半重试 / 退避等待 / 放弃」 */
+          const isTimeout = e && (e.name === 'AbortError' || e.name === 'TimeoutError');
+          if (isTimeout) timedOut = true;
+          if (e && e.rateLimited) {
+            rateLimited = true;
+            if (e.retryAfter > retryAfter) retryAfter = e.retryAfter;
+          }
+          errs.push(isTimeout
+            ? 'AI 接口超时（' + Math.round(timeoutMs / 1000) + 's）'
+            : String((e && e.message) || e));
+          break; // 队列等待语义：上游出问题就停下，别硬冲后面几轮
+        } finally {
+          if (taken) releaseSlot();
         }
       }
-      return ok(batchErr ? { roasts, error: batchErr } : { roasts });
+      const batchErr = errs.length ? errs.join('；') : null;
+      return ok(batchErr
+        ? { roasts, error: batchErr, retryAfter: retryAfter || 0,
+            rateLimited: rateLimited || false, timedOut: timedOut || false }
+        : { roasts });
     }
 
     if (!content) throw new Error('沸点内容为空');
@@ -301,7 +389,8 @@ export async function apiRoast(body = {}) {
       temperature: 0.9,
     }, 20_000);
     const roast = providers.parseReply(ai, data).trim().replace(/^["「『]+|["」』]+$/g, '');
-    if (!roast) throw new Error('AI 返回了空内容');
+    /* 正文为空时优先透传上游错误（部分网关把 404 包成 HTTP 200，真相在 body 里） */
+    if (!roast) throw new Error(providers.parseError(ai, 200, data) || 'AI 返回了空内容');
     srvCacheSet(cacheKey, { roast });
     return ok({ roast });
   } catch (e) {
