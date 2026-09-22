@@ -485,6 +485,10 @@ export async function apiComment(body = {}, ctx = {}) {
     }
 
     if (httpStatus < 200 || httpStatus >= 300) return fail(502, '掘金接口 HTTP ' + httpStatus);
+    if (data.err_no === undefined) {
+      /* 网关 CSRF 门被拦时的签名：200 + 空 JSON 体（扩展版正常带 token 走不到这） */
+      return fail(502, '掘金返回了空响应（多半被 CSRF 网关拦下，请刷新页面重试）');
+    }
     if (data.err_no !== 0) {
       /* 常见错误翻译成可操作提示 */
       let msg = data.err_msg || ('err_no=' + data.err_no);
@@ -496,6 +500,35 @@ export async function apiComment(body = {}, ctx = {}) {
   } catch (e) {
     const isAbort = e && (e.name === 'AbortError' || e.name === 'TimeoutError');
     return fail(502, isAbort ? '掘金接口超时（15s）' : String((e && e.message) || e));
+  }
+}
+
+/* ---------------- /api/login-check 掘金登录态探测 ----------------
+ * 「一键评论」靠页面上下文里的登录 Cookie 代发，页面没登录就发不出去。
+ * 扩展前端用这个接口先探测、再决定亮不亮「一键评论」：
+ * GET user_api/v1/user/get —— 登录时 err_no=0 且带 user_id/user_name，
+ * 未登录时掘金直接报错。仍在页面上下文发，Cookie 自动带上，用户无感。
+ * 不做服务端缓存：探测只是页面内一次 GET，且登录态随时会变。 */
+const JJ_USER_API = 'https://api.juejin.cn/user_api/v1/user/get?aid=2608&spider=0&not_cache=1';
+
+export async function apiLoginCheck(body = {}, ctx = {}) {
+  if (typeof ctx.pageFetch !== 'function') {
+    /* 站点版没有页面上下文，前端本就不该调；给 unknown 让前端走复制兜底 */
+    return ok({ loggedIn: false, unknown: true, error: '无掘金页面上下文' });
+  }
+  try {
+    const r = await ctx.pageFetch(JJ_USER_API, null, 'GET', {}, 8_000);
+    const d = r.body || {};
+    /* http=0 是页面通道异常（content script 不在/扩展刚重载），算未知而非未登录 */
+    if (r.http === 0) return ok({ loggedIn: false, unknown: true, error: d.err_msg || '页面通道不可用' });
+    const loggedIn = r.http >= 200 && r.http < 300
+      && d.err_no === 0
+      && d.data && d.data.user_id != null && d.data.user_id !== '';
+    return ok(loggedIn
+      ? { loggedIn: true, user: String(d.data.user_name || '') }
+      : { loggedIn: false });
+  } catch (e) {
+    return ok({ loggedIn: false, unknown: true, error: String((e && e.message) || e) });
   }
 }
 

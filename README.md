@@ -2,7 +2,7 @@
 
 把掘金沸点做成一副牌，一张一张翻，每张配一句 AI 点评，顺手就能贴进评论区。
 
-不登录、不上传、不代发——AI 接口走你自己的 Key，评论由你亲手点发送。
+不上传、不做掘金账号体系——AI 接口走你自己的 Key。评论一键代发暂时下线（按钮一律复制），恢复后用的是你本机的掘金登录态，发送与否始终由你亲手决定。
 
 ![joker logo](assets/logo-juejin-joker.jpg)
 
@@ -11,7 +11,7 @@
 - **翻牌**：60 张沸点一副牌，← → 翻，空格抽下一张，S 洗牌（拉最新沸点）
 - **AI 点评**：支持 OpenAI / Anthropic / 智谱 GLM / Z.ai / Kimi 等多家厂商，AIMD 自适应并发批量生成
 - **点评风格**：毒舌 / 温柔 / 理性 / 吃瓜 / 文青，五种预设一键切换
-- **一键评论**：把当前 AI 点评直接发到这条沸点的评论区（掘金登录态）
+- **复制点评**：一键复制当前 AI 点评，贴进评论区即可。评论一键代发暂时下线（掘金网关 CSRF 拦截待解），链路保留，开关在 `site/app.js` 的 `COMMENT_POST_ENABLED`
 - **浏览评论**：右侧 AI 卡升级成滑动卡组，↑ ↓ 翻掘金真实评论
 - **音效**：Web Audio 实时合成纸牌咔哒声，默认静音，M 键切换
 - **动效三档**：完整 / 轻量 / 跟随系统，HUD 一键切换，选择持久化
@@ -73,7 +73,7 @@ juejin-boom/
 │   ├── build_extension.py   # 从 site/ 构建扩展（带补丁校验）
 │   ├── build_icons.py       # 生成扩展图标
 │   ├── check_extension.py   # 扩展一致性校验
-│   ├── pack.py        # 打包 dist/juejin-pin-gacha-extension.zip
+│   ├── pack.py        # 打包 dist/juejin-feidian-card-extension.zip
 │   └── ...
 ├── data/              # 原始沸点数据（0917）
 ├── previews/          # 预览页（单文件 HTML）
@@ -90,7 +90,7 @@ juejin-boom/
 | `python scripts/build_extension.py` | 从 `site/` 构建扩展（校验补丁命中 2 次） |
 | `python scripts/check_extension.py` | 校验扩展与站点一致性 |
 | `python scripts/build_icons.py` | 生成扩展图标（16/32/48/128） |
-| `python scripts/pack.py` | 打包 `dist/juejin-pin-gacha-extension.zip` |
+| `python scripts/pack.py` | 打包 `dist/juejin-feidian-card-extension.zip` |
 | `python scripts/gen_card.py 0917` | 生成单文件预览页 `previews/juejin_pins_gacha_0917.html` |
 | `python scripts/align.py 0917` | 对齐沸点与评论，输出 `data/align.txt` |
 | `node scripts/_probe_api.mjs` | 探测 AI 接口连通性 |

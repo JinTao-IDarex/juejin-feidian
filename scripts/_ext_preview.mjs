@@ -19,12 +19,14 @@ import { extname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { dirname } from 'node:path';
 
-import { apiPins, apiRoast, apiComment, apiComments, apiRoastConfig } from '../extension/api.mjs';
+import { apiPins, apiRoast, apiComment, apiComments, apiRoastConfig, apiLoginCheck } from '../extension/api.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, '..', 'extension');
 const port = Number(process.argv[2] || 7300);
 const MOCK_AI = process.argv.includes('--mock-ai');
+/* --mock-login：/api/login-check 直接报已登录，验证「一键评论」按钮的亮起分支 */
+const MOCK_LOGIN = process.argv.includes('--mock-login');
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -64,6 +66,12 @@ createServer(async (req, res) => {
   try {
     if (p === '/api/pins') {
       const r = await apiPins({ fresh: u.searchParams.get('fresh') === '1' });
+      return send(res, r.status, JSON.stringify(r.body));
+    }
+    if (p === '/api/login-check') {
+      if (MOCK_LOGIN) return send(res, 200, JSON.stringify({ loggedIn: true, user: '预览用户' }));
+      /* 预览环境没有掘金页面上下文：apiLoginCheck 自己会报 unknown */
+      const r = await apiLoginCheck({}, {});
       return send(res, r.status, JSON.stringify(r.body));
     }
     if (p === '/api/roast/config') {

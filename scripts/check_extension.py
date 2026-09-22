@@ -115,10 +115,10 @@ aj = os.path.join(EXT, "app.js")
 if os.path.exists(aj):
     a = open(aj, encoding="utf-8").read()
     n = a.count("__JB_HOST__")
-    if n != 2:
-        problems.append("app.js 的 __JB_HOST__ 补丁应出现 2 次（boot + refreshDeck），实际 %d 次" % n)
+    if n != 3:
+        problems.append("app.js 的 __JB_HOST__ 应出现 3 次（boot + refreshDeck + isExtHost），实际 %d 次" % n)
     else:
-        notes.append("app.js 补丁正确：__JB_HOST__ 2 处（boot 实时拉取闸门 + refreshDeck 洗牌闸门）")
+        notes.append("app.js 补丁正确：__JB_HOST__ 3 处（boot 实时拉取闸门 + refreshDeck 洗牌闸门 + isExtHost 登录探测）")
     if "build_extension.py" in a[:400]:
         notes.append("app.js 带「由构建生成」头注释")
     else:

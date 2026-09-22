@@ -430,21 +430,119 @@
   /* ---- 在页面上下文里代发请求（带上用户登录态）----
    * 为什么不让 background 直接发：掘金接口要登录 Cookie，
    * 而这个 content script 跑在 juejin.cn 的源上，fetch 自带 Cookie，
-   * 于是「一键评论」不用再让用户手贴 Cookie。 */
+   * 于是「一键评论」不用再让用户手贴 Cookie。
+   *
+   * ⚠️ 写接口（POST 等）必须从**页面主世界**发（v0.2.14 实测结论）：
+   * content script 隔离世界的同形 POST 会被掘金网关的 CSRF 门拦成
+   * 「200 空响应且不带任何 CORS 头」，浏览器只能报成跨域失败
+   * （ERR_FAILED 200）；而页面主世界（站点自己请求所在的世界）的同形
+   * POST 实测畅通。掘金页面没有 CSP，所以这里把请求体注入 <script>
+   * 在主世界执行，结果经 postMessage 桥回隔离世界。GET 简单，仍走隔离世界。 */
+
+  /* 只在主世界执行（本函数在隔离世界仅用于 toString 序列化，绝不直接调用）。
+   * 里面复刻站点 secsdk 的两步：先 HEAD 取 x-ware-csrf-token（拿不到不影响
+   * 发送），再带 x-secsdk-csrf-token 头发正式请求。 */
+  function jbMainFetch(id, url, payload, method, headers, timeoutMs) {
+    var done = false;
+    function finish(out) {
+      if (done) return;
+      done = true;
+      try { window.postMessage({ t: 'jb-main-fetch-res', id: id, out: out }, '*'); } catch (e) {}
+    }
+    var ctl = typeof AbortController === 'function' ? new AbortController() : null;
+    var timer = setTimeout(function () {
+      if (ctl) { try { ctl.abort(); } catch (e) {} }
+      finish({ http: 0, text: '' , err: 'timeout' });
+    }, timeoutMs || 15000);
+    function send(extra) {
+      var h = Object.assign({ 'content-type': 'application/json' }, headers || {});
+      Object.keys(extra || {}).forEach(function (k) { h[k] = extra[k]; });
+      fetch(url, {
+        method: method,
+        headers: h,
+        body: payload ? JSON.stringify(payload) : undefined,
+        credentials: 'include',
+        signal: ctl ? ctl.signal : undefined
+      }).then(function (r) {
+        return r.text().then(function (t) { finish({ http: r.status, text: t }); });
+      }).catch(function (e) {
+        finish({ http: 0, text: '', err: String((e && e.message) || e) });
+      });
+    }
+    (function () {
+      var u;
+      try { u = new URL(url, location.href); } catch (e) { send(); return; }
+      var key = u.origin + u.pathname;
+      var cached = window.__jbCsrf && window.__jbCsrf[key];
+      if (cached && cached.until > Date.now()) {
+        var h2 = {}; h2['x-secsdk-csrf-token'] = cached.token; send(h2); return;
+      }
+      var hctl = typeof AbortController === 'function' ? new AbortController() : null;
+      var htimer = setTimeout(function () { if (hctl) { try { hctl.abort(); } catch (e) {} } }, 5000);
+      fetch(key, {
+        method: 'HEAD',
+        credentials: 'include',
+        headers: { 'x-secsdk-csrf-request': '1', 'x-secsdk-csrf-version': '1' },
+        signal: hctl ? hctl.signal : undefined
+      }).then(function (r) {
+        clearTimeout(htimer);
+        var parts = (r.headers.get('x-ware-csrf-token') || '').split(',').map(function (s) { return s.trim(); });
+        if (parts[0] === '0' && parts[1]) {
+          var maxAge = Number(parts[2]) > 0 ? Math.min(Number(parts[2]), 86400000) : 86400000;
+          window.__jbCsrf = window.__jbCsrf || {};
+          window.__jbCsrf[key] = { token: parts[1], until: Date.now() + maxAge };
+          var h3 = {}; h3['x-secsdk-csrf-token'] = parts[1]; send(h3);
+        } else { send(); }
+      }).catch(function () { clearTimeout(htimer); send(); });
+    })();
+  }
+
+  /* 把请求送进主世界执行，等 postMessage 桥回结果。 */
+  function mainWorldFetch(msg) {
+    return new Promise((resolve) => {
+      const id = 'jb-' + Date.now() + '-' + Math.floor(Math.random() * 1e9);
+      const timer = setTimeout(() => {
+        window.removeEventListener('message', onMsg);
+        resolve({ http: 0, text: '', err: '主世界请求无响应（超时）' });
+      }, msg.timeoutMs || 15000);
+      const onMsg = (ev) => {
+        if (!ev.data || ev.data.t !== 'jb-main-fetch-res' || ev.data.id !== id) return;
+        window.removeEventListener('message', onMsg);
+        clearTimeout(timer);
+        resolve(ev.data.out || { http: 0, text: '', err: '主世界空响应' });
+      };
+      window.addEventListener('message', onMsg);
+      const s = document.createElement('script');
+      s.textContent = '(' + jbMainFetch.toString() + ')('
+        + JSON.stringify(id) + ','
+        + JSON.stringify(String(msg.url || '')) + ','
+        + JSON.stringify(msg.payload || null) + ','
+        + JSON.stringify(String(msg.method || 'POST').toUpperCase()) + ','
+        + JSON.stringify(msg.headers || {}) + ','
+        + String(Number(msg.timeoutMs) || 15000) + ');';
+      (document.head || document.documentElement).appendChild(s);
+      s.remove();
+    });
+  }
+
   function pageFetch(msg) {
     const ctl = new AbortController();
     const timer = setTimeout(() => ctl.abort(), msg.timeoutMs || 15000);
-    return fetch(msg.url, {
-      method: msg.method || 'POST',
-      headers: Object.assign({ 'content-type': 'application/json' }, msg.headers || {}),
-      body: msg.payload ? JSON.stringify(msg.payload) : undefined,
-      credentials: 'include',
-      signal: ctl.signal
-    }).then((r) => r.text().then((txt) => {
+    const method = (msg.method || 'POST').toUpperCase();
+    /* GET 走隔离世界即可；写接口走主世界桥（见顶部注释） */
+    const flow = (method === 'GET')
+      ? fetch(msg.url, {
+          method: method,
+          headers: Object.assign({ 'content-type': 'application/json' }, msg.headers || {}),
+          credentials: 'include',
+          signal: ctl.signal
+        }).then((r) => r.text().then((txt) => ({ http: r.status, text: txt })))
+      : mainWorldFetch(msg);
+    return Promise.resolve(flow).then((out) => {
       let body;
-      try { body = JSON.parse(txt); } catch (e) { body = { err_no: -1, err_msg: String(txt).slice(0, 300) }; }
-      return { http: r.status, body };
-    })).catch((e) => ({
+      try { body = JSON.parse(out.text); } catch (e) { body = { err_no: -1, err_msg: out.err || String(out.text).slice(0, 300) }; }
+      return { http: out.http, body };
+    }).catch((e) => ({
       http: 0, body: { err_no: -1, err_msg: String((e && e.message) || e) }
     })).then((out) => { clearTimeout(timer); return out; });
   }

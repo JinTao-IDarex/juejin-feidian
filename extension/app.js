@@ -12,7 +12,9 @@
  *   坐标零换算、居中零计算，响应式只需要一个 k。
  *
  * 交互对齐设计稿：层叠轮播主舞台 + 右侧 AI 点评卡 + 喜欢/复制点评。
- * 不做登录、不上传、不代发。
+ * 不上传、不做掘金账号体系：评论一键代发暂时下线（见 COMMENT_POST_ENABLED），
+ * 下线期间按钮一律复制；恢复后扩展模式用页面自身的掘金登录态（先探测、
+ * 已登录才亮按钮），站点模式用用户自配的 Cookie，均由用户亲手点发。
  */
 (function () {
   'use strict';
@@ -586,8 +588,16 @@
     var n = 0;
     for (var i = 1; i < list.length; i++) if (list[i].kind === 'cmt') n++;
     if (cp) {
-      /* 每张卡都恰好有一个动作 —— 底栏高度恒定，切换时不会跳 */
-      if (isAI) { cp.innerHTML = ICON_COPY + '一键评论'; cp.disabled = false; }
+      /* 每张卡都恰好有一个动作 —— 底栏高度恒定，切换时不会跳。
+       * 一键评论下线期间（COMMENT_POST_ENABLED=false）AI 卡一律「复制点评」；
+       * 恢复后：扩展里只有确认掘金已登录才亮「一键评论」，未登录/探测中给
+       * 「复制点评」；站点模式探不到登录态，维持一键评论（点击时没配 Cookie
+       * 再退化成复制）。 */
+      if (isAI) {
+        cp.innerHTML = ICON_COPY + (COMMENT_POST_ENABLED && (jjLogin === 1 || !isExtHost())
+          ? '一键评论' : '复制点评');
+        cp.disabled = false;
+      }
       else if (s.kind === 'cmt') { cp.innerHTML = ICON_COPY + '复制这条'; cp.disabled = false; }
       else if (s.mode === 'error') { cp.textContent = '重试'; cp.disabled = false; }
       else if (s.mode === 'empty') { cp.textContent = '去原文评论'; cp.disabled = false; }
@@ -666,6 +676,7 @@
     bindAI();
     aiSet(aiIdx, false);
     ensureComments(p);
+    ensureLoginCheck();   // TTL 内的复探点：登录态变了就地换按钮
   }
 
   /* 带时机守卫的入口：翻牌动画还在播（rotateY 立边窗口）时不换内容，
@@ -740,8 +751,51 @@
     if (p.url) window.open(p.url, '_blank', 'noopener');
   }
 
+  /* ---------------- 掘金登录态探测（仅扩展模式） ----------------
+   * 「一键评论」是把请求转到掘金页面上下文、靠登录 Cookie 代发的，
+   * 页面没登录时代发必被掘金打回。所以扩展里先探测、再决定按钮亮哪个：
+   *   已登录（jjLogin=1）           → 「一键评论」
+   *   未登录（-1）/ 探不到（0）     → 「复制点评」，点了就复制，不代发
+   * 站点模式没有页面上下文可探，维持旧行为（点击时没配 Cookie 再退化成复制）。
+   * 探测本身很轻：掘金页面上下文里一次 GET，结果按 TTL 复用，不逐次打。
+   *
+   * ⚠️ 一键评论暂时下线（COMMENT_POST_ENABLED=false，v0.2.15 起）：掘金网关
+   * 对代发请求的 CSRF 拦截还没绕稳（隔离世界被拦、主世界注入桥可通但待观察），
+   * 下线期间按钮一律「复制点评」，点击只复制；恢复时把这个开关改回 true 即可，
+   * 登录探测与代发链路原样保留。 */
+  var COMMENT_POST_ENABLED = false;
+  var jjLogin = 0;        // 0 = 还没探到, 1 = 已登录, -1 = 未登录
+  var jjLoginAt = 0;      // 上次探测完成的时间戳
+  var jjLoginReq = null;  // 在途探测（防并发重复打）
+  var JJ_LOGIN_OK_TTL = 5 * 60 * 1000;   // 探到明确结果后的复探间隔
+  var JJ_LOGIN_MISS_TTL = 30 * 1000;     // 探测失败/未知时的重试退避
+
+  function isExtHost() { return !!window.__JB_HOST__; }
+
+  function ensureLoginCheck() {
+    if (!COMMENT_POST_ENABLED || !isExtHost()) return;
+    var ttl = jjLogin === 1 ? JJ_LOGIN_OK_TTL : JJ_LOGIN_MISS_TTL;
+    if (jjLoginReq || (jjLoginAt && Date.now() - jjLoginAt < ttl)) return;
+    jjLoginReq = fetch('/api/login-check')
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        jjLogin = (d && d.loggedIn) ? 1 : (d && d.unknown ? 0 : -1);
+      })
+      .catch(function () { jjLogin = 0; })
+      .then(function () {
+        jjLoginAt = Date.now();
+        jjLoginReq = null;
+        /* 结果到达时 AI 面板多半已经画出来了：只刷底栏按钮，不重建面板 */
+        var p = PINS[S.order[S.pos]];
+        if (p && $('#ai')) aiSyncChrome(p, aiList(p));
+      });
+  }
+
   /* 「一键评论」：把当前点评直接发到这条沸点的评论区（经 /api/comment 转发）。
-   * 未配置掘金 Cookie 时自动退化为「复制文案」，按钮任何时候都有用。
+   * ⚠️ COMMENT_POST_ENABLED=false 时走不到发送分支，一律复制（按钮也是复制态）。
+   * 扩展模式：只有探到已登录才会从「一键评论」进来；万一发出去被打回
+   * 「登录态失效」（探测之后退出了登录），就地记为未登录并退化为复制。
+   * 站点模式：沿用 Cookie 配置，未配置时自动退化为「复制文案」。
    * 按钮是常驻元素（只有 paintAI() 重建面板时才换），所以这里不用重新绑定。 */
   function postRoastComment(p) {
     var btn = $('#btnCopy');
@@ -749,6 +803,15 @@
     /* 优先发实时生成的点评，其次手写点评 */
     var text = roastCache[p.id] || p.roast;
     if (!text) { toast(aiCfg ? '点评还在生成中…' : '这条还没配点评'); return; }
+    /* 下线期间 / 扩展里没探到登录态：不发，直接复制（按钮此时就是「复制点评」） */
+    if (!COMMENT_POST_ENABLED || (isExtHost() && jjLogin !== 1)) {
+      copyText(text).then(function () {
+        toast(COMMENT_POST_ENABLED
+          ? (jjLogin === -1 ? '掘金未登录，已复制点评，登录后刷新页面可一键评论' : '已复制点评')
+          : '已复制点评，去评论区粘贴即可');
+      });
+      return;
+    }
     btn.disabled = true;
     btn.textContent = '评论中…';
     var restore = function () { aiSet(aiIdx, false); };
@@ -769,11 +832,16 @@
           return;                      // 停在成功态，下次切换卡片时自动复位
         }
         var msg = (res.d && res.d.error) || '评论失败';
-        /* 没配 Cookie：不报错，退化为复制文案 */
-        if (/未配置掘金 Cookie/.test(msg)) {
+        /* 没配 Cookie（站点）/ 登录态失效（扩展）：不报错，退化为复制文案。
+         * 扩展里被打回登录失效，说明探测之后用户退出了登录 —— 就地记为
+         * 未登录，restore() 重刷底栏后按钮自动变回「复制点评」。 */
+        var loginDead = isExtHost() && /登录/.test(msg);
+        if (/未配置掘金 Cookie/.test(msg) || loginDead) {
+          if (loginDead) { jjLogin = -1; jjLoginAt = Date.now(); }
           restore();
           copyText(text).then(function () {
-            toast('未配置掘金 Cookie，已复制文案，去评论区粘贴即可');
+            toast(loginDead ? '掘金登录态已失效，已复制点评'
+                            : '未配置掘金 Cookie，已复制文案，去评论区粘贴即可');
           });
         } else {
           restore();
@@ -1833,6 +1901,8 @@
     /* 必须早于首屏 render()：先把 html 的档位类定下来，
      * 首屏 render(false, 0) 本来就不播动画，不存在闪烁问题 */
     resolveMotion();
+    /* 扩展模式：探一次掘金登录态，「一键评论」按结果亮（内部自判模式，站点是空操作） */
+    ensureLoginCheck();
     /* file:// 直开没有代理可用，直接用内置牌堆 */
     if (location.protocol !== 'http:' && location.protocol !== 'https:' && !window.__JB_HOST__) {
       startDeck();

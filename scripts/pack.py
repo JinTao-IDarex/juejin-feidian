@@ -5,7 +5,7 @@
 同样的检查（避免把半坏的包发出去），然后把 extension/ 整个目录压成 zip。
 
 用法：  python scripts/pack.py
-产物：  dist/juejin-pin-gacha-extension.zip
+产物：  dist/juejin-feidian-card-extension.zip
 报告：  output/ext-pack.txt
 """
 import json
@@ -19,7 +19,7 @@ import zipfile
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 EXT = os.path.join(BASE, "extension")
-OUT = os.path.join(BASE, "dist", "juejin-pin-gacha-extension.zip")
+OUT = os.path.join(BASE, "dist", "juejin-feidian-card-extension.zip")
 REPORT = os.path.join(BASE, "output", "ext-pack.txt")
 NODE = r"C:\Users\apple\.workbuddy\binaries\node\versions\22.22.2-3\node.exe"
 
@@ -77,8 +77,8 @@ for size, rel in sorted((man.get("icons") or {}).items(), key=lambda kv: int(kv[
 adot = os.path.join(EXT, "app.js")
 if os.path.exists(adot):
     n = open(adot, encoding="utf-8").read().count("__JB_HOST__")
-    if n != 2:
-        problems.append("app.js 的 __JB_HOST__ 应为 2 处（boot + refreshDeck），实际 %d" % n)
+    if n != 3:
+        problems.append("app.js 的 __JB_HOST__ 应为 3 处（boot + refreshDeck + isExtHost），实际 %d" % n)
     line("patch __JB_HOST__ x%d" % n)
 
 # ---------------- 4) 打包 ----------------
