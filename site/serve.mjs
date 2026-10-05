@@ -1,10 +1,12 @@
 // 零依赖静态服务器 + /api/pins 实时沸点代理：npm run dev [-- --host 127.0.0.1 --port 7100]
 import { createServer } from 'node:http';
-import { readFile } from 'node:fs/promises';
+import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { extname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
 /* providers.js 是 CJS（UMD 双端写法），这里按默认导入拿整份导出对象 */
 import providers from './providers.js';
+/* 榜单内核与扩展端（extension/api.mjs）共用同一份，见 board-core.mjs 顶部注释 */
+import { createBoardEngine, boardResponse, rangeKey, RANGE_SPEC } from './board-core.mjs';
 
 const root = fileURLToPath(new URL('.', import.meta.url));
 const argv = process.argv.slice(2);
@@ -76,11 +78,11 @@ function normalizePin(it) {
   };
 }
 
-async function fetchPage(cursor, limit) {
+async function fetchPage(cursor, limit, sortType = 300) {
   const res = await fetch(JJ_API, {
     method: 'POST',
     headers: JJ_HEADERS,
-    body: JSON.stringify({ id_type: 4, sort_type: 300, cursor: String(cursor), limit }),
+    body: JSON.stringify({ id_type: 4, sort_type: sortType, cursor: String(cursor), limit }),
   });
   if (!res.ok) throw new Error('HTTP ' + res.status);
   const data = await res.json();
@@ -639,6 +641,84 @@ async function handleApiComments(res, pinId) {
   }
 }
 
+/* ---------------- /api/board 魔鬼榜单 ----------------
+ * 抓一段沸点 → 筛 48 条候选 → AI 按 6 条互斥赛道打分 → 每条只进分最高的那个榜。
+ * 落地口径见 docs/devil-board-spec.md（赛道 / 抓取实测 / 评分流程 / 接口契约 / 榜单宪章）。
+ *
+ * 为什么是「后台任务 + 轮询」而不是一个请求算到底：
+ * 抓取 20~45 秒、打分再 1~2 分钟，一个 HTTP 挂三分钟必然超时，用户也以为页面死了。
+ *   GET /api/board?range=day            起任务 / 读快照（缓存命中就直接给结果）
+ *   GET /api/board?range=day&fresh=1    忽略内存与磁盘缓存，强制重建
+ *   GET /api/board?range=day&wait=1     等这一轮跑完再回（脚本自测用，别在页面上用）
+ *   GET /api/board?range=day&mock=1     用确定性假分数代替 AI（纯做前端联调，不烧 token）
+ *
+ * 结果落盘 data/board/{day-YYYY-MM-DD | week-YYYY-Www}.json：
+ * 同一天重开直接读盘，不重复烧 token；日榜 TTL 6 小时、周榜活到本自然周结束。 */
+const BOARD_DIR = join(root, '..', 'data', 'board');
+
+const boardEngine = createBoardEngine({
+  /* 归一化仍用本文件自己的 normalizePin（唯一一份），fetchPage 只多传一个 sort_type */
+  fetchPage: async (cursor, limit, sortType) => {
+    const r = await fetchPage(cursor, limit, sortType);
+    return { pins: r.list.map(normalizePin).filter((p) => p.id && p.content), cursor: r.cursor, hasMore: r.hasMore };
+  },
+  /* 走和 /api/roast 同一套四层配置合成：请求体 > 环境变量 > .ai-config.json > 内置默认
+   * （请求体由前端交上来：站点版通常能空着走服务端配置，扩展版没有服务端、必带） */
+  resolveAi: (body) => resolveAiCfg(body || {}),
+  loadCache: async (range) => {
+    const p = join(BOARD_DIR, rangeKey(range, Date.now()) + '.json');
+    try {
+      const raw = JSON.parse(await readFile(p, 'utf8'));
+      return { payload: raw, at: Number(raw.savedAt) || Number(raw.generatedAt) || 0 };
+    } catch { return null; }
+  },
+  saveCache: async (range, payload, at) => {
+    await mkdir(BOARD_DIR, { recursive: true });
+    const p = join(BOARD_DIR, rangeKey(range, Date.now()) + '.json');
+    await writeFile(p, JSON.stringify(Object.assign({ savedAt: at }, payload), null, 1), 'utf8');
+  },
+  now: () => Date.now(),
+});
+
+async function handleApiBoard(res, u, body) {
+  const range = u.searchParams.get('range') === 'week' ? 'week' : 'day';
+  const fresh = u.searchParams.get('fresh') === '1';
+  const mock = u.searchParams.get('mock') === '1' || process.env.JB_BOARD_MOCK === '1';
+  /* peek=1 = **纯只读**：只回缓存，绝不触发抓取或评分。
+   * 给榜期卡展开时对照「对面那一档」用（spec §6.7）——
+   * 没缓存就回 status='none'，前端显示「尚未生成」。
+   * ⚠️ 绝不能省掉这一步去走 ensure()：那会让「看一眼周榜」变成一次真评分
+   * （翻 45 页 + 一两分钟 + 烧 token）。 */
+  const peek = u.searchParams.get('peek') === '1' || (body && body.peek === true);
+  /* 前端交上来的 AI 配置（扩展版必带：它没有服务端配置文件）。站点版一般是空的，
+   * 空着就走 serve.mjs 自己的四层配置。 */
+  const ai = (body && typeof body.ai === 'object' && body.ai) ? body.ai : null;
+  try {
+    if (peek) {
+      const got = await boardEngine.peek(range);
+      res.writeHead(200, { 'Content-Type': MIME['.json'], 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify(got
+        ? boardResponse(range, { status: got.status, payload: got.payload, stale: got.stale })
+        : { range, status: 'none', boards: [] }));
+      return;
+    }
+    await boardEngine.ensure(range, { fresh, mock, ai });
+    if (u.searchParams.get('wait') === '1') await boardEngine.wait(range);
+    const payload = boardResponse(range, boardEngine.snapshot(range));
+    /* 构建中要能轮询到最新进度 → 不许缓存 */
+    res.writeHead(200, { 'Content-Type': MIME['.json'], 'Cache-Control': 'no-store' });
+    res.end(JSON.stringify(payload));
+  } catch (e) {
+    res.writeHead(502, { 'Content-Type': MIME['.json'], 'Cache-Control': 'no-store' });
+    res.end(JSON.stringify({ range, status: 'failed', error: String((e && e.message) || e), boards: [] }));
+  }
+}
+
+/* 榜单的抓取页数上限（前端「评分中」文案要显示，避免两边写死不同数字） */
+const BOARD_SPEC = Object.fromEntries(
+  Object.entries(RANGE_SPEC).map(([k, v]) => [k, { sortType: v.sortType, maxPages: v.maxPages, label: v.label }])
+);
+
 createServer(async (req, res) => {
   try {
     const u = new URL(req.url, 'http://x');
@@ -647,6 +727,18 @@ createServer(async (req, res) => {
     if (p === '/api/roast' && req.method === 'POST') { await handleApiRoast(req, res); return; }
     if (p === '/api/comment' && req.method === 'POST') { await handleApiComment(req, res); return; }
     if (p === '/api/comments') { await handleApiComments(res, u.searchParams.get('pinId') || ''); return; }
+    if (p === '/api/board') {
+      /* GET 与 POST 都收：站点版空着走服务端配置，扩展版把 AI 配置放进 POST 体 */
+      const body = req.method === 'POST' ? JSON.parse(await readBody(req) || '{}') : null;
+      await handleApiBoard(res, u, body);
+      return;
+    }
+    /* 榜单规格（页数上限等）：前端只读，不写死在自己的代码里 */
+    if (p === '/api/board/spec') {
+      res.writeHead(200, { 'Content-Type': MIME['.json'], 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify({ specs: BOARD_SPEC, mock: process.env.JB_BOARD_MOCK === '1' }));
+      return;
+    }
     if (p === '/api/models' && req.method === 'POST') { await handleApiModels(req, res); return; }
     /* 供页面判断服务端是否已配 Key / Cookie / 厂商（只回非敏感字段，绝不回 token 本体） */
     if (p === '/api/roast/config') {
@@ -672,6 +764,19 @@ createServer(async (req, res) => {
       return;
     }
     if (p === '/') p = '/index.html';
+    /* 榜单的六张卡牌形象只存在一份（assets/board-cards/），不往 site/ 里再拷一遍：
+     * 这里把它挂到 /cards/ 下。扩展那边由 build_extension.py 复制到 extension/cards/，
+     * 所以 board.js 里一律写相对的 cards/xxx.png，两端都能解析。 */
+    if (p.indexOf('/cards/') === 0) {
+      const name = p.slice('/cards/'.length);
+      if (!/^[a-z0-9_-]+\.(png|jpg|jpeg|webp)$/i.test(name)) { res.writeHead(404).end(); return; }
+      const img = join(root, '..', 'assets', 'board-cards', name);
+      const buf = await readFile(img);
+      res.writeHead(200, { 'Content-Type': MIME[extname(img).toLowerCase()] || 'image/png',
+                           'Cache-Control': 'public, max-age=86400' });
+      res.end(buf);
+      return;
+    }
     /* 点文件（.ai-config.json / .env 等）一律不伺候——Key 不能被 http 下载。
      * providers.local.json 不是点文件，但那是「本机配置」的同类，
      * 万一有人在里面写了 key，也不该被 http 拉走，所以一并拦掉。 */

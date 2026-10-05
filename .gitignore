@@ -9,6 +9,12 @@ output/
 _bak/
 data/align.txt
 data/_view.txt
+# 魔鬼榜单的抓取+评分缓存（含他人沸点正文与 AI 分数，属生成物，不入库）
+data/board/
+
+# 榜单形象图的 AI 原图留档（归一化前的 1024x768 大图，2.7MB；
+# 入库的是 assets/board-cards/cN-*.png 归一化成品）
+assets/board-cards/_raw/
 
 # 本地密钥配置（模板见 site/.ai-config.example.json）
 site/.ai-config.json

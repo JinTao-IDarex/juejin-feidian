@@ -23,9 +23,9 @@ OUT = os.path.join(BASE, "dist", "juejin-feidian-card-extension.zip")
 REPORT = os.path.join(BASE, "output", "ext-pack.txt")
 NODE = r"C:\Users\apple\.workbuddy\binaries\node\versions\22.22.2-3\node.exe"
 
-# 扩展里的 JS：手写的那几个 + 由构建生成、带补丁的 app.js
+# 扩展里的 JS：手写的那几个 + 由构建生成、带补丁的 app.js + 从 site/ 复制来的榜单前端
 JS_FILES = ("content.js", "api-shim.js", "embed-boot.js", "background.js",
-            "api.mjs", "app.js")
+            "api.mjs", "app.js", "board.js", "board-core.mjs")
 
 report = []
 problems = []

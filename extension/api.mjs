@@ -32,6 +32,10 @@ import * as provMod from './providers.js';
 const providers = (provMod && provMod.default) || globalThis.JBProviders || null;
 if (!providers) throw new Error('providers.js 未加载（扩展包内应存在该文件）');
 
+/* 魔鬼榜单的内核：站点与扩展**共用同一份**（由 build_extension.py 从 site/ 复制过来）。
+ * 它是标准 ESM（有 export 语句），不像 providers.js 那样是 UMD，所以直接命名导入即可。 */
+import { createBoardEngine, boardResponse, RANGE_SPEC } from './board-core.mjs';
+
 /* ---------------- 共用 ---------------- */
 
 const JJ_HEADERS = {
@@ -82,11 +86,11 @@ function normalizePin(it) {
   };
 }
 
-async function fetchPage(cursor, limit) {
+async function fetchPage(cursor, limit, sortType = 300) {
   const res = await fetch(JJ_API, {
     method: 'POST',
     headers: JJ_HEADERS,
-    body: JSON.stringify({ id_type: 4, sort_type: 300, cursor: String(cursor), limit }),
+    body: JSON.stringify({ id_type: 4, sort_type: sortType, cursor: String(cursor), limit }),
   });
   if (!res.ok) throw new Error('HTTP ' + res.status);
   const data = await res.json();
@@ -623,4 +627,77 @@ export function apiRoastConfig() {
     jjCookie: false,
     providersOverride: 0,
   });
+}
+
+/* ---------------- /api/board 魔鬼榜单 ----------------
+ * 与站点 serve.mjs 的 handleApiBoard 逐字对齐，只换掉「缓存放哪」：
+ *   站点 → data/board/<rangeKey>.json（跨进程、跨重启复用）
+ *   扩展 → 模块级 Map（service worker 一被回收就清空）
+ * 扩展这边没有磁盘、也不该有 —— 本项目的定位是「关浏览器什么都不留下」。
+ * 代价是重算一次 40~120s，可接受。
+ *
+ * ⚠️ AI 配置从哪来：扩展没有服务端 .ai-config.json，所以**必须**由前端
+ *   （board.js 读 localStorage 的 'juejin-boom:ai-cfg'）经 POST 体交上来。
+ *   没配时就让 providers.resolve 抛缺字段的错，不要静默塞假配置 ——
+ *   否则用户会对着「评分中」白等两分钟。
+ *
+ * ⚠️ service worker 生命周期：MV3 单个事件处理上限 5 分钟，整轮 40~120s 在范围内。
+ *   但别把保活押在这上面 —— 前端是「1300ms 轮询 snapshot」而不是「一个请求等到头」，
+ *   所以就算 worker 被回收，下一次轮询会重新 ensure（缓存没了就重算）。
+ */
+const BOARD_SPEC = Object.fromEntries(
+  Object.entries(RANGE_SPEC).map(([k, v]) => [k, { sortType: v.sortType, maxPages: v.maxPages, label: v.label }])
+);
+
+const boardCache = new Map();   // range -> { payload, at }
+
+const boardEngine = createBoardEngine({
+  /* 归一化仍用本文件自己的 normalizePin（唯一一份），fetchPage 只多传一个 sort_type */
+  fetchPage: async (cursor, limit, sortType) => {
+    const r = await fetchPage(cursor, limit, sortType);
+    return { pins: r.list.map(normalizePin).filter((p) => p.id && p.content),
+             cursor: r.cursor, hasMore: r.hasMore };
+  },
+  /* 与 /api/roast 同一套：前端把 providerId/baseUrl/token/model/api 传上来 */
+  resolveAi: (body) => providers.resolve({
+    providerId: String((body && body.providerId) || ''),
+    baseUrl: String((body && body.baseUrl) || ''),
+    token: String((body && body.token) || ''),
+    model: String((body && body.model) || ''),
+    api: String((body && body.api) || ''),
+    extra: (body && typeof body.extra === 'object') ? body.extra : null,
+  }),
+  loadCache: async (range) => boardCache.get(range) || null,
+  saveCache: async (range, payload, at) => { boardCache.set(range, { payload, at }); },
+  now: () => Date.now(),
+});
+
+export async function apiBoard(body = {}) {
+  const range = body.range === 'week' ? 'week' : 'day';
+  try {
+    /* peek = **纯只读**，只回缓存、绝不触发抓取或评分。
+     * 榜期卡展开时用它对照「对面那一档」（spec §6.7）——
+     * ⚠️ 走 ensure() 会把「看一眼周榜」变成一次真评分（翻 45 页 + 烧 token），
+     * 所以这一步必须在这里短路掉。没缓存就回 status='none'。 */
+    if (body.peek) {
+      const got = await boardEngine.peek(range);
+      return ok(got
+        ? boardResponse(range, { status: got.status, payload: got.payload, stale: got.stale })
+        : { range, status: 'none', boards: [] });
+    }
+    await boardEngine.ensure(range, {
+      fresh: !!body.fresh,
+      mock: !!body.mock,
+      ai: (body.ai && typeof body.ai === 'object') ? body.ai : null,
+    });
+    if (body.wait) await boardEngine.wait(range);
+    return ok(boardResponse(range, boardEngine.snapshot(range)));
+  } catch (e) {
+    return fail(502, String((e && e.message) || e));
+  }
+}
+
+/* 与站点同名路由一致：前端不把「翻多少页」写死在自己代码里 */
+export function apiBoardSpec() {
+  return ok({ specs: BOARD_SPEC, mock: false });
 }

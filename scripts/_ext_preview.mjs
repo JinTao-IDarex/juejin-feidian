@@ -19,7 +19,8 @@ import { extname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { dirname } from 'node:path';
 
-import { apiPins, apiRoast, apiComment, apiComments, apiRoastConfig, apiLoginCheck } from '../extension/api.mjs';
+import { apiPins, apiRoast, apiComment, apiComments, apiRoastConfig, apiLoginCheck,
+         apiBoard, apiBoardSpec } from '../extension/api.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, '..', 'extension');
@@ -101,11 +102,51 @@ createServer(async (req, res) => {
       const r = await apiComments({ pinId: u.searchParams.get('pinId') || '' }, {});
       return send(res, r.status, JSON.stringify(r.body));
     }
+    /* 魔鬼榜单。⚠️ 预览环境没有 localStorage 里的 AI 配置，
+     * 所以要看榜单就得带 --mock-ai（= 用确定性假分数，不烧 token）；
+     * 不带的话会走到「缺 model/baseUrl」的报错分支 —— 那也算一种真实形态。 */
+    if (p === '/api/board/spec') {
+      const r = apiBoardSpec();
+      return send(res, r.status, JSON.stringify(r.body));
+    }
+    if (p === '/api/board') {
+      const body = req.method === 'POST' ? JSON.parse(await readBody(req) || '{}') : {};
+      const r = await apiBoard({
+        range: u.searchParams.get('range') || body.range || 'day',
+        fresh: u.searchParams.get('fresh') === '1',
+        /* ⭐ peek 必须转发（spec §6.7）。漏掉它 → 榜期卡展开时
+         *    「只读对面那档」会变成一次真评分（翻 45 页 + 烧 token），静默且昂贵。 */
+        peek: u.searchParams.get('peek') === '1' || body.peek === true,
+        mock: MOCK_AI || u.searchParams.get('mock') === '1' || !!body.mock,
+        wait: u.searchParams.get('wait') === '1',
+        ai: body.ai || null,
+      });
+      return send(res, r.status, JSON.stringify(r.body));
+    }
 
     /* 模拟掘金页面的壳：把 content.js 真实跑起来（壳文件放在 previews/ 下，
      * 不属于扩展包，所以单独开一条路由） */
     if (p === '/panel.html') {
       const buf = await readFile(join(here, '..', 'previews', '_ext_panel.html'));
+      res.writeHead(200, { 'Content-Type': MIME['.html'], 'Cache-Control': 'no-store' });
+      return res.end(buf);
+    }
+
+    /* /dev.html?f=<仓库内相对路径> —— 伺服一个**探针/调试页**。
+     *
+     * ⭐ 为什么要它：验浮层版式必须让探针页与 board.html **同源**。
+     *   另起一个端口伺服探针页会跨源 → contentDocument 为 null →
+     *   探针脚本静默不执行，--dump-dom 只吐源码，看起来像「页面挂了」。
+     *   （踩过：截图有内容但 DOM 探针无输出，就是这个原因。）
+     * 只读仓库内文件、且限 extension/ 与 previews/ 两个目录。 */
+    if (p === '/dev.html') {
+      const rel = u.searchParams.get('f') || '';
+      const base = join(here, '..');
+      const file = normalize(join(base, rel));
+      const okDir = ['extension', 'previews', 'scripts', '.workbuddy']
+        .some((d) => file.startsWith(normalize(join(base, d))));
+      if (!rel || !okDir) return send(res, 403, '403', 'text/plain; charset=utf-8');
+      const buf = await readFile(file);
       res.writeHead(200, { 'Content-Type': MIME['.html'], 'Cache-Control': 'no-store' });
       return res.end(buf);
     }

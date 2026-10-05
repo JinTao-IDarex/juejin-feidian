@@ -8,7 +8,8 @@
  * service worker 会被回收，缓存随之清空 —— 换来的是零存储、零残留，
  * 关掉浏览器什么也不留下，这正是这个项目「不登录、不上传」的定位。
  */
-import { apiPins, apiRoast, apiModels, apiComment, apiComments, apiRoastConfig, apiLoginCheck } from './api.mjs';
+import { apiPins, apiRoast, apiModels, apiComment, apiComments, apiRoastConfig, apiLoginCheck,
+         apiBoard, apiBoardSpec } from './api.mjs';
 
 /* 在掘金页面上下文里发请求：content script 的 fetch 天然带上用户的登录 Cookie，
  * 所以「一键评论」不用再让用户手动贴 Cookie（这是扩展相对站点 dev server 的一个白捡的好处）。 */
@@ -41,7 +42,25 @@ const routes = {
   '/api/comments': (m, sender) => {
     const qs = new URLSearchParams(String(m.search || ''));
     return apiComments({ pinId: qs.get('pinId') || '' }, { pageFetch: makePageFetch(sender) });
-  }
+  },
+  /* 魔鬼榜单：range / fresh / mock / wait 走 query，AI 配置走 POST 体
+   * （config 里有 token，不该出现在 URL 里）。两处都读一遍，谁在就用谁。 */
+  '/api/board': (m) => {
+    const qs = new URLSearchParams(String(m.search || ''));
+    const b = m.payload || {};
+    return apiBoard({
+      range: qs.get('range') || b.range || 'day',
+      fresh: qs.get('fresh') === '1' || b.fresh === true,
+      mock: qs.get('mock') === '1' || b.mock === true,
+      wait: qs.get('wait') === '1' || b.wait === true,
+      /* ⭐ peek 必须转发。榜期卡展开时用它只读对面那档的缓存（spec §6.7）。
+       * 漏掉这一行 → 前端以为在只读、实际走 ensure() → 「看一眼周榜」
+       * 变成一次真评分：翻 45 页、一两分钟、烧 token。静默且昂贵。 */
+      peek: qs.get('peek') === '1' || b.peek === true,
+      ai: b.ai || null
+    });
+  },
+  '/api/board/spec': () => apiBoardSpec()
 };
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {

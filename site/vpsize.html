@@ -1,0 +1,16 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>probe</title>
+<style>
+  html, body { margin: 0; background: #123456; overflow: hidden; }
+  #r { font: 20px monospace; color: #fff; padding: 8px; }
+</style>
+<div id="r"></div>
+<script>
+  /* 量真实视口：innerWidth 含竖滚动条，clientWidth 不含 —— 一律用后者（见项目约定） */
+  var d = document.documentElement;
+  document.getElementById('r').textContent =
+    'VP=' + d.clientWidth + 'x' + d.clientHeight +
+    ' INNER=' + window.innerWidth + 'x' + window.innerHeight +
+    ' DPR=' + window.devicePixelRatio;
+</script>

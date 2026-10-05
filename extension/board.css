@@ -1,0 +1,743 @@
+/* board.css — 魔鬼榜单
+ *
+ * 坐标口径与 app.css 同一套：设计稿 1440 宽，`--k` 等比缩（transform-origin: center top）。
+ * 与 app.css 的区别只在「设计高度」：
+ *   站点页  1440 x 1000（Header 96 / 六摞 / 发牌流程 104 / Footer）
+ *   扩展浮层 1440 x 722（Header 56 / 六摞 / Footer，且 --k 强制 1）
+ * —— 浮层不是"缩水版站点"，是**另一套字号与尺寸档位**（规格见 docs/devil-board-spec.md 6.6），
+ *    所以下面全部走 CSS 变量，由 html.embed 那一块整体换档，绝不在元素上写死数值。
+ *
+ * ⭐ 硬规矩：卡牌严格 1 : 1.4（纸牌比例），高度一律写死，
+ *    长内容由「形象区」吸收（flex:1）—— 不许按内容撑高。
+ *    封面牌 202x283（= 396x554 的等比缩小版），**与详情大牌同比例**。
+ *    封面牌的形象区里放的是从用户参考图里**抠出来的角色**（透明底 PNG，contain），
+ *    其余文字（名次 / 分数 / 赛道名 / 定义 / 入口）全部是我们自己排的实时数据。
+ *
+ * 变量命名：--d-* = detail（详情页那一屏），其余按部件命名。
+ */
+
+:root {
+  /* 页面 */
+  --board-h: 1000px;
+  --page-pad: 24px;
+  --hdr-h: 96px;
+  --deck-gap: 36px;
+  --bc-h: 40px;
+  --bc-fs: 12px;
+  --prog-h: 56px;
+  --gap16: 16px;
+
+  /* 详情大牌（396 x 554 = 1 : 1.4） */
+  --card-w: 396px;
+  --card-h: 554px;
+  --card-pad: 20px;
+  --card-gap: 12px;
+  --card-r: 20px;
+  --fig-r: 14px;
+  --card-shadow: 0 14px 34px rgba(28, 31, 36, .14);
+
+  --d-rank: 22px;
+  --d-score: 24px;
+  --d-sym: 16px;
+  --d-verdict: 15px;
+  --d-verdict-lh: 21px;
+  --d-text: 13px;
+  --d-text-lh: 19px;
+  --d-dims: 11px;
+  --d-author: 12px;
+  --d-btn: 36px;
+  --d-num: 11px;
+
+  /* 箭头 / 缩略轨道 */
+  --arrow: 40px;
+  --arrow-gap: 28px;
+  --track-w: 320px;
+  --track-h: 40px;
+  --track-gap: 6px;
+  --thumb-cw: 24px;
+  --thumb-ch: 34px;
+  --thumb-w: 20px;
+  --thumb-h: 28px;
+  --kb: 16px;
+
+  /* 封面牌与摞（两屏一致，spec 6.6）
+   * ⭐ 封面牌 202x283 = **1:1.4**（与详情大牌同比例 → 发牌动画可以单轴等比缩放）。
+   *    v0.5.x 曾为了「整张参考图直接用」而改成 1:1.218，用户否掉了：
+   *    「是把角色抠出来，不是把整张图都放进去，贴在原有的那个卡片上」。
+   *    底牌各下移 9px → 摞高 283 + 18 = 301。 */
+  --cover-w: 202px;
+  --cover-h: 283px;
+  --stack-h: 301px;
+
+  --ink: #1A1D21;
+  --ink2: #5C636E;
+  --ink3: #8A9099;
+  --line: #E8E9EB;
+  --line2: #E0E3E8;
+  --page-bg: #F4F5F7;
+
+  --ease: cubic-bezier(.22, 1, .36, 1);
+}
+
+/* ---------- 浮层档位（html.embed 由 embed-boot.js 打上） ---------- */
+html.embed {
+  /* 站点那套 --k 是为了把 1000 高的设计塞进不同窗口；
+   * 榜单在浮层里本身就是 722 的设计，所以这里把 k 钉死成 1。
+   * 必须用 !important 压过 embed.css 的 `--k: var(--jb-k,1) !important`，
+   * 因此 board.css 要排在 embed.css 之后（见 build_extension.py 的注入顺序）。 */
+  --k: 1 !important;
+}
+html.embed .board {
+  --board-h: 722px;
+  --page-pad: 16px;
+  --hdr-h: 56px;
+  --deck-gap: 30px;
+  --bc-h: 32px;
+  --bc-fs: 11px;
+  --prog-h: 48px;
+
+  --card-w: 300px;
+  --card-h: 420px;
+  --card-pad: 16px;
+  --card-gap: 10px;
+  --card-r: 18px;
+  --fig-r: 12px;
+  --card-shadow: 0 12px 30px rgba(28, 31, 36, .14);
+
+  --d-rank: 19px;
+  --d-score: 19px;
+  --d-sym: 14px;
+  --d-verdict: 14px;
+  --d-verdict-lh: 20px;
+  --d-text: 12px;
+  --d-text-lh: 18px;
+  --d-dims: 10px;
+  --d-author: 11px;
+  --d-btn: 32px;
+  --d-num: 10px;
+
+  --arrow: 32px;
+  --arrow-gap: 22px;
+  --track-w: 260px;
+  --track-h: 34px;
+  --track-gap: 5px;
+  --thumb-cw: 20px;
+  --thumb-ch: 28px;
+  --thumb-w: 16px;
+  --thumb-h: 22px;
+  --kb: 14px;
+}
+/* 榜单是一整页（不是浮在掘金上的卡片），浮层里也该有实底 */
+html.embed body { background: #F4F5F7; }
+html.embed .board-wrap { height: calc(722px * 1); padding: 0; }
+
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+
+html, body { margin: 0; padding: 0; }
+body {
+  background: var(--page-bg);
+  color: var(--ink);
+  font-family: 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+button { font: inherit; color: inherit; border: 0; background: none; cursor: pointer; }
+.num, .mono { font-family: Inter, 'Noto Sans SC', sans-serif; }
+
+.board-wrap {
+  width: 100%;
+  padding: 0 24px;
+  overflow: hidden;
+}
+.board {
+  width: 1440px;
+  height: var(--board-h, 1000px);
+  margin: 0 auto;
+  padding: var(--page-pad);
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  background: var(--page-bg);
+  transform: scale(var(--k, 1));
+  transform-origin: center top;
+}
+
+/* ================= Header ================= */
+.bd-hd {
+  height: var(--hdr-h);
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.bd-hd h1 { margin: 0; font-size: 28px; font-weight: 700; letter-spacing: -.2px; }
+.bd-hd-l p { margin: 6px 0 0; font-size: 12px; color: var(--ink2); }
+html.embed .bd-hd h1 { font-size: 22px; }
+/* 浮层头部是**一行**：标题与副题并排（设计稿 04），不是上下两行。
+ * 站点版两行没问题（Header 96 装得下），浮层只有 56，两行会把头部撑变形。 */
+html.embed .bd-hd-l { display: flex; align-items: baseline; gap: 10px; }
+html.embed .bd-hd-l p { margin: 0; font-size: 11px; }
+
+.bd-hd-r { display: flex; align-items: center; gap: 10px; }
+
+/* ================= 榜期卡（v2，2026-10-05）=================
+ * ⭐ 它替掉的是原来那个 `.seg` iOS 分段控件。改它的理由不是好看，是原来那个
+ *    **信息量为零**：日榜=今天0点起、周榜=7天前这一刻（不是自然周，board-core.mjs:92），
+ *    实测 117 vs 730 条扫描、6 倍差距；分布也完全不同（嘴硬榜 2 vs 0 张）。
+ *    光写「日榜/周榜」四个字把这三件事全藏起来了，用户点进去才发现「暂无上榜」，
+ *    像出了 bug。所以这张卡把 **时间窗 / 规模 / 状态** 三层摊开。
+ * 规格见 spec §6.7。 */
+.rng { position: relative; flex: 0 0 auto; }
+
+.rng-card {
+  display: flex; align-items: center; gap: 12px;
+  width: 236px; height: 44px; padding: 6px 10px 6px 6px;
+  background: #fff; border: 1.5px solid var(--ink); border-radius: 12px;
+  box-shadow: 0 2px 6px rgba(28,31,36,.14);
+  transition: box-shadow .18s, border-color .18s;
+}
+.rng-card:hover { box-shadow: 0 3px 10px rgba(28,31,36,.20); }
+.rng-card:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+.rng-card[aria-expanded="true"] { box-shadow: 0 3px 12px rgba(28,31,36,.22); }
+
+/* 左：榜期徽标。**降为身份标识**——原来是整个控件的主角，现在缩成一个小方块。 */
+.rng-tag {
+  flex: 0 0 auto; width: 62px; height: 32px;
+  display: flex; align-items: center; justify-content: center;
+  background: #F4F5F7; border-radius: 8px;
+  font-size: 13px; font-weight: 900; color: var(--ink);
+}
+
+/* 右：两行信息。第一行=时间窗（新增），第二行=规模（原来是页脚那句灰字）。 */
+.rng-txt {
+  flex: 1 1 auto; min-width: 0; text-align: left;
+  display: flex; flex-direction: column; gap: 1px;
+}
+.rng-l1 {
+  font-size: 12px; font-weight: 700; line-height: 16px; color: var(--ink);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.rng-l2 {
+  font-size: 11px; line-height: 15px; color: var(--ink3);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.rng-ico {
+  flex: 0 0 auto; width: 18px; height: 18px;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--ink2); font-size: 13px; line-height: 1;
+}
+
+/* 三种状态：评分中（蓝）/ 失败（橙）/ 旧数据。
+ * ⚠️ 这条是「切换代价可见」的关键 —— 原来切过去头部一点变化都没有，
+ *    而周榜首次要翻 45 页、约 100 秒。 */
+.rng-card.is-building { border-color: #1E80FF; }
+.rng-card.is-building .rng-tag { background: #1E80FF; color: #fff; }
+.rng-card.is-building .rng-l1 { color: #1E80FF; }
+.rng-card.is-building .rng-ico {
+  border: 2px solid #1E80FF; border-radius: 50%;
+  border-top-color: transparent; font-size: 0;
+  animation: rngSpin .8s linear infinite;
+}
+@keyframes rngSpin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .rng-card.is-building .rng-ico { animation: none; } }
+
+.rng-card.is-failed { border-color: #E0E3E8; }
+.rng-card.is-failed .rng-tag { color: var(--ink3); }
+.rng-card.is-failed .rng-l1 { color: #FF5A3C; }
+.rng-card.is-failed .rng-ico { color: #FF5A3C; font-weight: 900; }
+
+/* ---- 展开态下拉 ---- */
+.rng-pop {
+  position: absolute; top: 52px; right: 0; z-index: 40;
+  width: 460px; padding: 6px;
+  background: #fff; border: 1px solid var(--line2); border-radius: 14px;
+  box-shadow: 0 8px 24px rgba(0,0,0,.18);
+}
+
+/* 四列网格：赛道 / 日榜 / 周榜 / 差异 —— 头和行必须共用同一套列宽 */
+.rng-pop-hd, .rng-row, .rng-pop-sum {
+  display: grid; grid-template-columns: 96px 66px 66px 1fr;
+  gap: 10px; align-items: center;
+}
+.rng-pop-hd { padding: 8px 8px 8px 12px; }
+.rng-pop-hd span {
+  font-size: 11px; color: var(--ink3);
+}
+.rng-pop-hd span:nth-child(2), .rng-pop-hd span:nth-child(3) { text-align: center; }
+
+.rng-rows { display: flex; flex-direction: column; gap: 2px; }
+.rng-row { padding: 7px 8px 7px 12px; border-radius: 8px; cursor: pointer; }
+.rng-row:hover { background: #F4F5F7; }
+.rng-row:focus-visible { outline: 2px solid var(--ink); outline-offset: -1px; }
+.rng-row.is-pending { cursor: default; opacity: .55; }
+.rng-row.is-pending:hover { background: none; }
+.rng-row-n { font-size: 13px; font-weight: 600; color: var(--ink); }
+.rng-row-d, .rng-row-w {
+  text-align: center; font-family: Inter, sans-serif;
+  font-size: 14px; font-weight: 900; color: var(--ink);
+}
+.rng-row-x { font-size: 12px; color: var(--ink3); }
+
+/* ⚠️ 空榜那行用暖底 + 橙色数字：这是**数据事实**（分布天然偏斜，spec §11.6），
+ *    不是加载失败。旧设计里点进去只看到「暂无上榜」，用户会以为是 bug。 */
+.rng-row.is-empty { background: #FFF9F5; }
+.rng-row.is-empty:hover { background: #FFF3E8; }
+.rng-row.is-empty .rng-row-w { color: #FF5A3C; }
+.rng-row.is-empty .rng-row-x { color: #FF5A3C; font-weight: 700; }
+.rng-row.is-more .rng-row-x { color: #12A173; font-weight: 600; }
+
+.rng-pop-sum {
+  margin-top: 2px; padding: 10px 8px 10px 12px;
+  background: #F4F5F7; border-radius: 8px;
+}
+.rng-pop-sum .rng-row-n { font-size: 12px; font-weight: 700; }
+.rng-pop-sum .rng-row-x { font-size: 11px; }
+
+.rng-pop-tip {
+  margin: 4px 0 0; padding: 9px 12px 5px;
+  font-size: 11px; line-height: 16px; color: var(--ink3);
+}
+
+/* ---- 浮层档位（722 / Header 只有 56）----
+ * 卡要压扁到 30：徽标 22、两行文字降到 11/13。
+ * 展开面板**不受 Header 高度限制**（它 absolute 定位），但宽度要跟着缩，
+ * 否则 460 宽会顶到浮层右缘。 */
+html.embed .rng-card { width: 210px; height: 34px; padding: 4px 8px 4px 4px; gap: 9px; }
+html.embed .rng-tag { width: 54px; height: 26px; font-size: 12px; }
+html.embed .rng-l1 { font-size: 11px; line-height: 14px; }
+html.embed .rng-l2 { font-size: 10px; line-height: 13px; }
+html.embed .rng-ico { width: 16px; height: 16px; font-size: 12px; }
+html.embed .rng-pop { top: 40px; width: 400px; }
+html.embed .rng-pop-hd, html.embed .rng-row, html.embed .rng-pop-sum {
+  grid-template-columns: 84px 58px 58px 1fr;
+}
+html.embed .rng-row-n { font-size: 12px; }
+html.embed .rng-row-d, html.embed .rng-row-w { font-size: 13px; }
+
+.bd-refresh {
+  display: inline-flex; align-items: center; gap: 6px;
+  height: 34px; padding: 0 14px; border-radius: 10px;
+  background: var(--ink); color: #fff; font-size: 12px; font-weight: 500;
+  box-shadow: 0 2px 6px rgba(0,0,0,.18);
+  transition: transform .15s var(--ease), opacity .15s;
+}
+html.embed .bd-refresh { height: 30px; padding: 0 11px; font-size: 11px; }
+.bd-refresh:hover { transform: translateY(-1px); }
+.bd-refresh:active { transform: translateY(0); }
+.bd-refresh[disabled] { opacity: .5; cursor: default; transform: none; }
+
+/* ================= 主体：两视图叠放 ================= */
+.bd-body { position: relative; flex: 1 1 auto; min-height: 0; }
+.view {
+  position: absolute; inset: 0;
+  display: flex; flex-direction: column;
+  gap: var(--gap16);
+}
+
+/* ================= 视图 1 · 六摞牌 ================= */
+.deck {
+  flex: 1 1 auto; min-height: 0;
+  display: flex; align-items: center; justify-content: center;
+  gap: var(--deck-gap);
+}
+
+/* 一摞 = 三张牌垂直堆叠，底下两张各向下错开 9px（只有白边露出来）。
+ * ⚠️ 底牌带 rotation（-3° / 1.5°）—— 这是原设计的「微微散开」，别清掉。
+ *    旋转后包围盒变大，左右会被父容器裁掉约 7px，这是设计稿的实际观感。 */
+.stack {
+  position: relative;
+  width: var(--cover-w); height: var(--stack-h);
+  flex: 0 0 auto;
+  cursor: pointer;
+  transition: transform .32s var(--ease), opacity .24s linear;
+}
+.stack-face {
+  position: absolute; left: 0; width: var(--cover-w); height: var(--cover-h);
+  background: #fff; border-radius: 13px;
+  border: 1px solid #D6DBE0;
+  box-shadow: 0 3px 8px rgba(28,31,36,.07);
+}
+.stack-face.f2 { top: 0; }
+.stack-face.f1 { top: 9px; }
+.stack-face.f0 { top: 18px; }
+.stack:hover { transform: translateY(-6px); }
+.stack:hover .stack-face.f0 { box-shadow: 0 8px 18px rgba(28,31,36,.10); }
+.stack:active { transform: translateY(-2px) scale(.985); }
+
+/* 封面牌（摞顶）—— 202x283，**1:1.4 纸牌比例**，与详情大牌同比例。
+ *
+ * ⭐ 演进到第三版才对（前两版都被用户否了，别再往回走）：
+ *   v0.4.0 自己画整张卡：陪跑插画 + 网页字体排字 → 用户说「图片样式跟参考图没保持一致」。
+ *   v0.5.0 从参考图里切出牌面再凑 1:1.4 → 「贴图太丑了」。
+ *   v0.5.1 整张参考牌直接用（1:1.218）→ 「是把角色抠出来，不是把整张图都放进去，
+ *          贴在原有的那个卡片上，现在卡片看起来特别奇怪」。
+ *   ⭐ 现在（v0.6.0）= **我们自己的卡面版式（文字全实时）+ 只把参考图里的角色抠出来当插画**。
+ *      参考图那套字复刻不出来没关系 —— 赛道名/名次/分数本来就该跟数据走；
+ *      真正值得保留的是**角色本身**，所以只抠角色。
+ *
+ * 纵向预算（283 − padding 12/11 = 260）：
+ *   top 22 + name 30 + fig flex + def 13 + go 22 + 间距 ≈ 260 → 形象区约 178x157。 */
+.cover {
+  position: absolute; left: 0; top: 0; z-index: 3;
+  width: var(--cover-w); height: var(--cover-h);
+  padding: 12px 12px 11px;
+  display: flex; flex-direction: column;
+  background: #fff; border-radius: 13px; border: 1px solid var(--line2);
+  box-shadow: 0 5px 14px rgba(28,31,36,.09);
+  overflow: hidden;
+}
+/* 名次行：左「符号 + 名次」右「最高分」，颜色由 board.js 内联写（赛道色） */
+.cover-top {
+  flex: 0 0 auto; height: 22px;
+  display: flex; align-items: center; justify-content: space-between;
+}
+.cover-top .left { display: flex; align-items: center; gap: 4px; }
+.cover-top .left svg { display: block; }
+.cover-rank, .cover-score {
+  font-family: Inter, sans-serif; font-weight: 900; font-size: 19px; line-height: 1;
+}
+/* 赛道名：参考图那套是粗描边毛笔感，网页字体模仿不来，
+ * 但用 900 字重 + 负字距已经能把「砸下来」的语气做出来。 */
+.cover-name {
+  flex: 0 0 auto; margin-top: 2px;
+  font-size: 26px; font-weight: 900; line-height: 30px;
+  text-align: center; letter-spacing: -.5px; white-space: nowrap;
+}
+/* 形象区 = 剩余量（不是设计值），角色图 contain 贴底「站」在卡面上 */
+.cover-fig {
+  flex: 1 1 auto; min-height: 0; margin: 4px 0;
+  background-repeat: no-repeat; background-position: center bottom;
+  background-size: contain;
+}
+.cover-def {
+  flex: 0 0 auto;
+  font-size: 10px; line-height: 13px; color: #6B7280;
+  text-align: center; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis;
+}
+.cover-go {
+  flex: 0 0 auto; margin-top: 6px; height: 22px;
+  display: flex; align-items: center; justify-content: center; gap: 4px;
+  border: 1px solid var(--line2); border-radius: 999px;
+  font-size: 10px; line-height: 1; color: var(--ink2); background: #fff;
+}
+.cover-go svg { display: block; }
+/* 空榜：不另做占位图 —— 名次显 0、分数显 —、入口显「暂无上榜」即可。
+ * 降一点不透明度提示「这条赛道今天没货」，仍然可点。 */
+.stack.empty .cover { opacity: .78; }
+
+/* 交互态：被点的那摞「按到」，其余五摞淡出 */
+.stack.press { transform: translateY(4px) scale(.97); }
+.deck.leaving .stack { opacity: 0; transition: opacity .22s linear; }
+.deck.leaving .stack.press { opacity: 1; }
+.stack .stack-face { transition: opacity .2s linear, box-shadow .3s var(--ease); }
+.stack.taken .stack-face.f1,
+.stack.taken .stack-face.f0 { opacity: 0; }
+.stack.taken .cover { opacity: 0; transition: opacity .12s linear .06s; }
+
+/* ---------- 发牌流程说明 1440x104 ---------- */
+.guide {
+  flex: 0 0 auto; height: 104px;
+  display: flex; align-items: center; gap: 28px;
+  padding: 18px; border-radius: 12px;
+  background: #fff; border: 1px solid var(--line);
+}
+/* ⚠️ 浮层里**不显示**「怎么翻牌」那条 —— 设计稿 04（扩展浮层·六摞牌）里就没有。
+ * 722 的纵向预算 = Header 56 + 摞 301 + Footer ≈48 + 三段留白；
+ * 再塞一条 84 高的说明会把牌阵顶到上半屏（`.deck` 是 flex:1 居中，可用高度被它吃掉），
+ * 下半屏留白全没了 —— 实测牌阵顶边从 220 掉到 160。
+ * 三步骤说明是「第一次来站点」才需要的引导，浮层是随手看一眼的场景，站点版留着就够。 */
+html.embed .guide { display: none; }
+.guide-tag { flex: 0 0 auto; display: flex; flex-direction: column; gap: 3px; }
+.guide-tag b { font-size: 13px; }
+.guide-tag span { font-size: 11px; color: var(--ink3); }
+.guide-step { flex: 1 1 0; display: flex; align-items: center; gap: 10px; }
+.guide-step i {
+  flex: 0 0 auto; width: 22px; height: 22px; border-radius: 50%;
+  background: var(--ink); color: #fff; font-style: normal;
+  font-family: Inter, sans-serif; font-size: 12px; font-weight: 700;
+  display: flex; align-items: center; justify-content: center;
+}
+.guide-step b { display: block; font-size: 12px; }
+.guide-step span { display: block; margin-top: 2px; font-size: 11px; color: var(--ink3); }
+html.embed .guide-step span { display: none; }
+
+/* ================= 视图 2 · 赛道详情 ================= */
+.crumbs {
+  flex: 0 0 auto; height: var(--bc-h);
+  display: flex; align-items: center; gap: 8px; font-size: var(--bc-fs);
+}
+.back {
+  display: inline-flex; align-items: center; gap: 2px;
+  color: var(--ink2); padding: 0; transition: color .15s;
+}
+.back:hover { color: var(--ink); }
+.crumbs-sep { color: #C9CDD4; }
+.crumbs-cur { font-weight: 600; color: var(--ink); }
+html.embed .crumbs { height: 32px; }
+
+/* 牌台 = 左箭头 + 大牌槽 + 右箭头，整组居中 */
+.table {
+  position: relative; flex: 1 1 auto; min-height: 0;
+  display: flex; align-items: center; justify-content: center;
+  gap: var(--arrow-gap);
+  touch-action: pan-y;
+}
+.round {
+  flex: 0 0 auto; width: var(--arrow); height: var(--arrow);
+  border-radius: 50%; display: flex; align-items: center; justify-content: center;
+  background: #fff; border: 1px solid var(--line2); color: var(--ink);
+  box-shadow: 0 3px 10px rgba(28,31,36,.10);
+  transition: opacity .2s linear, transform .16s var(--ease), box-shadow .2s;
+}
+.round:hover { transform: scale(1.06); }
+.round[disabled] {
+  background: #F0F1F3; border-color: transparent; color: #B6BCC4;
+  box-shadow: none; cursor: default; transform: none;
+}
+.table.dragging .round { opacity: 0; pointer-events: none; }
+
+/* 大牌槽：三张卡叠在同一格（prev / cur / next），靠 --dx 整体跟手位移 */
+.slot {
+  position: relative; flex: 0 0 auto;
+  width: var(--card-w); height: var(--card-h);
+}
+.cx {
+  position: absolute; inset: 0;
+  transition: transform .32s var(--ease), opacity .32s linear;
+  will-change: transform;
+}
+/* 静止时左右两张完全退到画外，不留缝；拖动时从对侧露出牌边。
+ * --dx 是「当前牌跟手位移的像素数」（无单位），由 board.js 写在 .slot 上。 */
+.cx[data-pos="cur"] { transform: translate3d(calc(var(--dx, 0) * 1px), 0, 0); }
+.cx[data-pos="next"] {
+  transform: translate3d(calc(100% + 16px + var(--dx, 0) * 1px), 0, 0);
+}
+.cx[data-pos="prev"] {
+  transform: translate3d(calc(-100% - 16px + var(--dx, 0) * 1px), 0, 0);
+}
+.cx[data-pos="next"], .cx[data-pos="prev"] { opacity: 0; }
+/* --peek 拖动时按位移比例淡入，不要一上来就整张露出来 */
+.slot.peek .cx[data-pos="next"],
+.slot.peek .cx[data-pos="prev"] { opacity: var(--peek, 1); }
+.slot.instant .cx { transition: none; }
+/* 没过阈值 → 弹回，比正式切牌短（160ms） */
+.slot.snapping .cx { transition-duration: var(--snapdur, 160ms); }
+
+/* ---------- 大牌本体（396x554 = 1:1.4） ---------- */
+.bigcard {
+  width: 100%; height: 100%;
+  padding: var(--card-pad); display: flex; flex-direction: column; gap: var(--card-gap);
+  background: #fff; border-radius: var(--card-r); border: 1px solid var(--line2);
+  box-shadow: var(--card-shadow);
+  overflow: hidden;
+}
+.bc-top {
+  flex: 0 0 auto; height: 32px;
+  display: flex; align-items: center; justify-content: space-between;
+}
+html.embed .bc-top { height: 28px; }
+.bc-top .left { display: flex; align-items: center; gap: 6px; }
+.bc-rank { font-family: Inter, sans-serif; font-weight: 900; font-size: var(--d-rank); line-height: 1; }
+.bc-score { font-family: Inter, sans-serif; font-weight: 900; font-size: var(--d-score); line-height: 1; }
+html.embed .bc-rank, html.embed .bc-score { font-weight: 700; }
+.bc-fig {
+  flex: 1 1 auto; min-height: 96px; border-radius: var(--fig-r);
+  background-repeat: no-repeat; background-position: center; background-size: cover;
+}
+.bc-verdict {
+  flex: 0 0 auto; font-size: var(--d-verdict); line-height: var(--d-verdict-lh);
+  font-weight: 500;
+}
+.bc-text {
+  flex: 0 0 auto; font-size: var(--d-text); line-height: var(--d-text-lh); color: var(--ink);
+  overflow: hidden; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
+}
+.bc-dims { flex: 0 0 auto; font-size: var(--d-dims); line-height: 14px; color: var(--ink3); }
+.bc-line { flex: 0 0 auto; height: 1px; background: var(--line); }
+.bc-foot {
+  flex: 0 0 auto; height: 20px;
+  display: flex; align-items: center; justify-content: space-between;
+  font-size: var(--d-author); color: var(--ink2);
+}
+.bc-foot .meta { color: var(--ink3); }
+.bc-go {
+  flex: 0 0 auto; height: var(--d-btn); border-radius: 10px;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--ink); color: #fff; font-size: var(--d-author); font-weight: 500;
+  gap: 5px; transition: opacity .15s;
+}
+.bc-go:hover { opacity: .86; }
+
+/* ---------- 切牌进度条整行 ---------- */
+.switchbar {
+  flex: 0 0 auto; height: var(--prog-h);
+  display: flex; align-items: center; justify-content: center; gap: 16px;
+}
+/* 固定宽轨道 + N 个缩略卡，超出横滚；条数少时自然留白，不拉伸 */
+.track {
+  width: var(--track-w); height: var(--track-h);
+  flex: 0 0 auto;
+  display: flex; align-items: center; justify-content: flex-start; gap: var(--track-gap);
+  overflow-x: auto; overflow-y: hidden; scrollbar-width: none;
+}
+.track::-webkit-scrollbar { display: none; }
+.track.narrow { justify-content: center; }
+.thumb {
+  flex: 0 0 auto; border-radius: 4px; background: #D8DDE3;
+  width: var(--thumb-w); height: var(--thumb-h);
+  transition: width .22s var(--ease), height .22s var(--ease), background .2s, border-color .2s;
+}
+.thumb.on {
+  width: var(--thumb-cw); height: var(--thumb-ch); border-radius: 5px;
+  background: #fff; border: 1px solid currentColor;
+  box-shadow: 0 2px 6px rgba(28,31,36,.12);
+}
+.ops { display: flex; flex-direction: column; gap: 5px; flex: 0 0 auto; }
+.ops-num { font-size: var(--d-num); font-weight: 500; color: var(--ink2); }
+.ops-keys {
+  display: flex; align-items: center; gap: 5px;
+  font-size: 10px; color: var(--ink3);
+}
+.ops-keys kbd { display: inline-flex; gap: 2px; border: 0; background: none; padding: 0; }
+html.embed .ops-keys kbd svg { width: 14px; height: 14px; }
+.ops-keys em { font-style: normal; color: #C9CDD4; }
+html.embed .ops-keys span.txt { display: none; }
+
+/* ================= 系统状态覆盖层 ================= */
+.sys {
+  position: absolute; inset: 0; z-index: 20;
+  display: flex; align-items: center; justify-content: center;
+}
+.sys-card {
+  width: 520px; padding: 28px; border-radius: 16px;
+  background: #fff; border: 1px solid var(--line);
+  box-shadow: 0 12px 30px rgba(28,31,36,.10);
+  text-align: center;
+}
+.sys-ico { display: flex; justify-content: center; margin-bottom: 12px; }
+.sys-title { display: block; font-size: 16px; }
+.sys-sub { margin: 8px 0 0; font-size: 12px; line-height: 20px; color: var(--ink3); }
+.sys-bar {
+  margin-top: 16px; height: 6px; border-radius: 3px; background: #EDEFF2; overflow: hidden;
+}
+.sys-bar > span {
+  display: block; height: 100%; width: 0; border-radius: 3px;
+  background: var(--ink); transition: width .4s var(--ease);
+}
+.sys-btn {
+  margin-top: 16px; height: 32px; padding: 0 16px; border-radius: 9px;
+  background: var(--ink); color: #fff; font-size: 12px;
+}
+
+/* ================= Footer 规则说明 ================= */
+.bd-ft {
+  flex: 0 0 auto; min-height: 48px;
+  display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  padding: 14px; border-radius: 12px;
+  background: #fff; border: 1px solid var(--line);
+  font-size: 11px; color: var(--ink2);
+}
+.bd-ft-l { display: flex; align-items: center; gap: 8px; }
+.bd-ft-r { display: flex; align-items: center; gap: 12px; color: var(--ink3); }
+html.embed .bd-ft { padding: 10px 12px; font-size: 10px; }
+html.embed .bd-ft-r span { display: none; }
+/* **详情页不显示这条规则栏**（设计稿 05 就没有它）。
+ * 理由不只是"设计稿没有"：栏高 48 + gap 20 = 68px 的竖向预算，
+ * 在有它的时候大牌被顶到 body 顶部（实测卡顶 y=144）；去掉后 body 撑到 614，
+ * 大牌随居中往下落到 y≈181，与设计稿的 176 对齐。
+ * 用 :has() 从视图的 hidden 属性反推状态，避免在 board.js 的 5 处 hidden 开关里挨个加类。 */
+body:has(#viewDetail:not([hidden])) .bd-ft { display: none; }
+.bd-rule {
+  height: 24px; padding: 0 10px; border-radius: 7px;
+  border: 1px solid var(--line2); color: var(--ink2); font-size: 11px;
+}
+.bd-rule:hover { border-color: #C9CDD4; color: var(--ink); }
+
+/* ================= 发牌飞行层 ================= */
+.fly-layer { position: fixed; inset: 0; pointer-events: none; z-index: 80; }
+/* 飞行层在 .board 之外 → 拿不到 .board 上的变量，尺寸一律用设计像素写死。
+ * ⭐ 封面牌与详情大牌**同为 1:1.4**，所以单轴等比缩放就够：
+ *      --s0 = 出发时（= 封面牌视觉宽 / 202）
+ *      --s  = 落位时（= 大牌视觉宽 / 202）
+ *    v0.5.1 那版封面是 1:1.218、大牌 1:1.4，两个比例不同，才需要 --s0x/--s0y 分轴；
+ *    回到同比例后就退回单轴了。 */
+.flyer {
+  position: fixed;
+  transform-origin: top left;
+  animation: dealFly .32s var(--ease) forwards;
+}
+/* 圆角也要跟着换算：视觉圆角 = 设计圆角 × 缩放，落位时才对得上大牌的 20px。
+ * 所以圆角做在 .flyer 上、由里面的 clone 继承 —— 直接改 clone 自己的圆角不会跟着缩放。 */
+.flyer > .cover { border-radius: inherit; }
+@keyframes dealFly {
+  0%   { transform: translate3d(0, 0, 0) scale(var(--s0, 1));
+         border-radius: 13px; }
+  25%  { transform: translate3d(calc(var(--dx) * .07), calc(var(--dy) * .07 - 8px), 0)
+                    scale(calc(var(--s0, 1) * 1.02)); }
+  100% { transform: translate3d(var(--dx), var(--dy), 0) scale(var(--s, 1));
+         border-radius: calc(20px / var(--s, 1)); }
+}
+/* 返回：入场倒放，压到 240ms */
+.flyer.back { animation: dealBack .24s var(--ease) forwards; }
+@keyframes dealBack {
+  0%   { transform: translate3d(var(--dx), var(--dy), 0) scale(var(--s, 1));
+         border-radius: calc(20px / var(--s, 1)); }
+  100% { transform: translate3d(0, 0, 0) scale(var(--s0, 1));
+         border-radius: 13px; }
+}
+
+/* ================= 评分规则弹窗 ================= */
+.mask {
+  position: fixed; inset: 0; z-index: 100;
+  background: rgba(23,26,31,.38);
+  display: flex; align-items: center; justify-content: center;
+}
+html.embed .mask { background: transparent; }
+.dlg {
+  width: 620px; max-height: 78vh; display: flex; flex-direction: column;
+  background: #fff; border-radius: 16px; box-shadow: 0 20px 50px rgba(0,0,0,.22);
+  overflow: hidden;
+}
+.dlg-hd {
+  flex: 0 0 auto; height: 52px; padding: 0 18px;
+  display: flex; align-items: center; justify-content: space-between;
+  border-bottom: 1px solid var(--line);
+}
+.dlg-hd b { font-size: 14px; }
+.dlg-x { font-size: 20px; line-height: 1; color: var(--ink3); }
+.dlg-bd { flex: 1 1 auto; overflow: auto; padding: 16px 18px 20px; }
+.dlg-bd p { margin: 0 0 10px; font-size: 12px; line-height: 20px; color: var(--ink2); }
+.dlg-bd code { background: #F4F5F7; padding: 1px 4px; border-radius: 4px; font-size: 11px; }
+.dlg-sec { margin: 16px 0 8px !important; color: var(--ink) !important; font-weight: 700; }
+.dlg-sec:first-child { margin-top: 0 !important; }
+.dlg-tracks { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.dlg-tr {
+  display: flex; align-items: center; gap: 8px; padding: 8px 10px;
+  border: 1px solid var(--line); border-radius: 9px; font-size: 12px;
+}
+.dlg-tr b { font-weight: 700; }
+.dlg-tr span { font-size: 11px; color: var(--ink3); margin-left: auto; }
+
+/* ================= toast ================= */
+.toast {
+  position: fixed; left: 50%; bottom: 32px; transform: translate(-50%, 12px);
+  padding: 9px 16px; border-radius: 10px;
+  background: rgba(26,29,33,.92); color: #fff; font-size: 12px;
+  opacity: 0; pointer-events: none; transition: opacity .2s, transform .2s var(--ease);
+  z-index: 200;
+}
+.toast.on { opacity: 1; transform: translate(-50%, 0); }
+
+/* ================= 窄屏：交给流式版式 =================
+ * 与 app.js 的 fitStage 断点 760 必须一致（那边只写 --k，这边只改排版）。 */
+@media (max-width: 760px) {
+  .board-wrap { padding: 0 12px; }
+  .deck { flex-wrap: wrap; gap: 18px; }
+  .stack { transform: scale(.78); }
+  .guide { height: auto; flex-direction: column; align-items: flex-start; gap: 12px; }
+  .bd-hd { height: auto; flex-direction: column; align-items: flex-start; gap: 12px; }
+  .bd-ft { flex-direction: column; align-items: flex-start; }
+  .switchbar { flex-direction: column; height: auto; }
+}
