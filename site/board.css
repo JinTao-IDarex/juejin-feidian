@@ -627,7 +627,9 @@ html.embed .sc-hand i { width: 52px; height: 34px; }
   z-index: 3;
 }
 /* 窗口外：沿扇面方向继续外斜 + 淡出 —— 进出扇面都是「继续延伸」，
- * 不会有牌凭空闪现。fidx 两端的扇面自然缺位（如 fidx=0 左侧无牌），不做补位。 */
+ * 不会有牌凭空闪现。v1.1.1 起扇面是**环形**（六张首尾相接）：任何时刻
+ * 恰好一张在扇外（±3 同距的「对面牌」），首/末赛道不再缺位。off 侧的
+ * 归属由 board.js 按行进方向定（fanPos 的 dir / fxTeleport）。 */
 .fx[data-pos="off-l"] { transform: translate3d(-170%, 12%, 0) rotate(-13deg); z-index: 2; opacity: 0; }
 .fx[data-pos="off-r"] { transform: translate3d(170%, 12%, 0) rotate(13deg); z-index: 2; opacity: 0; }
 /* 只有当前牌接收指针：点它 = 进详情；侧牌可见部分点下去落到 .ftable

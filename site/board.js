@@ -22,6 +22,11 @@
  *   行内左右箭头已撤（扇出的侧牌会伸进箭头原来的位置）：侧牌可见部分 /
  *   空白左右半区 / 键盘 ←→ / 小卡条都能切，点中心牌进详情不变。
  *   悬停：中心牌上移放大（transform），两侧邻牌向外让步 —— 全程零重排。
+ *
+ * v1.1.1：扇面改**环形**（六张牌首尾相接）：原来选到首/末赛道时扇面缺成
+ *   三张（「最旁边那张不见了」）；现在任何时刻都是满五张，恰好一张在扇外。
+ *   换位 = 环上相邻一步（含 0↔5 环回），fstep 不再被两端卡死；
+ *   环回断裂处（该从左进场的牌停在右侧扇外）由 fxTeleport 无感瞬移。
  */
 (function () {
   'use strict';
@@ -612,13 +617,27 @@
 
   /* 扇面位次名（v1.1）：与 board.css 的 .fx[data-pos=…] 选择器一一对应，
    * 改那边的选择器要同步改这里。
-   * ±2 以内进扇；更远的沿同方向滑出扇外淡出 —— 进出扇面都是
-   * 「沿扇面继续延伸」，牌不会凭空闪现/消失。 */
-  function fanPos(d) {
+   * ±2 以内进扇；更远的滑出扇外淡出（off-*）。
+   * dir（行进方向 ±1）只影响扇外那张的 off 侧：换位中它沿**反方向**退出
+   * （next2 往右出、prev2 往左出），视觉上就是「整扇往行进方向挪一格」。 */
+  function fanPos(d, dir) {
     if (d === 0) return 'cur';
     var side = d < 0 ? 'prev' : 'next';
-    if (Math.abs(d) > 2) return d < 0 ? 'off-l' : 'off-r';
+    if (Math.abs(d) > 2) {
+      if (dir) return dir > 0 ? 'off-l' : 'off-r';
+      return d < 0 ? 'off-l' : 'off-r';   // 静态重排（paintFeature）：按符号，两侧都不可见
+    }
     return side + (Math.abs(d) === 2 ? '2' : '');
+  }
+
+  /* 环形差值：把 (i - fidx) 归一到 (-n/2, n/2]。
+   * ⭐ v1.1.1 环形修复：不环形的话选到首/末赛道时扇面缺成三张
+   *   （「最旁边那张不见了」）；首尾相接后任何时刻都是满五张扇面，
+   *   六张里恰好一张在扇外（n=6 时 ±3 同距，就是「对面那张」）。 */
+  function fanDelta(i, fidx, n) {
+    var d = ((i - fidx) % n + n) % n;
+    if (d > n / 2) d -= n;
+    return d;
   }
 
   /* 首页扇面：六张赛道牌全渲染（含扇外的 off-*，opacity:0 收着）。
@@ -634,7 +653,7 @@
        * 都从它派生；写在 .fx 上由 .cover 继承，一处改色全卡跟。
        * data-i = 赛道下标 —— fslideTo 靠它原地换 data-pos，不重建 DOM。 */
       return '<div class="fx' + (empty ? ' empty' : '') +
-        '" data-i="' + i + '" data-pos="' + fanPos(i - S.fidx) + '"' +
+        '" data-i="' + i + '" data-pos="' + fanPos(fanDelta(i, S.fidx, bs.length)) + '"' +
         ' style="--tc:' + b.color + '">' +
         '<div class="cover">' + coverHTML(b) + '</div></div>';
     }).join('');
@@ -989,22 +1008,46 @@
    * 连按 ←→ 是连续滑动而不是一步步顿。 */
   function fstep(d) {
     var bs = (S.data && S.data.boards) || [];
-    var ni = S.fidx + d;
-    if (S.busy || ni < 0 || ni >= bs.length) return;
+    if (S.busy || !bs.length) return;
+    /* v1.1.1 环形换位：首尾相接（毒舌 ←→ emo 互为邻居），
+     * 两端不再「按了没反应」—— 原来越界直接 return，还顺带让扇面缺位。 */
+    var ni = (S.fidx + d + bs.length) % bs.length;
     fslideTo(ni, d);
+  }
+
+  /* 无感瞬移（只给扇外牌用）：off-l / off-r 两侧都是 opacity:0，
+   * 在两侧之间挪动本该瞬间完成 —— 不关过渡的话，它会带着淡入
+   * 横穿整条扇面（环回断裂处必现，见 fslideTo 里那两条）。 */
+  function fxTeleport(el, pos) {
+    el.style.transition = 'none';
+    el.setAttribute('data-pos', pos);
+    void el.offsetWidth;
+    el.style.transition = '';
   }
 
   function fslideTo(ni, d) {
     var bs = (S.data && S.data.boards) || [];
     if (ni < 0 || ni >= bs.length) return;
-    /* 相邻一步：换 data-pos 即可。跨多张（小卡点远端）或减动效环境：
-     * 整槽重建直接落位 —— 跨 2 张以上时中间没有牌可走，横穿整条扇面观感乱。 */
-    if (motion() && Math.abs(ni - S.fidx) === 1) {
+    var n = bs.length;
+    /* 沿环的正向步数：环形换位时 ni - S.fidx 可能是 ∓(n-1)，
+     * 「是不是相邻一步」不能看差值，要看环上距离 + 行进方向。 */
+    var ring = ((ni - S.fidx) % n + n) % n;
+    var adjacent = (d === 1 && ring === 1) || (d === -1 && ring === n - 1);
+    /* 相邻一步（含首尾环回）：换 data-pos，整扇各滑一格。
+     * 跨多张 / 减动效：整槽重建直接落位 —— 远端牌横穿整条扇面观感乱。 */
+    if (motion() && adjacent) {
       S.fidx = ni;
       var cards = fslotEl.children;
       for (var c = 0; c < cards.length; c++) {
-        cards[c].setAttribute('data-pos',
-          fanPos(Number(cards[c].getAttribute('data-i')) - S.fidx));
+        var el = cards[c];
+        var nd = fanDelta(Number(el.getAttribute('data-i')), ni, n);
+        var op = el.getAttribute('data-pos');
+        /* 环回断裂处：本该从左侧进场（nd=-2）的牌却停在右侧扇外
+         * （或镜像情形）→ 先瞬移到进场侧再起过渡。两侧都不可见，
+         * 瞬移无感；不处理的话那张牌会横穿整条扇面淡入。 */
+        if (nd === -2 && op === 'off-r') fxTeleport(el, 'off-l');
+        else if (nd === 2 && op === 'off-l') fxTeleport(el, 'off-r');
+        el.setAttribute('data-pos', fanPos(nd, d));
       }
       paintStrip();
       return;
@@ -1408,13 +1451,18 @@
       var bs = (S.data && S.data.boards) || [];
       if (bs[S.fidx] && !S.busy) openTrack(bs[S.fidx].id);
     });
-    /* 小卡条：点谁切谁；跨多张直接落位（见 fslideTo） */
+    /* 小卡条：点谁切谁；环上相邻（含 0↔5 跨缝）走滑动，跨多张直接落位（见 fslideTo）。
+     * 方向按「环上更近的一侧」定：j<fidx 不一定是往左 —— 在「e」点「毒」
+     * 跨缝，短方向是往右环回，猜错方向会退化成整槽重建（动画丢失）。 */
     stripEl.addEventListener('click', function (e) {
       var c = e.target.closest('.fchip');
       if (!c || S.busy) return;
       var j = Number(c.getAttribute('data-j'));
       if (!(j >= 0) || j === S.fidx) return;
-      fslideTo(j, j > S.fidx ? 1 : -1);
+      var bs = (S.data && S.data.boards) || [];
+      var n = bs.length || 6;
+      var ring = ((j - S.fidx) % n + n) % n;
+      fslideTo(j, ring <= n - ring ? 1 : -1);
     });
     /* 箭头不单独绑 click —— 见上面 ftable 的委托注释 */
 
