@@ -558,23 +558,109 @@ html.embed .sc-sym { opacity: .5; }
 html.embed .sc-hand i { width: 52px; height: 34px; }
 
 
-/* ================= 视图 1 · 大封面 + 小卡条（v0.9.0） =================
- * 旧「六摞牌」（v0.6.0~v0.8.x）改为「一张大牌 + 一条小卡」：
- *   上 = 当前赛道封面大牌（1:1.4，站点 300x420 / 浮层 240x336），
- *   下 = 六张赛道小卡（首字 + 赛道色选中态），点谁切谁，左右切牌动画。
- * 切牌机制与详情 .slot 完全同款（.fx 复用 .cx 的 --dx / peek / sliding 规则）。
+/* ================= 视图 1 · 扇形牌阵 + 小卡条（v1.1） =================
+ * v1.1 起首页大牌区 = **五张牌的扇面**（用户参考图的布局演示）：
+ *   当前赛道牌居中、最高、无旋转、z 序最上；左右各两张邻牌
+ *   向外旋转下沉、被邻牌叠压约 1/3 牌宽 —— 「手牌」观感。
+ *   窗口外（±2 更远）的赛道牌沿扇面方向继续滑出并淡出。
+ * v0.9.0~v1.0 的行内左右箭头已撤：扇出的侧牌会伸进箭头原来的位置，
+ *   浮在其上的箭头既挡牌面又互相抢点击；侧牌可见部分本身就是切赛道入口。
  * 纵向预算（v0.9.2 删掉底部「怎么看榜」那条 104 后，余量全归 .ftable；
  * v0.9.3 画布 1000 → 890（可视视口不够时 clamp 再收紧，下限 800））：
  *   站点 body 658 = ftable 574 + 16 + strip 68（牌 420 在 ftable 里居中，上下各 ~77）
  *   浮层 body 520 = ftable 446 + 16 + strip 58（牌 336，上下各 ~55）
+ *   扇面侧牌再往下沉（--fx-y2 = 10% 牌高 + 旋转外扩），站点最深处 ~57 < 77 ✓
  * 卡面版式从 v0.6.0 继承（演进的教训别回退）：
  *   v0.4.0 照参考图重画 ❌ / v0.5.0 切图凑比例 ❌ / v0.5.1 整张图当卡面 ❌
  *   → 版式归版式、素材归素材：文字全实时，角色抠出来贴形象区。 */
 .ftable {
   flex: 1 1 auto; min-height: 0;
   display: flex; align-items: center; justify-content: center;
-  gap: var(--arrow-gap);
   touch-action: pan-y;
+  /* 整个牌台都可点（中间 = 进详情，两侧 = 切赛道），指针全程手型 */
+  cursor: pointer;
+}
+
+/* ---- 扇形牌阵坐标（全部相对牌自身宽高的 %，站点/浮层一套两档） ----
+ * --fx-x1/x2 = 各圈水平错位。⚠️ 别按「名义叠压」算：牌一旋转，水平投影
+ *               变宽（300x420 转 5° → 投影 335px），可见叠压比名义值大
+ *               一截（60% 错位时实测遮掉邻牌 ~46%，赛道名/入口被切断）。
+ *               70/146 实测遮 ~36%/~40%，贴近参考图 20~35% 的观感带。
+ * --fx-y1/y2 = 下沉量（中心牌最高，越靠边越低 —— 参考图里中心牌明显拔起）
+ * --fx-r1/r2 = 外旋角（左牌逆时针 / 右牌顺时针，顶边向外倒）
+ * 悬停让步量 --fx-yield* 见下面悬停块。 */
+.fslot {
+  --fx-dur: 300ms;    /* 悬停与换位统一时长（约 300ms，柔和缓动） */
+  --fx-x1: 70%;
+  --fx-y1: 5%;
+  --fx-r1: 5deg;
+  --fx-x2: 146%;
+  --fx-y2: 10%;
+  --fx-r2: 9deg;
+  --fx-yield1: 7%;    /* 悬停：邻牌向外让 7% 牌宽 */
+  --fx-yield2: 5%;    /* 悬停：第二圈再让 5%，递次散开 */
+}
+/* ⚠️ 与详情 .cx 分家（原先是同一组规则）：.cx 那边拖动跟手、opacity 必须
+ *    立即跟随（check_extension.py 有断言）；首页扇面没有拖动，进出扇面
+ *    的牌恰恰要靠 opacity 淡入淡出，所以 .fx 给 opacity 也挂过渡。 */
+.fx {
+  position: absolute; inset: 0;
+  transition: transform var(--fx-dur) var(--ease), opacity var(--fx-dur) ease;
+  will-change: transform;
+}
+/* 静止位次：z 序 = 圈数倒序（中心压两侧、内圈压外圈） */
+.fx[data-pos="cur"]   { transform: translate3d(0, 0, 0); z-index: 5; }
+.fx[data-pos="prev"] {
+  transform: translate3d(calc(var(--fx-x1) * -1), var(--fx-y1), 0) rotate(calc(var(--fx-r1) * -1));
+  z-index: 4;
+}
+.fx[data-pos="next"] {
+  transform: translate3d(var(--fx-x1), var(--fx-y1), 0) rotate(var(--fx-r1));
+  z-index: 4;
+}
+.fx[data-pos="prev2"] {
+  transform: translate3d(calc(var(--fx-x2) * -1), var(--fx-y2), 0) rotate(calc(var(--fx-r2) * -1));
+  z-index: 3;
+}
+.fx[data-pos="next2"] {
+  transform: translate3d(var(--fx-x2), var(--fx-y2), 0) rotate(var(--fx-r2));
+  z-index: 3;
+}
+/* 窗口外：沿扇面方向继续外斜 + 淡出 —— 进出扇面都是「继续延伸」，
+ * 不会有牌凭空闪现。fidx 两端的扇面自然缺位（如 fidx=0 左侧无牌），不做补位。 */
+.fx[data-pos="off-l"] { transform: translate3d(-170%, 12%, 0) rotate(-13deg); z-index: 2; opacity: 0; }
+.fx[data-pos="off-r"] { transform: translate3d(170%, 12%, 0) rotate(13deg); z-index: 2; opacity: 0; }
+/* 只有当前牌接收指针：点它 = 进详情；侧牌可见部分点下去落到 .ftable
+ * （pointer-events 穿透），由左右半区逻辑接管 = 切一张赛道。 */
+.fx:not([data-pos="cur"]) { pointer-events: none; }
+
+/* ---- 悬停 / 键盘聚焦：当前牌轻微上移放大，邻牌向两侧让步 ----
+ * 只改 transform（缩放中心 = 牌心，不改变布局盒）；配合 .cover 那条
+ * 投影加深，位移全程零重排。运动是「当前牌起、两侧让」的联动，
+ * 不透明度不动 —— 让步的是空间，不是层级。 */
+.fslot:hover .fx[data-pos="cur"],
+.fslot:focus-visible .fx[data-pos="cur"] {
+  transform: translate3d(0, -2%, 0) scale(1.04);
+}
+.fslot:hover .fx[data-pos="prev"],
+.fslot:focus-visible .fx[data-pos="prev"] {
+  transform: translate3d(calc(var(--fx-x1) * -1 - var(--fx-yield1)), var(--fx-y1), 0)
+             rotate(calc(var(--fx-r1) * -1));
+}
+.fslot:hover .fx[data-pos="next"],
+.fslot:focus-visible .fx[data-pos="next"] {
+  transform: translate3d(calc(var(--fx-x1) + var(--fx-yield1)), var(--fx-y1), 0)
+             rotate(var(--fx-r1));
+}
+.fslot:hover .fx[data-pos="prev2"],
+.fslot:focus-visible .fx[data-pos="prev2"] {
+  transform: translate3d(calc(var(--fx-x2) * -1 - var(--fx-yield2)), var(--fx-y2), 0)
+             rotate(calc(var(--fx-r2) * -1));
+}
+.fslot:hover .fx[data-pos="next2"],
+.fslot:focus-visible .fx[data-pos="next2"] {
+  transform: translate3d(calc(var(--fx-x2) + var(--fx-yield2)), var(--fx-y2), 0)
+             rotate(var(--fx-r2));
 }
 
 /* ---- 封面大牌：参考图的「贴纸卡」版式（v1.0）----
@@ -602,11 +688,13 @@ html.embed .sc-hand i { width: 52px; height: 34px; }
   border: 2px solid var(--tc, var(--line2));
   box-shadow: 0 0 0 5px #fff, 0 14px 34px rgba(28,31,36,.14);
   overflow: hidden;
-  transition: transform .25s var(--ease), box-shadow .25s;
+  /* v1.1：上移/放大交给外层 .fx（与扇面位次同一套 transform），
+   * .cover 只剩投影过渡 —— 悬停起牌时影子跟着变深，时长对齐 --fx-dur */
+  transition: box-shadow var(--fx-dur, 300ms) ease;
 }
-.fslot:hover .fx[data-pos="cur"] .cover {
-  transform: translateY(-4px);
-  box-shadow: 0 0 0 5px #fff, 0 20px 44px rgba(28,31,36,.18);
+.fslot:hover .fx[data-pos="cur"] .cover,
+.fslot:focus-visible .fx[data-pos="cur"] .cover {
+  box-shadow: 0 0 0 5px #fff, 0 22px 48px rgba(28,31,36,.20);
 }
 /* 背景碎片层：绝对定位铺满。viewBox 与卡面同为 1:1.4 → 铺满即不变形。
  * 颜色吃 --tc，透明度压到 .22 —— 它是氛围，不能盖过角色和赛道名。 */
@@ -761,20 +849,21 @@ html.embed .crumbs { height: 32px; }
   transition: opacity .2s linear, transform .16s var(--ease), box-shadow .2s;
 }
 .round:hover { transform: scale(1.06); }
-/* 两端置灰：首页箭头用 .is-off（不是 disabled —— 那会让点箭头比点空白少一层反应），
- * 详情翻牌仍用 disabled */
-.round[disabled], .round.is-off {
+/* 两端置灰：disabled 会连 hover 一起没收，正好 —— 到头了就没有「还能点」的暗示
+ * （v1.1 首页箭头撤掉后，这条只剩详情翻牌在用；旧的 .is-off 类已无人使用） */
+.round[disabled] {
   background: #F0F1F3; border-color: transparent; color: #B6BCC4;
   box-shadow: none; cursor: default; transform: none;
 }
 .table.dragging .round { opacity: 0; pointer-events: none; }
 
-/* 大牌槽：三张卡叠在同一格（prev / cur / next），靠 --dx 整体跟手位移。
- * v0.9.0：首页大封面槽 .fslot 复用同一套机制 —— 切赛道 = 左右切牌。 */
+/* 大牌槽（详情）：三张卡叠在同一格（prev / cur / next），靠 --dx 整体跟手位移。
+ * v1.1：首页 .fslot 已改为扇形牌阵（见视图 1 那块），不再复用这套机制，
+ *   这组规则现在只属于详情翻牌。 */
 .slot, .fslot { position: relative; flex: 0 0 auto; }
 .slot { width: var(--card-w); height: var(--card-h); }
-.fslot { width: var(--fw); height: var(--fh); cursor: pointer; }
-.cx, .fx {
+.fslot { width: var(--fw); height: var(--fh); }
+.cx {
   position: absolute; inset: 0;
   /* ⚠️ **只有 transform 挂过渡，opacity 不挂** —— 这是本轮修的关键。
    * 挂`opacity .32s linear` 会让「对侧那张牌」在位移全程半透明地追：
@@ -783,7 +872,8 @@ html.embed .crumbs { height: 32px; }
    * 拖动时更糟：--peek 每次 pointermove 都在变，但透明度有 .32s 过渡，
    *   永远追不上 → 「拖得快、牌跟不上」的橡皮筋感。
    * 正确分工：**位移走 easing 曲线，透明度立即跟随**（跟手就该是即时的）。
-   * 静止态两张牌opacity 恒为 0，不需要过渡；`.slot.peek` 给多少就是多少。 */
+   * 静止态两张牌opacity 恒为 0，不需要过渡；`.slot.peek` 给多少就是多少。
+   * （首页 .fx 是另一回事：没有拖动，进出扇面要 opacity 过渡 —— 规则在视图 1 块。） */
   transition: transform .32s var(--ease);
   will-change: transform;
 }
@@ -793,27 +883,25 @@ html.embed .crumbs { height: 32px; }
  *    切牌动画期间必须收成0 —— 否则两张牌隔着 16px 各自平移，
  *    看起来像「两张独立的卡在飘」而不是「一叠牌被抽走一张」。
  *    board.js 在切牌时给 .slot 加 .sliding，用 --slidegap 覆盖它。 */
-.cx[data-pos="cur"], .fx[data-pos="cur"] { transform: translate3d(calc(var(--dx, 0) * 1px), 0, 0); }
-.cx[data-pos="next"], .fx[data-pos="next"] {
+.cx[data-pos="cur"] { transform: translate3d(calc(var(--dx, 0) * 1px), 0, 0); }
+.cx[data-pos="next"] {
   transform: translate3d(calc(100% + var(--slidegap, 16px) + var(--dx, 0) * 1px), 0, 0);
 }
-.cx[data-pos="prev"], .fx[data-pos="prev"] {
+.cx[data-pos="prev"] {
   transform: translate3d(calc(-100% - var(--slidegap, 16px) + var(--dx, 0) * 1px), 0, 0);
 }
 /* 静止时左右两张完全退到画外，且不接收指针（对侧牌只是「下一张的预览」） */
-.cx[data-pos="next"], .cx[data-pos="prev"],
-.fx[data-pos="next"], .fx[data-pos="prev"] { opacity: 0; pointer-events: none; }
+.cx[data-pos="next"], .cx[data-pos="prev"] { opacity: 0; pointer-events: none; }
 /* --peek 拖动时按位移比例淡入，不要一上来就整张露出来 */
-.slot.peek .cx[data-pos="next"], .slot.peek .cx[data-pos="prev"],
-.fslot.peek .fx[data-pos="next"], .fslot.peek .fx[data-pos="prev"] { opacity: var(--peek, 1); }
+.slot.peek .cx[data-pos="next"], .slot.peek .cx[data-pos="prev"] { opacity: var(--peek, 1); }
 .slot.instant .cx, .fslot.instant .fx { transition: none; }
 /* 轻量档兜底：board.html 只引 board.css，app.css 那套 html.motion-lite 规则到不了这页，
  * 所以这里补一条 —— 类由 board.js 的 resolveMotion() 落（与首页三档同口径）。 */
 html.motion-lite .cx, html.motion-lite .fx { transition: none; }
 /* 切牌动画中：两牌贴紧（--slidegap:0）—— 见上面那个 16px 的说明 */
-.slot.sliding, .fslot.sliding { --slidegap: 0px; }
+.slot.sliding { --slidegap: 0px; }
 /* 没过阈值 → 弹回，比正式切牌短（160ms） */
-.slot.snapping .cx, .fslot.snapping .fx { transition-duration: var(--snapdur, 160ms); }
+.slot.snapping .cx { transition-duration: var(--snapdur, 160ms); }
 
 /* ---------- 大牌本体（396x554 = 1:1.4） ---------- */
 .bigcard {

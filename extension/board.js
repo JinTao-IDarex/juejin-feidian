@@ -13,6 +13,15 @@
  *   切赛道 = 左右切牌（与详情翻牌同一套 --dx 位移机制，.fx 复用 .cx 规则）。
  *   点大牌进详情仍是「飞行层 + clone」：大牌与详情大牌同为 1:1.4，
  *   单轴等比缩放落位，内容全程不变（飞的是 .bigcard 克隆）。
+ *
+ * v1.1：首页大牌区改为「扇形牌阵」（用户参考图的布局演示）：
+ *   六张赛道牌**全部渲染**，当前赛道 ±2 落在扇面里（cur 居中最高无旋转，
+ *   邻牌外旋下沉叠压约 1/3 牌宽），更远的沿扇面方向滑出并淡出（off-l/off-r）。
+ *   切赛道 = 六张牌各自改 data-pos，由 CSS 过渡滑到新位次 —— 不再推 --dx、
+ *   不重建 DOM（重建会把过渡打断成跳变）；中途再切只是重定目标，自然衔接。
+ *   行内左右箭头已撤（扇出的侧牌会伸进箭头原来的位置）：侧牌可见部分 /
+ *   空白左右半区 / 键盘 ←→ / 小卡条都能切，点中心牌进详情不变。
+ *   悬停：中心牌上移放大（transform），两侧邻牌向外让步 —— 全程零重排。
  */
 (function () {
   'use strict';
@@ -601,25 +610,36 @@
       '</div>';
   }
 
-  /* 首页大牌：三张封面（prev / cur / next）叠在同一格，切赛道 = 左右切牌。
-   * 结构与详情 .slot 的 .cx 同构（data-pos 驱动 CSS 位移），复用 --dx 机制。 */
+  /* 扇面位次名（v1.1）：与 board.css 的 .fx[data-pos=…] 选择器一一对应，
+   * 改那边的选择器要同步改这里。
+   * ±2 以内进扇；更远的沿同方向滑出扇外淡出 —— 进出扇面都是
+   * 「沿扇面继续延伸」，牌不会凭空闪现/消失。 */
+  function fanPos(d) {
+    if (d === 0) return 'cur';
+    var side = d < 0 ? 'prev' : 'next';
+    if (Math.abs(d) > 2) return d < 0 ? 'off-l' : 'off-r';
+    return side + (Math.abs(d) === 2 ? '2' : '');
+  }
+
+  /* 首页扇面：六张赛道牌全渲染（含扇外的 off-*，opacity:0 收着）。
+   * ⚠️ 换赛道时**只改 data-pos、不重建** —— innerHTML 一重建，新元素没有
+   *    「旧位置」可从，CSS 过渡就成了跳变；全量留着才能整扇滑动。
+   *    重建（首次/换榜期/跨多张跳）套 .instant 直接落位，不播入场动画。 */
   function paintFeature() {
     var bs = (S.data && S.data.boards) || [];
-    var parts = [];
-    [-1, 0, 1].forEach(function (d) {
-      var i = S.fidx + d;
-      if (i < 0 || i >= bs.length) return;
-      var b = bs[i];
+    fslotEl.classList.add('instant');
+    fslotEl.innerHTML = bs.map(function (b, i) {
       var empty = !b.top || !b.top.length;
       /* --tc = 赛道色，整张卡（描边 / 名次 / 分数 / 赛道名 / 入口 / 背景碎片）
-       * 都从它派生；写在 .fx 上由 .cover 继承，一处改色全卡跟。 */
-      parts.push('<div class="fx' + (empty ? ' empty' : '') +
-        '" data-pos="' + (d === 0 ? 'cur' : (d > 0 ? 'next' : 'prev')) + '"' +
+       * 都从它派生；写在 .fx 上由 .cover 继承，一处改色全卡跟。
+       * data-i = 赛道下标 —— fslideTo 靠它原地换 data-pos，不重建 DOM。 */
+      return '<div class="fx' + (empty ? ' empty' : '') +
+        '" data-i="' + i + '" data-pos="' + fanPos(i - S.fidx) + '"' +
         ' style="--tc:' + b.color + '">' +
-        '<div class="cover">' + coverHTML(b) + '</div></div>');
-    });
-    fslotEl.innerHTML = parts.join('');
-    fslotEl.classList.remove('peek');
+        '<div class="cover">' + coverHTML(b) + '</div></div>';
+    }).join('');
+    void fslotEl.offsetWidth;            // 强制回流，让 .instant 盖住这次落位
+    fslotEl.classList.remove('instant');
     var cur = bs[S.fidx];
     fslotEl.setAttribute('role', 'button');
     fslotEl.setAttribute('tabindex', '0');
@@ -640,12 +660,8 @@
         ' aria-label="' + esc(b.name) + (empty ? '（暂无上榜）' : '，' + b.top.length + ' 张') + '">' +
         esc((b.name || ' ').charAt(0)) + '</button>';
     }).join('');
-    /* 首页箭头两端置灰：用类而不是 disabled —— disabled 的 button 不派发事件，
-     * 「点箭头」会比「点同侧空白」少一层反应，两者必须等价（越界时 fstep 自然不动） */
-    $('#fPrev').classList.toggle('is-off', S.fidx <= 0);
-    $('#fNext').classList.toggle('is-off', S.fidx >= bs.length - 1);
-    $('#fPrev').setAttribute('aria-disabled', S.fidx <= 0 ? 'true' : 'false');
-    $('#fNext').setAttribute('aria-disabled', S.fidx >= bs.length - 1 ? 'true' : 'false');
+    /* v1.1 行内箭头已撤（扇出的侧牌会压住箭头位），两端可达性交给小卡条本身：
+     * 第一张/最后一张就是天然的边界标识。 */
   }
 
   /* ---------------- 渲染：详情大牌 ---------------- */
@@ -964,22 +980,13 @@
   }
   bindArrows();
 
-  /* ---------------- 首页切赛道（v0.9.0：左右切大牌） ----------------
-   * 与详情 slideTo 同一套机制：目标牌已在 .fslot 的对侧槽里（paintFeature
-   * 按 fidx 渲染 [-1,0,1]），只要推 --dx 走完一段距离，落位后重排。
-   * ⚠️ 同样的顺序坑：**先加 .sliding 再算 dist**（--slidegap 收 0 后
-   *    终点才是整整一张牌宽，否则差 16px，落位会「越过中心再弹回」）。 */
-  function setFDx(v, snap) {
-    if (snap) {
-      fslotEl.classList.add('instant');
-      fslotEl.style.setProperty('--dx', v);
-      void fslotEl.offsetWidth;
-      fslotEl.classList.remove('instant');
-      return;
-    }
-    fslotEl.style.setProperty('--dx', v);
-  }
-
+  /* ---------------- 首页切赛道（v1.1：整扇滑位） ----------------
+   * 扇面牌阵的换法与详情完全不同：不再推 --dx 让对侧牌平移进来，
+   * 而是**六张牌各自换 data-pos** —— CSS 过渡让每张牌沿扇面滑到新位次
+   * （cur→prev、next→cur、next2→next…，最外一张滑向 off-* 淡出，
+   *  对侧一张从 off-* 滑进来）。全程不重建 DOM（见 paintFeature 注释）。
+   * 不加 S.busy 锁：过渡中途再切只是重定目标，transition 自动衔接，
+   * 连按 ←→ 是连续滑动而不是一步步顿。 */
   function fstep(d) {
     var bs = (S.data && S.data.boards) || [];
     var ni = S.fidx + d;
@@ -990,27 +997,20 @@
   function fslideTo(ni, d) {
     var bs = (S.data && S.data.boards) || [];
     if (ni < 0 || ni >= bs.length) return;
-    /* 跨多张（小卡直接点远端）或减动效环境：跳过动画直接落位 ——
-     * 对侧槽里只有相邻那张，多张跳跃播动画会露出空槽 */
-    if (!motion() || Math.abs(ni - S.fidx) !== 1) {
+    /* 相邻一步：换 data-pos 即可。跨多张（小卡点远端）或减动效环境：
+     * 整槽重建直接落位 —— 跨 2 张以上时中间没有牌可走，横穿整条扇面观感乱。 */
+    if (motion() && Math.abs(ni - S.fidx) === 1) {
       S.fidx = ni;
-      paintFeature(); paintStrip();
+      var cards = fslotEl.children;
+      for (var c = 0; c < cards.length; c++) {
+        cards[c].setAttribute('data-pos',
+          fanPos(Number(cards[c].getAttribute('data-i')) - S.fidx));
+      }
+      paintStrip();
       return;
     }
-    S.busy = true;
-    fslotEl.style.setProperty('--peek', '1');
-    fslotEl.classList.add('peek', 'sliding');
-    var dist = fslotEl.offsetWidth;
-    setFDx(0);
-    void fslotEl.offsetWidth;
-    setFDx(-d * dist);
-    setTimeout(function () {
-      S.fidx = ni;
-      setFDx(0, true);
-      fslotEl.classList.remove('peek', 'sliding');
-      paintFeature(); paintStrip();
-      S.busy = false;
-    }, DUR);
+    S.fidx = ni;
+    paintFeature(); paintStrip();
   }
 
   function bindTrack() {
@@ -1388,11 +1388,10 @@
       setTimeout(function () { b.disabled = false; }, 2500);
     });
 
-    /* 首页大牌台：**只有点中大牌本身**才进详情；
-     * 牌子左右两侧（箭头 + 箭头周围的空白）一律「切赛道」——
-     * 点左半区 = 上一个榜，点右半区 = 下一个榜。
-     * ⚠️ 箭头不单独绑 click，全走这一处委托：单独绑 + 冒泡会双触发；
-     *    而且 disabled 的 button 不派发事件，会变成「点空白能切、点箭头没反应」。 */
+    /* 首页牌台：**只有点中中心牌本身**才进详情；
+     * 其余区域（侧牌的可见部分会穿透到牌台、以及两侧空白）一律「切赛道」——
+     * 落在牌台左半 = 上一个榜，右半 = 下一个榜。
+     * v1.1 起行内没有箭头按钮了，这一处委托就是全部点击入口。 */
     ftableEl.addEventListener('click', function (e) {
       if (S.busy) return;
       if (e.target.closest('.fslot')) {
@@ -1400,10 +1399,6 @@
         if (bs[S.fidx]) openTrack(bs[S.fidx].id);
         return;
       }
-      /* 箭头按自身语义走方向（键盘 Enter 触发的 click 没有坐标，clientX=0）；
-       * 空白区按「落在牌子左半还是右半」决定方向 */
-      var rt = e.target.closest('.round');
-      if (rt) { fstep(rt.id === 'fPrev' ? -1 : 1); return; }
       var r = fslotEl.getBoundingClientRect();
       fstep(e.clientX < r.left + r.width / 2 ? -1 : 1);
     });

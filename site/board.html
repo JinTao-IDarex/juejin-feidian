@@ -59,28 +59,16 @@
   <!-- 主体：两个视图叠在同一块区域，切视图不动 Header / Footer -->
   <div class="bd-body" id="bdBody">
 
-    <!-- ============ 视图 1 · 大封面 + 小卡条 ============
-         v0.9.0：六摞牌改为「一张大牌 + 一条小卡」。
-         上方 = 当前赛道的封面大牌（1:1.4，左/右箭头切换）；
+    <!-- ============ 视图 1 · 扇形牌阵 + 小卡条 ============
+         v1.1：大牌改为扇形牌阵（用户参考图）：当前赛道居中、最高、无旋转，
+         左右各两张邻牌向外旋转下沉叠放，窗口外的赛道牌滑出扇面淡出。
          下方 = 六张赛道小卡（首字 + 赛道色选中态），点谁切谁。
-         切换动画 = 左右切牌（与详情翻牌同一套 --dx 位移机制）。 -->
+         切换 = 每张牌沿扇面滑到新位次（只改 data-pos，不重建 DOM）；
+         行内箭头已撤（会被扇出的侧牌压住）—— 侧牌可见部分 /
+         空白左右半区 / 键盘 ←→ / 小卡条都能切。 -->
     <section class="view" id="viewDeal" aria-label="六大赛道">
       <div class="ftable" id="ftable">
-        <button class="round" id="fPrev" aria-label="上一赛道">
-          <svg width="13" height="15" viewBox="0 0 13 15" fill="none" aria-hidden="true">
-            <path d="M9.4 2.6L4.6 7.5l4.8 4.9" stroke="currentColor" stroke-width="1.8"
-                  stroke-linecap="round" stroke-linejoin="round"/>
-          </svg>
-        </button>
-
         <div class="fslot" id="fslot"></div>
-
-        <button class="round" id="fNext" aria-label="下一赛道">
-          <svg width="13" height="15" viewBox="0 0 13 15" fill="none" aria-hidden="true">
-            <path d="M3.6 2.6l4.8 4.9-4.8 4.9" stroke="currentColor" stroke-width="1.8"
-                  stroke-linecap="round" stroke-linejoin="round"/>
-          </svg>
-        </button>
       </div>
 
       <!-- 赛道小卡条：点小卡切大牌；title 带张数 -->
