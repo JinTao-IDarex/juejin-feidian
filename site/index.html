@@ -18,6 +18,24 @@
 
     <!-- Hero：1440x230 @ (0,0) -->
     <header class="hero">
+      <!-- 顶部导航：抽卡页 → 魔鬼榜单（v0.8.0）。
+           ⚠️ 为什么绝对定位而不是塞进 flex 列：.hero 是 1440x230 的居中列
+             （chip-tips / h1 / p 三块，加一行会整体下移、撞设计稿坐标）。
+           ⚠️ 为什么靠左不靠右：右下角是 .dock（fixed;top:20;right:24，
+             卡态 148x196），右上角会被它盖住 —— 展开态下就点不到了。
+           ⚠️ 浮层里看不到这一块：embed.css 有 `html.embed .hero{display:none}`，
+             整块 Hero 被裁掉。浮层的进榜入口另走 content.js（见 spec §6.9）。 -->
+      <a class="nav-board" href="board.html" title="打开魔鬼榜单：六摞牌，点一摞发牌逐张翻">
+        <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <rect x="2.2" y="2.6" width="8.4" height="10.8" rx="1.8" stroke="currentColor" stroke-width="1.3"/>
+          <rect x="5.4" y="2.6" width="8.4" height="10.8" rx="1.8" fill="#fff" stroke="currentColor" stroke-width="1.3"/>
+        </svg>
+        魔鬼榜单
+        <svg class="nav-go" width="11" height="11" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+          <path d="M4.2 2.4L8 6l-3.8 3.6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </a>
+
       <span class="chip-tips">
         <svg width="11" height="11" viewBox="0 0 11 11" fill="none" aria-hidden="true">
           <path d="M9.2 4.6c0 2.7-3.7 5.1-3.7 5.1S1.8 7.3 1.8 4.6a3.7 3.7 0 117.4 0z" fill="#1E80FF"/>

@@ -255,9 +255,16 @@ export function parseScoreChunk(raw, n) {
 
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 
-/* 逐块打分（单飞，不并发 —— 榜单是后台任务，没必要抢配额，稳比快重要）。 */
+/* 逐块打分（单飞，不并发 —— 榜单是后台任务，没必要抢配额，稳比快重要）。
+ *
+ * ⭐ v0.8.0：`onProgress` 除了 `done/total`，还带 `dealt` —— **本块每条内容
+ *   被分到哪个赛道**（含没上榜的）。这是「评分中发牌」动画唯一的数据源：
+ *   前端要靠它知道哪张牌该飞进哪一摞。
+ *   为什么要等整轮打完才有：`assignTrack` 要等 6 个赛道的分都齐了才知道归属，
+ *   而 AI 是分块给的 —— 所以最快只能「一块回来就发一批」，
+ *   正好对上一手 8 张的节奏。 */
 export async function scoreCandidates({ candidates, ai, onProgress, mock }) {
-  if (mock) return mockScore(candidates);
+  if (mock) return mockScore(candidates, onProgress);
   const rows = [];
   for (let off = 0; off < candidates.length; off += CHUNK) {
     const chunk = candidates.slice(off, off + CHUNK);
@@ -293,15 +300,34 @@ export async function scoreCandidates({ candidates, ai, onProgress, mock }) {
       if (!p) return;
       rows.push(Object.assign({ pin: p }, r));
     });
-    if (onProgress) onProgress({ done: Math.min(off + CHUNK, candidates.length), total: candidates.length });
+    if (onProgress) {
+      /* 本块的分配明细。⚠️ 只带前端发牌要用的最小字段：
+       *   pinId / trackId / score / ranked / verdict 前 12 字 / content 摘头。
+       *   不带 dims（发牌动画不画维度条），也不带整条 pin（带宽 8 倍）。 */
+      const dealt = parsed.map((r, k) => {
+        const p = chunk[k] || {};
+        const a = assignTrack(r);
+        return {
+          pinId: String(p.id || ''),
+          trackId: a.trackId,
+          score: Math.round(a.score * 10) / 10,
+          ranked: a.ranked,
+          title: String(p.content || '').replace(/\s+/g, ' ').slice(0, 24),
+          verdict: String(r.v || '').slice(0, 16),
+        };
+      });
+      onProgress({ done: Math.min(off + CHUNK, candidates.length), total: candidates.length, dealt });
+    }
   }
   return rows;
 }
 
 /* ---- 演示用假分数（?mock=1 / --mock）----
  * 用 id 的哈希做种子，同一条沸点每次得到同一组分数，所以前端能稳定复现；
- * 判词从模板里挑，只为把版式撑起来。payload 会带 mock:true，界面也会标明。 */
-function mockScore(candidates) {
+ * 判词从模板里挑，只为把版式撑起来。payload 会带 mock:true，界面也会标明。
+ * ⭐ v0.8.0：分块回报（与真打分同一条 onProgress 形状），否则本地联调看不到发牌动画。 */
+async function mockScore(candidates, onProgress) {
+  const MOCK_CHUNK_MS = 620;   // 一手牌的间隔，让演示模式也看得出「在发牌」
   const VERDICTS = {
     venom: ['这句话的杀伤力，属于把天聊死的艺术', '骂得有理有据，被骂的人还得点头', '刀法精准，连标点都在嘲讽'],
     absurd: ['前后两句自己跟自己吵架', '这逻辑，绕进去了三个弯还理直气壮', '离谱到让人怀疑是反串'],
@@ -312,7 +338,14 @@ function mockScore(candidates) {
   };
   const rnd = (seed) => { let x = seed % 2147483647; if (x <= 0) x += 2147483646;
     return () => { x = (x * 16807) % 2147483647; return (x - 1) / 2147483646; }; };
-  return candidates.map((p, idx) => {
+  /* 逐条算分但**分块回报** —— 与真打分保持同一条 onProgress 形状
+     （{done,total,dealt}），前端只有一套渲染路径。 */
+  const rows = [];
+  for (let off = 0; off < candidates.length; off += CHUNK) {
+  const chunk = candidates.slice(off, off + CHUNK);
+  const dealt = [];
+  chunk.forEach((p, k) => {
+    const idx = off + k;
     let h = 2166136261;
     for (const ch of String(p.id)) { h ^= ch.codePointAt(0); h = (h * 16777619) >>> 0; }
     const r = rnd(h || (idx + 1));
@@ -331,32 +364,60 @@ function mockScore(candidates) {
     TRACKS.forEach((x) => {
       if (x.id !== t.id && s[x.id] >= 6) s[x.id] = Math.round((3.2 + r() * 2.4) * 10) / 10;
     });
-    return {
-      pin: p,
-      i: idx + 1,
-      s,
-      d: [Math.min(10, base + 0.2), base, Math.max(1, base - 0.3)].map((x) => Math.round(x * 10) / 10),
-      v: VERDICTS[t.id][Math.floor(r() * VERDICTS[t.id].length)],
-      skip: false,
-    };
+    const v = VERDICTS[t.id][Math.floor(r() * VERDICTS[t.id].length)];
+    rows.push({ pin: p, i: idx + 1, s, d: [Math.min(10, base + 0.2), base, Math.max(1, base - 0.3)]
+      .map((x) => Math.round(x * 10) / 10), v, skip: false });
+    /* dealt 的形状必须与真打分那条一模一样（前端只有一套渲染路径）。
+     * ⚠️ `ranked` / `trackId` **必须走 assignTrack**，不能写死 true：
+     *   写死的话，一条最高分 < 6 的候选会在发牌时飞进某一摞，
+     *   但 assembleBoards 又会把它判为不上榜 —— 用户看到六摞有 8 张，
+     *   成品榜里却找不到，数字对不上。演示模式下这个不一致特别容易撞上
+     *   （mock 的分布刻意压向低分段）。 */
+    const a = assignTrack({ s, skip: false });
+    dealt.push({ pinId: String(p.id || ''), trackId: a.trackId,
+      score: Math.round(a.score * 10) / 10, ranked: a.ranked,
+      title: String(p.content || '').replace(/\s+/g, ' ').slice(0, 24), verdict: v.slice(0, 16) });
   });
+  /* 演示模式也让出帧，动画才看得出来在发（真打分是网络等待，天然有间隔） */
+  if (onProgress) {
+    onProgress({ done: Math.min(off + CHUNK, candidates.length), total: candidates.length, dealt });
+    await sleep(MOCK_CHUNK_MS);
+  }
+  }
+  return rows;
 }
 
 /* ---------------- 组榜：每条只进得分最高的那一个榜 ---------------- */
 
+/* ⭐ **归榜判定单独抽出来**（原来这段逻辑内嵌在 assembleBoards 里）。
+ *
+ * 为什么要抽：v0.8.0「评分中发牌」需要**在打分当场**就知道每条要去哪个赛道
+ * —— 牌得飞进对应的那一摞里。而 AI 是分块返回的（CHUNK=8），
+ * 一块回来就��按这个函数判一次、报一次进度。
+ * 如果判定还埋在 assembleBoards 里（它要等**全部**打完才跑），
+ * 那前端就永远拿不到中途的分配结果，只能等两分钟看一个转圈。
+ *
+ * 判定口径一个字没改（还是「取最高分，< 6 分不上榜」），
+ * 只是从「最后算」提到「算完一块就算一块」，两边共用同一个函数保证不漂移。 */
+export function assignTrack(row) {
+  if (!row || row.skip || !row.s) return { trackId: null, score: 0, ranked: false };
+  let best = null;
+  for (const t of TRACKS) {
+    const v = row.s[t.id];
+    if (!Number.isFinite(v)) continue;
+    if (!best || v > best.v) best = { id: t.id, v };
+  }
+  /* 六个赛道都低于 6 分的，不上榜 —— 榜单宁可空着，不硬凑第一名（spec 第五节） */
+  if (!best || best.v < 6) return { trackId: null, score: best ? best.v : 0, ranked: false };
+  return { trackId: best.id, score: best.v, ranked: true };
+}
+
 export function assembleBoards(rows, { perTrack = PER_TRACK, generatedAt, meta } = {}) {
   const buckets = Object.fromEntries(TRACKS.map((t) => [t.id, []]));
   for (const r of rows) {
-    if (!r || r.skip || !r.s) continue;
-    let best = null;
-    for (const t of TRACKS) {
-      const v = r.s[t.id];
-      if (!Number.isFinite(v)) continue;
-      if (!best || v > best.v) best = { id: t.id, v };
-    }
-    /* 六个赛道都低于 6 分的，不上榜 —— 榜单宁可空着，不硬凑第一名（spec 第五节） */
-    if (!best || best.v < 6) continue;
-    buckets[best.id].push({ r, score: best.v });
+    const a = assignTrack(r);
+    if (!a.ranked) continue;
+    buckets[a.trackId].push({ r, score: a.score });
   }
 
   const boards = TRACKS.map((t) => {
@@ -475,11 +536,17 @@ export function createBoardEngine({ fetchPage, resolveAi, loadCache, saveCache, 
       /* aiBody：调用方（站点=请求体 / 扩展=页面 localStorage 里的配置）交上来的「怎么调」。
        * 站点没传时靠 serve.mjs 自己那套服务端配置，两边同一份 providers.resolve。 */
       const ai = await resolveAi(aiBody || {});
+      /* ⭐ v0.8.0「评分中发牌」：`dealtLog` 累积每一批的分配结果。
+       * 为什么要**累积**而不是只留最新一批：前端是 1.3s 轮询，
+       * 而 AI 一批要十几秒 —— 不累积的话轮询只能看到最后一批（8 张），
+       * 中间发出去的牌会「凭空消失」，六摞的牌数还会来回跳。 */
+      const dealtLog = [];
       const rows = await scoreCandidates({
         candidates, ai, mock: useMock,
         onProgress: (p) => {
+          if (p.dealt && p.dealt.length) dealtLog.push(...p.dealt);
           job.progress = { phase: 'score', scanned: pins.length,
-                           candidates: candidates.length, done: p.done };
+                           candidates: candidates.length, done: p.done, dealt: dealtLog.slice() };
         },
       });
 

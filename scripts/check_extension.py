@@ -21,10 +21,33 @@ import tempfile
 
 ROOT = r"D:\2workspace\codex\juejin-boom"
 EXT = os.path.join(ROOT, "extension")
-NODE = r"C:\Users\apple\.workbuddy\binaries\node\versions\22.22.2-3\node.exe"
+# ⚠️ 不要写死版本号带 build 号的路径（22.22.2-3 / -6 换着来）。
+# 踩过：managed node 目录名带 build 号、会随更新变，写死就FileNotFoundError。
+# 这里现 ls 一次取实际存在的那个。
+def _find_node():
+    base = os.path.join(os.path.expanduser("~"), ".workbuddy", "binaries", "node", "versions")
+    try:
+        for name in sorted(os.listdir(base), reverse=True):
+            exe = os.path.join(base, name, "node.exe")
+            if os.path.exists(exe):
+                return exe
+    except Exception:
+        pass
+    return shutil.which("node") or "node"
+
+
+NODE = _find_node()
 
 problems = []
 notes = []
+
+
+def _read(path):
+    """读文本文件，失败返回空串 —— 让断言能优雅降级而不是整个脚本炸掉。"""
+    try:
+        return open(path, encoding="utf-8").read()
+    except Exception:
+        return ""
 
 
 def need(rel, why):
@@ -110,6 +133,31 @@ if host:
             if not (pos[must_early] < pos["data.js"] < pos["app.js"]):
                 problems.append("%s 必须早于 data.js / app.js" % must_early)
         notes.append("host.html 注入顺序正确：" + " < ".join(order))
+
+# ---------------- 3a) 抽卡页顶部「魔鬼榜单」入口 ----------------
+# v0.8.0：site/index.html 左上角加了一条导航 pill 跳 board.html。
+# 为什么值得断言：它是**唯一**从抽卡页进榜单的路（首页原先零个 board 字样），
+# 而它挂在 Hero 里 —— embed.css 有 `html.embed .hero{display:none}`，
+# 哪天有人为了「让浮层也显示入口」去动 Hero 的 display，这里要能立刻发现
+# 入口在浮层里根本不出现（浮层的进榜入口另走 content.js，不靠这条）。
+_nav_site = os.path.join(ROOT, "site", "index.html")
+if os.path.exists(_nav_site):
+    _ih = open(_nav_site, encoding="utf-8").read()
+    _m = re.search(r'<a class="nav-board"[^>]*href="([^"]+)"', _ih)
+    if not _m:
+        problems.append("site/index.html 没有 .nav-board 入口 —— 抽卡页进不去榜单"
+                        "（href 用属性顺序敏感的写法匹配：class 必须在 href 之前）")
+    elif _m.group(1) != "board.html":
+        problems.append("抽卡页入口 href 是 %r，应为 board.html" % _m.group(1))
+    elif host and 'class="nav-board"' not in h:
+        problems.append("extension/host.html 里没有 .nav-board（构建产物未同步）")
+    else:
+        _acss = _read(os.path.join(ROOT, "site", "app.css"))
+        if ".nav-board" not in _acss:
+            problems.append("app.css 缺 .nav-board —— 入口会变成无样式的裸链接")
+        if host and _m:
+            notes.append("抽卡页 → 榜单入口在位：site/index.html 与 host.html 均含 "
+                         ".nav-board（href=board.html，app.css 有样式）")
 
 # ---------------- 3b) board.html 注入顺序 ----------------
 # ⚠️ 与 host.html 的约束**相反**：board.css 顶部那条 `html.embed { --k: 1 !important }`
@@ -334,6 +382,227 @@ if os.path.exists(aj):
         notes.append("app.js 带「由构建生成」头注释")
     else:
         problems.append("app.js 缺「由构建生成」头注释，可能是被直接改过")
+
+# ---------------- 5) 评分中发牌（v0.8.0） ----------------
+# 这一屏最容易「改了站点忘了扩展」或「改了 CSS 忘了 HTML」，
+# 而两种情况都**不报错**（发牌视图只是少一块 / 少一个 id）。
+# 所以逐项断言：HTML 有视图与各 id、CSS 有两档变量、JS 有渲染与重置、
+# 内核有 dealt 契约、前端 TRACKS 副本与内核 TRACKS 一致。
+bh = os.path.join(EXT, "board.html")
+bc = os.path.join(EXT, "board.css")
+bj = os.path.join(EXT, "board.js")
+bk = os.path.join(EXT, "board-core.mjs")
+bhtml = _read(bh)
+bcss = _read(bc)
+bjs = _read(bj)
+bcore = _read(bk)
+
+for token, why in [('id="viewScoring"', "发牌视图容器"),
+                   ('id="scPhase"', "四步阶段条"),
+                   ('id="scDeck"', "六摞容器"),
+                   ('id="scHall"', "发牌台"),
+                   ('id="scHand"', "待发手牌"),
+                   ('id="scHallNow"', "正在落位提示")]:
+    if token not in bhtml:
+        problems.append("board.html 缺 %s（%s）—— 评分中发牌整块不会渲染" % (token, why))
+if 'id="viewScoring"' in bhtml and 'id="scHallNow"' in bhtml:
+    notes.append("发牌视图骨架齐全：viewScoring + 阶段条 + 六摞 + 发牌台 + 手牌 + 落位提示")
+
+# --sc-w / --sc-card-h 两档都要有，且卡牌必须仍是 1:1.4
+scw = _cssnum("--sc-w")
+if scw:
+    notes.append("发牌牌宽 --sc-w = %dpx，卡高按 1:1.4 跟出（%.0fpx）"
+                 % (scw, scw * 1.4))
+else:
+    problems.append("board.css 缺 --sc-w（发牌视图的牌宽）")
+if "html.embed" in bcss and "--sc-w:" in bcss:
+    notes.append("浮层档位 --sc-w 已收窄（board.css 的 html.embed 块里）")
+else:
+    problems.append("board.css 的 html.embed 块里没有 --sc-w —— 浮层 722 会溢出")
+
+for cls in [".sc-phase", ".sc-deck", ".sc-pile", ".sc-card", ".sc-hall", ".sc-hand", ".sc-meta"]:
+    if cls not in bcss:
+        problems.append("board.css 缺样式 %s" % cls)
+
+for fn in ["paintScoring", "showScoring", "scReset", "tintOf"]:
+    if ("function " + fn) not in bjs and ("var " + fn) not in bjs:
+        problems.append("board.js 缺发牌相关函数 %s" % fn)
+if "Math.min(m, SC_FAN_MAX)" not in bjs:
+    problems.append("board.js 的牌堆错开量没封顶（SC_FAN_MAX）—— "
+                    "牌多了会压到赛道名上，且不报错")
+if "scSeen" in bjs and "load(false, true)" not in bjs:
+    problems.append("board.js 的轮询没带 isPoll —— 每 1.3s 会把六摞清空一次")
+else:
+    notes.append("发牌去重与轮询续期正确：scReset 只在非轮询的 load() 里调")
+
+if "dealt: dealtLog.slice()" not in bcore:
+    problems.append("board-core.mjs 的 progress 没带累积的 dealt —— "
+                    "轮询只能看到最后一批，中间发出的牌会凭空消失")
+else:
+    notes.append("内核 dealt 契约在位：progress.dealt 累积每批分配结果")
+if "export function assignTrack" not in bcore:
+    problems.append("board-core.mjs 没导出 assignTrack —— 发牌时无法在中途判归属")
+# mock 路径的 dealt 必须走 assignTrack：写死 ranked:true 会让演示时
+# 「六摞里有 8 张、成品榜里找不到」—— 数字对不上，且不报错。
+if "mockScore" in bcore:
+    mblk = bcore.split("async function mockScore", 1)[1].split("\nasync function", 1)[0] \
+        if "async function mockScore" in bcore else ""
+    if "assignTrack" not in (mblk or bcore[:4000]):
+        problems.append("mockScore 的 dealt 没走 assignTrack —— 写死 ranked:true 会让"
+                        "发牌归榜数与成品榜张数不一致（演示模式下必现，且不报错）")
+    else:
+        notes.append("mock 发牌与真打分同一判定：mockScore 的 dealt 走 assignTrack")
+
+# ---------------- 5b) 切牌动画（v0.8.1）----------------
+# ⭐ 为什么要断言「opacity 不许挂过渡」：
+#   挂上 `opacity .32s linear` 后，**切牌全程的观感是错的**，而且
+#   静态检查、终态截图、接口全绿 —— 唯一能看出的是逐帧采样：
+#     位置267ms 到位，透明度 328ms 才满 → 中间 60ms「卡啪地一下停住、
+#     还半透明地缓一下才变实」；拖动时更糟（--peek 每次 pointermove 都变，
+#     透明度有 .32s 过渡永远追不上 → 橡皮筋感）。
+#   实测 skew（位置99% 与透明度 99% 的时间差）从 315ms 降到 0ms。
+# 这类「只影响观感、只在中途帧可见」的回归，只能靠断言钉住。
+# v0.9.0：首页大牌槽 .fx 与详情 .cx 共用同一组规则（选择器写作 ".cx, .fx {"），
+# 所以这里要兼容两种写法 —— 但**两组都必须满足**「transition 不含 opacity」。
+_cx = re.search(r"\.cx(?:\s*,\s*\.fx)?\s*\{([^}]*)\}", bcss)
+if not _cx:
+    problems.append("board.css 找不到 .cx 规则（切牌的三张卡）")
+else:
+    _decl = _cx.group(1)
+    # ⚠️ 必须只扫 transition 声明，**不能直接搜 "opacity"**：
+    #    .cx 的注释里就写着「opacity 不挂」，一搜就误报。
+    _trans = re.findall(r"transition\s*:\s*([^;]+)", _decl)
+    _bad = [t for t in _trans if "opacity" in t]
+    if _bad:
+        problems.append("board.css 的 .cx 又给 opacity 挂了过渡（transition:%s）—— "
+                        "切牌会「先到位再变实」、拖动变橡皮筋。位移走过渡、"
+                        "透明度必须立即跟随" % _bad[0].strip()[:80])
+    else:
+        notes.append("切牌动画：.cx 只给 transform 挂过渡，opacity 立即跟随"
+                     "（无 skew、无橡皮筋）")
+if "--slidegap" not in bcss or ".slot.sliding" not in bcss:
+    problems.append("board.css 缺 --slidegap / .slot.sliding —— 切牌时两张牌之间"
+                    "会露出 16px 的缝，看起来像两张卡各自在飘")
+else:
+    notes.append("切牌动画：--slidegap 在 .sliding 下收为 0（两牌贴紧错身而过），"
+                 "静止/拖动态保留 16px 呼吸位")
+# JS 侧：.sliding 必须在算 dist **之前**加，否则 contains() 读到 false、
+# 终点差16px（牌在落位时「差一截」再弹回）。这条静默、只能靠断言。
+_sl = bjs.find("function slideTo")
+if _sl < 0:
+    problems.append("board.js 找不到 slideTo")
+else:
+    _body = bjs[_sl:_sl + 900]
+    _i_add = _body.find("classList.add('peek', 'sliding')")
+    _i_dist = _body.find("var dist =")
+    if _i_add < 0 or _i_dist < 0:
+        problems.append("slideTo 里找不到 .sliding 或 dist 的计算 —— "
+                        "切牌距离与 CSS 的 --slidegap 可能对不上")
+    elif _i_add > _i_dist:
+        problems.append("slideTo 里先算 dist 后加 .sliding —— contains() 读到 false，"
+                        "终点差 16px（落位时牌会「差一截」再弹回）")
+    else:
+        notes.append("切牌动画：slideTo 先加 .sliding 再算 dist，终点与 --slidegap 一致")
+# 拖动过阈值那条路径也得走同一套距离
+_dg = bjs.find("Math.abs(dx) >= th")
+if _dg > 0:
+    _dblk = bjs[_dg:_dg + 700]
+    if "classList.add('sliding')" not in _dblk:
+        problems.append("拖动过阈值那条路没加 .sliding —— 拖动与点箭头的"
+                        "切牌动画会不一致（一处 396、一处 412）")
+    elif "cardW + 16" in _dblk:
+        problems.append("拖动过阈值仍写死 cardW + 16 —— 应在 .sliding 下用 cardW")
+    else:
+        notes.append("拖动过阈值与点箭头两条路径共用 --slidegap=0 的距离")
+
+#⚠️ 切牌距离**必须现算** offsetWidth，不能写死 396/412。
+# 理由：浮层档位的 --card-w 是 300（不是 396），写死站点值会让浮层切牌冲过头。
+_sl2 = bjs.find("function slideTo")
+if _sl2 > 0:
+    _sblk = bjs[_sl2:_sl2 + 800]
+    if "offsetWidth" not in _sblk:
+        problems.append("slideTo 的 dist 不是现算的 offsetWidth —— 浮层档位"
+                        "（--card-w:300）会按站点值冲过头")
+    elif re.search(r"var\s+dist\s*=\s*\d", _sblk):
+        problems.append("slideTo 的 dist 写死了数字 —— 浮层档位（--card-w:300）"
+                        "会按站点值冲过头，必须现算 offsetWidth")
+    else:
+        notes.append("切牌距离现算 slotEl.offsetWidth —— 站点 396 / 浮层 300 共用同一条数学")
+
+# ---------------- 5c) 发牌入场的飞行内容（v0.8.2）----------------
+# ⭐ 为什么值得断言：飞的内容是 `.cover` 还是 `.bigcard` 的克隆，
+#   **只有冻到中途帧才看得出** —— 落位后两者都是同一张牌，终态永远正确。
+#   回归表现：整个 320ms 里用户看到一张写着「XX榜 / 点击进入 →」的封面小牌在放大，
+#   落位后突然内容全变（名次/分数/判词/看原文），而且「点击进入」按钮飞到了详情页。
+if ".flyer > .cover" in bcss and ".flyer > .bigcard" not in bcss:
+    problems.append("board.css 的 .flyer 圆角只覆盖 .cover —— v0.8.2 起飞的是 "
+                    ".bigcard 克隆，不写这条的话飞出来是直角")
+_ot = bjs.find("function openTrack")
+if _ot > 0:
+    # v0.9.0 起 openTrack 前置了「按 trackId 找赛道 + 对齐 fidx」几步，
+    # 窗口从 1600 放宽到 2800 才罩得住 fclone 那几行
+    _oblk = bjs[_ot:_ot + 2800]
+    if "makeFlyer(cover" in _oblk or "makeFlyer(cover," in _oblk:
+        problems.append("openTrack 还在飞封面牌（makeFlyer(cover…)）—— "
+                        "用户会看到「点击进入 →」飞到详情页，落位时内容突变一次")
+    elif "makeFlyer(big" not in _oblk:
+        problems.append("openTrack 的 makeFlyer 既不是 cover 也不是 big —— "
+                        "飞行内容不确定，看一眼")
+    elif "fclone.style.opacity = ''" not in _oblk:
+        problems.append("openTrack 没清掉克隆带来的行内 opacity —— "
+                        "被克隆的 .bigcard 此刻 opacity:0，飞出来会是张空牌")
+    else:
+        notes.append("发牌入场飞的是 .bigcard 克隆（v0.8.2）：全程内容一致，"
+                     "落位时 flyer 与真大牌同为383x536，无突变")
+# 返回路径必须与入场配对，否则「飞回去」又变回封面
+_cd = bjs.find("function closeDetail")
+if _cd > 0:
+    _cblk = bjs[_cd:_cd + 1400]
+    if "makeFlyer(stack.querySelector('.cover')" in _cblk:
+        problems.append("closeDetail 还在飞封面牌 —— 返回时看到的是一张"
+                        "「点击进入」的牌缩回去，与入场不一致")
+    elif "makeFlyer(big" not in _cblk:
+        problems.append("closeDetail 的 makeFlyer 既不是 cover 也不是 big")
+# 被点的摞不该被豁免淡出：豁免会让它比另外五摞多留 100ms，
+# 而那100ms 里它的 cover 已淡出、只剩 stack-face + 标题字 → 画面两个焦点
+_leave = re.search(r"\.deck\.leaving\s+\.stack\.press\s*\{[^}]*\}", bcss)
+if _leave and re.search(r"opacity\s*:\s*1", _leave.group(0)):
+    problems.append("board.css 的 .deck.leaving .stack.press 又豁免成 opacity:1 —— "
+                    "被点的摞会比另外五摞多留 100ms，画面出现两个焦点")
+elif _leave:
+    notes.append("发牌入场：六摞一起淡出（含被点的那摞），飞行层是唯一焦点")
+
+# 前端 TRACKS 副本必须与内核一致（board.js 是普通 script，不能 import）
+def _tracks(js):
+    """抽出 (id, name, def, color) 四元组。
+
+    ⚠️ 正则必须**逐字段独立匹配**（用 [^}]*? 跳过 symbol/dims/anchors）——
+       不能假设四个字段连在一起：内核那份里 name 后面还跟着 def/color/symbol，
+       字段顺序与空格也跟前端副本不一致。"""
+    out = []
+    for m in re.finditer(r"\{\s*id:\s*'([a-z]+)',(.*?)\}", js, re.S):
+        body = m.group(2)
+        name = re.search(r"name:\s*'([^']+)'", body)
+        df = re.search(r"def:\s*'([^']+)'", body)
+        col = re.search(r"color:\s*'(#[0-9A-Fa-f]{3,8})'", body)
+        if name and df and col:
+            out.append((m.group(1), name.group(1), df.group(1), col.group(1)))
+    return out
+
+
+t_js = _tracks(bjs)
+t_core = _tracks(bcore)
+if len(t_core) != 6:
+    problems.append("board-core.mjs 的 TRACKS 应 6 条，正则只认出 %d 条 —— 断言本身失效了" % len(t_core))
+if not t_js:
+    problems.append("board.js 里找不到前端 TRACKS 副本（发牌视图要靠它摆六摞）")
+elif len(t_js) != 6:
+    problems.append("前端 TRACKS 副本应 6 条，实际 %d 条" % len(t_js))
+elif t_js != t_core:
+    problems.append("前端 TRACKS 副本与 board-core.mjs 的 TRACKS 不一致：\n    前端 %s\n    内核 %s"
+                    % (t_js, t_core))
+else:
+    notes.append("赛道元数据两处一致：board.js 的 TRACKS 副本 == board-core.mjs 的 TRACKS（6 条）")
 
 # ---------------- 汇总 ----------------
 print("\n".join(notes))

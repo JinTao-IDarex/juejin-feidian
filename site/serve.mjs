@@ -788,7 +788,15 @@ createServer(async (req, res) => {
     const file = normalize(join(root, p));
     if (!file.startsWith(normalize(root))) { res.writeHead(403).end(); return; }
     const body = await readFile(file);
-    res.writeHead(200, { 'Content-Type': MIME[extname(file).toLowerCase()] || 'application/octet-stream' });
+    /* ⚠️ 本地开发服**必须 no-store**（2026-10-09 踩过）。
+     * 这里原来一个缓存头都不给 → 浏览器走启发式缓存（按 Last-Modified 猜），
+     * 改完 board.css / board.js 后普通刷新拿到的**还是旧文件**，
+     * 表现是「代码明明改了、页面还是老样子」，白查半天。
+     * /cards/ 下的图片另有一处 max-age=86400（那是静态素材，不动）。 */
+    res.writeHead(200, {
+      'Content-Type': MIME[extname(file).toLowerCase()] || 'application/octet-stream',
+      'Cache-Control': 'no-store, must-revalidate',
+    });
     res.end(body);
   } catch {
     res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });

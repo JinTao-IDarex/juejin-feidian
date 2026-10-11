@@ -2,8 +2,8 @@
  *
  * 坐标口径与 app.css 同一套：设计稿 1440 宽，`--k` 等比缩（transform-origin: center top）。
  * 与 app.css 的区别只在「设计高度」：
- *   站点页  1440 x 1000（Header 96 / 六摞 / 发牌流程 104 / Footer）
- *   扩展浮层 1440 x 722（Header 56 / 六摞 / Footer，且 --k 强制 1）
+ *   站点页  1440 x 890（Header 96 / 大封面牌 + 小卡条 / Footer）—— 尽量一屏
+ *   扩展浮层 1440 x 722（Header 56 / 大封面牌 + 小卡条 / Footer，且 --k 强制 1）
  * —— 浮层不是"缩水版站点"，是**另一套字号与尺寸档位**（规格见 docs/devil-board-spec.md 6.6），
  *    所以下面全部走 CSS 变量，由 html.embed 那一块整体换档，绝不在元素上写死数值。
  *
@@ -17,8 +17,9 @@
  */
 
 :root {
-  /* 页面 */
-  --board-h: 1000px;
+  /* 页面 —— v0.9.3：1000 → 890，让 Header + 大牌 + 小卡 + Footer
+   * 尽量落在一屏内（1080p 全屏可视 ≈ 950）。余量由 .ftable 吸收（牌仍居中）。 */
+  --board-h: 890px;
   --page-pad: 24px;
   --hdr-h: 96px;
   --deck-gap: 36px;
@@ -60,14 +61,33 @@
   --thumb-h: 28px;
   --kb: 16px;
 
-  /* 封面牌与摞（两屏一致，spec 6.6）
-   * ⭐ 封面牌 202x283 = **1:1.4**（与详情大牌同比例 → 发牌动画可以单轴等比缩放）。
-   *    v0.5.x 曾为了「整张参考图直接用」而改成 1:1.218，用户否掉了：
-   *    「是把角色抠出来，不是把整张图都放进去，贴在原有的那个卡片上」。
-   *    底牌各下移 9px → 摞高 283 + 18 = 301。 */
+  /* 首页大封面牌（v0.9.0）：仍是 **1:1.4**，站点 300x420 / 浮层 240x336。
+   * 与详情大牌（396x554）同比例 → 点大牌进详情仍是单轴等比缩放的飞行。
+   * ⚠️ --cover-w/h（202/283）保留不动：那是 check_extension.py 的尺寸契约锚点，
+   *    也是封面插画素材（356x292 内 contain）的出图口径。 */
+  --fw: 300px;
+  --fh: 420px;
+  /* 赛道小卡条 */
+  --chip-w: 36px;
+  --chip-h: 50px;
+  --strip-h: 68px;
+
+  /* 封面牌与摞（尺寸契约，spec 6.6）
+   * ⚠️ v0.9.0 六摞已撤（改大牌+小卡条），但这对变量是静态断言的锚点
+   *    （--stack-h == --cover-h + 18、与 COVER_W/H 同步、1:1.4），保留勿删。 */
   --cover-w: 202px;
   --cover-h: 283px;
   --stack-h: 301px;
+
+  /* 发牌中的牌（v0.8.0）：**仍然是 1:1.4**，宽度用发牌视图自己的 --sc-w。
+   * ⭐ 项目硬口径「卡牌 1:1.4，没有例外」（spec §6.6）——发牌中的牌也不例外。
+   *   我一度为塞进 722 把牌压到 202×168（比例 1.202），结果两头都不对：
+   *   既破了比例口径，又因为 .sc-deck 垂直居中而在上下各空 220px。
+   *   正确解法是**缩宽等比缩**（--sc-w），不是压扁牌高。 */
+  --sc-w: 202px;
+  --sc-card-h: calc(var(--sc-w) * 1.4);
+  /* 牌堆错开的格数上限（board.js 的 SC_FAN_MAX 必须与这个一致） */
+  --sc-fan: 6;
 
   --ink: #1A1D21;
   --ink2: #5C636E;
@@ -126,6 +146,19 @@ html.embed .board {
   --thumb-w: 16px;
   --thumb-h: 22px;
   --kb: 14px;
+
+  /* 发牌视图自己的宽度 —— **不复用 --cover-w**，见上面注释。
+   * 150 × 1.4 = 210，比站点矮 73，六摞 + 阶段条 + 发牌台才塞得进 722。 */
+  --sc-w: 150px;
+  --sc-card-h: calc(var(--sc-w) * 1.4);
+
+  /* 首页大牌 + 小卡条（v0.9.0）—— 浮层 722 纵向预算：
+   * body 520 = ftable(446) + 16 + strip 58 → 牌 336 装得下。 */
+  --fw: 240px;
+  --fh: 336px;
+  --chip-w: 30px;
+  --chip-h: 42px;
+  --strip-h: 58px;
 }
 /* 榜单是一整页（不是浮在掘金上的卡片），浮层里也该有实底 */
 html.embed body { background: #F4F5F7; }
@@ -160,6 +193,14 @@ button { font: inherit; color: inherit; border: 0; background: none; cursor: poi
   background: var(--page-bg);
   transform: scale(var(--k, 1));
   transform-origin: center top;
+}
+/* v0.9.3 站点版：视口不够高就按视口收紧（高度变小 → .ftable 先被挤，牌仍 420 居中），
+ * 目标是「尽可能一屏展示完」。下限 800 是内容的安全线：
+ *   pad 48 + Header 96 + gap 20 + (牌 420 + gap 16 + strip 68) + gap 20 + Footer 48 + pad 48 = 784
+ * 低于它再压就会真的挤到牌（.board-wrap 是 overflow:hidden，挤坏了是静默的）。
+ * ⚠️ 只对站点生效 —— 浮层是固定的 722 设计，走 clamp 会被 100vh → 800 顶大而溢出。 */
+html:not(.embed) .board {
+  height: clamp(800px, calc(100vh - 24px), var(--board-h));
 }
 
 /* ================= Header ================= */
@@ -335,133 +376,361 @@ html.embed .bd-refresh { height: 30px; padding: 0 11px; font-size: 11px; }
   gap: var(--gap16);
 }
 
-/* ================= 视图 1 · 六摞牌 ================= */
-.deck {
-  flex: 1 1 auto; min-height: 0;
+/* ================= 视图 3 · 评分中发牌（v0.8.0） =================
+ *
+ * ⭐ 这一屏替代了原来的 .sys 居中弹窗（那张 520px 卡片放不下六摞牌）。
+ * 设计稿锚点：Ardot 页面「评分中发牌 v0.8」14:15（站点）/ 14:151（浮层 722）。
+ *
+ * 纵向预算见下面 .sc-hall 那段注释（站点 673/1000、浮层 520/722）。
+ * ⚠️ 改动六摞或发牌台高度时必须重算 —— .bd-body 是 flex 且 min-height:0，
+ *    超了会被压扁而不是滚动（用户看不到任何提示）。 */
+
+/* ---- 阶段条：把「抓取 → 筛选 → 分赛道 → 排名次」四步显式化 ----
+ * 动机：730 条扫描在 45 页里发生，用户此前只知道「在转圈」。
+ * 现在第 1、2 步的完成态是**带数字的事实**（730 / 48），不再是等待。 */
+.sc-phase {
+  flex: 0 0 auto;
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 4px;
+  height: 44px; padding: 0 8px;
+  background: #fff; border: 1px solid var(--line); border-radius: 12px;
+}
+.sc-step {
+  display: flex; align-items: center; gap: 10px;
+  height: 100%; padding: 0 14px;
+  border-radius: 8px;
+  font-size: 13px; font-weight: 600; color: var(--ink2);
+  white-space: nowrap;
+}
+.sc-step.is-now { background: #F5F8FF; color: #1E80FF; font-weight: 700; }
+.sc-dot {
   display: flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px; flex: 0 0 auto;
+  border-radius: 11px;
+  background: #E9EBEF; color: var(--ink3);
+  font-size: 12px; font-weight: 700;
+}
+.sc-step.is-done .sc-dot { background: #12A173; color: #fff; }
+.sc-step.is-now  .sc-dot { background: #1E80FF; color: #fff; }
+.sc-txt b { font-weight: 700; color: var(--ink); }
+.sc-step.is-now .sc-txt b { color: #1E80FF; }
+
+/* ---- 六摞：发牌过程中逐张长大 ----
+ * ⚠️ 与 .deck 的摞不同：这里的牌**内容是实的**（名次/分/判词），
+ *    而且只有「已发出的」那些有内容。牌宽用发牌视图自己的 --sc-w
+ *    （不碰 --cover-w，那是成品态 + 飞行动画的尺寸源）。
+ * ⚠️ 六摞区**顶部对齐、自身不拉伸**（align-items:flex-start + flex:0 0 auto）：
+ *    .sc-deck 若写成 flex:1 会吃掉 .bd-body 的全部余量，
+ *    牌只占一半高度、下面拖一大片死白（实测站点版空 220px）。
+ *    余量交给**发牌台**（它才是该吃掉空间的那一块：手牌 + 统计在底部收口）。*/
+.sc-deck {
+  flex: 0 0 auto;
+  display: flex; align-items: flex-start; justify-content: center;
   gap: var(--deck-gap);
 }
-
-/* 一摞 = 三张牌垂直堆叠，底下两张各向下错开 9px（只有白边露出来）。
- * ⚠️ 底牌带 rotation（-3° / 1.5°）—— 这是原设计的「微微散开」，别清掉。
- *    旋转后包围盒变大，左右会被父容器裁掉约 7px，这是设计稿的实际观感。 */
-.stack {
+.sc-col {
+  width: var(--sc-w); flex: 0 0 auto;
+  display: flex; flex-direction: column; align-items: center; gap: 6px;
+}
+.sc-pile {
   position: relative;
-  width: var(--cover-w); height: var(--stack-h);
-  flex: 0 0 auto;
-  cursor: pointer;
-  transition: transform .32s var(--ease), opacity .24s linear;
+  /* 高度 = 牌高 + 错开余量。⚠️ 必须留出这段：牌往下叠（新的在上），
+   *    不留的话最后一张会溢出到 .sc-meta（赛道名 + 计数）上，
+   *    实测 5~6 张就压住了 —— 而且 .sc-pile 不裁剪，压上去是**静默**的。 */
+  width: var(--sc-w);
+  height: calc(var(--sc-card-h) + var(--sc-fan) * 4px);
 }
-.stack-face {
-  position: absolute; left: 0; width: var(--cover-w); height: var(--cover-h);
-  background: #fff; border-radius: 13px;
-  border: 1px solid #D6DBE0;
-  box-shadow: 0 3px 8px rgba(28,31,36,.07);
+/* 一张已发出的牌。绝对定位 + 递增的 --i → 错开 4px（与 .stack-face 同一种微散开）
+ * ⚠️ 牌内是**三段分布**（头/中/尾），不是三行挤在顶端：
+ *    牌高 283（1:1.4），三行 20/11/10px 的字只有 ~60px，
+ *    顶端对齐会让下半张全空 —— 看着像没加载出来（实测空 200+px）。
+ *    头部贴顶、判词贴底、中间用赛道符号撑住，正好把版式占满。
+ * ⚠️ **底牌往下溢出容器会被看见**：.sc-pile 是固定高度且不裁剪，
+ *    12 张牌 × 4px 错开 = 44px，最后一张会压到赛道名上（实测 10 张时就压了）。
+ *    所以错开量在 **JS 侧封顶**（SC_FAN_MAX），CSS 只管画 —— min() in calc() 兼容性不稳。 */
+.sc-card {
+  position: absolute; left: 0; top: calc(var(--i) * 4px);
+  width: 100%; height: var(--sc-card-h);
+  display: flex; flex-direction: column; gap: 4px;
+  padding: 12px;
+  background: #fff; border: 1px solid var(--line); border-radius: 10px;
+  animation: scDeal .34s var(--ease) both;
 }
-.stack-face.f2 { top: 0; }
-.stack-face.f1 { top: 9px; }
-.stack-face.f0 { top: 18px; }
-.stack:hover { transform: translateY(-6px); }
-.stack:hover .stack-face.f0 { box-shadow: 0 8px 18px rgba(28,31,36,.10); }
-.stack:active { transform: translateY(-2px) scale(.985); }
-
-/* 封面牌（摞顶）—— 202x283，**1:1.4 纸牌比例**，与详情大牌同比例。
- *
- * ⭐ 演进到第三版才对（前两版都被用户否了，别再往回走）：
- *   v0.4.0 自己画整张卡：陪跑插画 + 网页字体排字 → 用户说「图片样式跟参考图没保持一致」。
- *   v0.5.0 从参考图里切出牌面再凑 1:1.4 → 「贴图太丑了」。
- *   v0.5.1 整张参考牌直接用（1:1.218）→ 「是把角色抠出来，不是把整张图都放进去，
- *          贴在原有的那个卡片上，现在卡片看起来特别奇怪」。
- *   ⭐ 现在（v0.6.0）= **我们自己的卡面版式（文字全实时）+ 只把参考图里的角色抠出来当插画**。
- *      参考图那套字复刻不出来没关系 —— 赛道名/名次/分数本来就该跟数据走；
- *      真正值得保留的是**角色本身**，所以只抠角色。
- *
- * 纵向预算（283 − padding 12/11 = 260）：
- *   top 22 + name 30 + fig flex + def 13 + go 22 + 间距 ≈ 260 → 形象区约 178x157。 */
-.cover {
-  position: absolute; left: 0; top: 0; z-index: 3;
-  width: var(--cover-w); height: var(--cover-h);
-  padding: 12px 12px 11px;
-  display: flex; flex-direction: column;
-  background: #fff; border-radius: 13px; border: 1px solid var(--line2);
-  box-shadow: 0 5px 14px rgba(28,31,36,.09);
+.sc-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
+.sc-sym { display: flex; align-items: center; color: var(--sc-color, var(--ink3)); opacity: .55; }
+.sc-mid { flex: 1 1 auto; min-height: 0; display: flex; align-items: center; justify-content: center; }
+/* 顶牌（最新一张）吃赛道色 + 一道色边 —— 一眼能看出「刚落进哪一摞」 */
+.sc-card.is-top {
+  border-width: 1.5px;
+  background: var(--sc-tint, #FFF);
+  border-color: var(--sc-color, var(--line));
+}
+.sc-rank { font-size: 20px; font-weight: 800; line-height: 1; color: var(--sc-color, var(--ink)); }
+.sc-head { font-size: 11px; font-weight: 700; color: var(--sc-color, var(--ink2)); }
+.sc-verdict {
+  font-size: 10px; line-height: 15px; color: var(--ink3);
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
   overflow: hidden;
 }
-/* 名次行：左「符号 + 名次」右「最高分」，颜色由 board.js 内联写（赛道色） */
+@keyframes scDeal {
+  from { transform: translate(var(--flydx, 0), var(--flydy, 0)) scale(.86); opacity: 0; }
+  to   { transform: translate(0, 0) scale(1); opacity: 1; }
+}
+/* 还没发到的赛道：虚线空堆 + 「等 AI 发牌」。
+ * ⭐ 嘴硬榜常常是 0 张，这个空堆必须**看起来是「还没发」而不是「没有」**。 */
+.sc-pile.is-empty {
+  display: flex; align-items: center; justify-content: center;
+  background: #FBFCFD; border: 1px dashed var(--line); border-radius: 10px;
+  font-size: 11px; color: #B6BCC6;
+}
+.sc-meta { display: flex; align-items: center; gap: 8px; }
+.sc-name { font-size: 13px; font-weight: 700; color: var(--sc-color, var(--ink)); }
+.sc-num {
+  min-width: 34px; height: 20px; padding: 0 8px;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 6px;
+  background: var(--sc-tint, #F0F2F5);
+  font-size: 12px; font-weight: 700; color: var(--sc-color, var(--ink2));
+}
+
+/* ---- 发牌台：待发手牌 + 归榜/落选统计 ----
+ * ⚠️ **高度固定 96，不是 flex:1**。我试过让它吃掉 .bd-body 的全部余量，
+ *    结果它涨到 365px 高、里面只有三行小字 + 一手牌 —— 一大片空白卡在中间，
+ *    比之前的死白更难看。发牌台是**信息条**，不是主视觉：
+ *    六摞才是主角，它只负责在底部收口。
+ * 纵向预算：
+ *   站点 1000（最松）：96+48+44+16+309+16+96+48 = 673 → 余 327
+ *   浮层 722（最紧） ：56 +32+40+16+236+16+76+48 = 520 → 余 202
+ * 余量全落在六摞与发牌台之间（margin-top:auto 的呼吸区），不溢出。 */
+.sc-hall {
+  flex: 0 0 auto;
+  /* margin-top:auto —— 余量全推给发牌台与六摞之间的这段（呼吸区），
+   * 六摞贴着阶段条、发牌台贴着底边。这样无论窗口多高，版式都稳定，
+   * 不会像flex:1 那样把发牌台撑成一大块空白。 */
+  margin-top: auto;
+  display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  height: 96px; padding: 0 14px;
+  background: #fff; border: 1px solid var(--line); border-radius: 12px;
+}
+.sc-hall-l { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+/* ⭐ 「正在落位」这行是**动态的**：顶牌一换就换名字与颜色，
+   *    否则用户只看到数字在跳，不知道这一手发去了哪个赛道。 */
+.sc-hall-l b { font-size: 13px; font-weight: 700; color: var(--ink); }
+.sc-hall-l em {
+  display: block; margin-top: 2px;
+  font-size: 12px; font-style: normal; font-weight: 600;
+  color: var(--sc-now, var(--ink2));
+}
+.sc-hall-l span { font-size: 11px; color: var(--ink3); }
+/* 手牌：叠着的一手（要飞走的那张先亮蓝边 + 投影） */
+.sc-hand { position: relative; width: 190px; height: 66px; flex: 0 0 auto; }
+.sc-hand i {
+  position: absolute; top: 50%; margin-top: -30px; left: calc(var(--i) * 16px);
+  width: 60px; height: 60px;
+  background: #fff; border: 1px solid var(--line); border-radius: 8px;
+}
+.sc-hand i.is-going {
+  background: #F5F8FF; border: 1.5px solid #1E80FF;
+  box-shadow: 0 4px 10px rgba(30,128,255,.30);
+}
+
+/* 浮层 722：发牌视图收窄。⚠️ 改了这里必须重算上面那条纵向预算。
+   * ⚠️⚠️ **不许动 --cover-w / --cover-h**：那是成品态封面牌、摞、以及
+   * 「点一摞 → 发牌入场」飞行动画的尺寸源，改它会连带把六摞和飞牌一起改掉。
+   * 发牌视图有自己的 --sc-w，高度按 1:1.4 跟出来 —— 缩宽不压扁。 */
+html.embed .sc-phase { height: 40px; }
+html.embed .sc-step { padding: 0 10px; font-size: 12px; gap: 8px; }
+html.embed .sc-dot { width: 18px; height: 18px; font-size: 11px; }
+html.embed .sc-card { height: var(--sc-card-h); padding: 10px; }
+html.embed .sc-rank { font-size: 18px; }
+/* 浮层里省高度：判词先让位（中间那段赛道符号已经把版式撑住了） */
+html.embed .sc-verdict { display: none; }
+/* 发牌台 76（不是 54）：54 会把手牌那60px 的牌切掉一半 ——
+   * ⚠️ .sc-hall 是固定 height、不滚动，被切掉的部分是**静默消失**的，
+   *   页面上看不出任何报错。纵向预算：56+32+40+16+236+16+76+48 = 520 < 722。 */
+html.embed .sc-hall { height: 76px; }
+html.embed .sc-hall-l b { font-size: 12px; }
+html.embed .sc-hall-l em { font-size: 11px; }
+html.embed .sc-hall-l span { font-size: 10px; }
+html.embed .sc-hand { width: 176px; height: 46px; }
+html.embed .sc-hand i { width: 44px; height: 44px; margin-top: -22px; left: calc(var(--i) * 16px); }
+html.embed .sc-sym { opacity: .5; }
+html.embed .sc-hand i { width: 52px; height: 34px; }
+
+
+/* ================= 视图 1 · 大封面 + 小卡条（v0.9.0） =================
+ * 旧「六摞牌」（v0.6.0~v0.8.x）改为「一张大牌 + 一条小卡」：
+ *   上 = 当前赛道封面大牌（1:1.4，站点 300x420 / 浮层 240x336），
+ *   下 = 六张赛道小卡（首字 + 赛道色选中态），点谁切谁，左右切牌动画。
+ * 切牌机制与详情 .slot 完全同款（.fx 复用 .cx 的 --dx / peek / sliding 规则）。
+ * 纵向预算（v0.9.2 删掉底部「怎么看榜」那条 104 后，余量全归 .ftable；
+ * v0.9.3 画布 1000 → 890（可视视口不够时 clamp 再收紧，下限 800））：
+ *   站点 body 658 = ftable 574 + 16 + strip 68（牌 420 在 ftable 里居中，上下各 ~77）
+ *   浮层 body 520 = ftable 446 + 16 + strip 58（牌 336，上下各 ~55）
+ * 卡面版式从 v0.6.0 继承（演进的教训别回退）：
+ *   v0.4.0 照参考图重画 ❌ / v0.5.0 切图凑比例 ❌ / v0.5.1 整张图当卡面 ❌
+ *   → 版式归版式、素材归素材：文字全实时，角色抠出来贴形象区。 */
+.ftable {
+  flex: 1 1 auto; min-height: 0;
+  display: flex; align-items: center; justify-content: center;
+  gap: var(--arrow-gap);
+  touch-action: pan-y;
+}
+
+/* ---- 封面大牌：参考图的「贴纸卡」版式（v1.0）----
+ * 版式 = 顶「名次 + 分数」→ 中「角色（背后一层碎片）」→ 下「赛道名 + 定义」→ 底「入口胶囊」。
+ * 与 v0.6.0 的差别只有两处，但都是参考图的重点：
+ *   ① 赛道名从**角色上方**移到**角色下方**并放大 —— 参考图里它是视觉重心，压在角色脚上；
+ *   ② 多一层背景碎片（board.js 的 decoSVG），角色不再是「白底上一个孤零零的形象」。
+ * ⭐ 尺寸一律从 --fw 派生（站点 300 / 浮层 240 自动等比），
+ *    浮层**不再手写第二套数字** —— 上一版是两套常量并行，改一个字号要记住改两处。
+ *    只有小字给了 11px 下限：纯按比例浮层会掉到 9.6px，读起来吃力。
+ * 颜色一律走 --tc（paintFeature 写在 .fx 上）。 */
+.cover {
+  position: absolute; left: 0; top: 0; z-index: 3;
+  width: 100%; height: 100%;
+  padding: calc(var(--fw) * .047) calc(var(--fw) * .047) calc(var(--fw) * .043);
+  display: flex; flex-direction: column;
+  /* 3% 赛道色淡底：参考图的卡面不是纯白，是「白里透一点赛道色」。
+   * 用 color-mix 跟着 --tc 走 —— 改赛道色时这里自动跟上。 */
+  background: color-mix(in srgb, var(--tc, #fff) 3%, #fff);
+  border-radius: calc(var(--fw) * .06);
+  /* ⭐ 贴纸双包边：border 是**内圈赛道色实线**，外圈那层白环用 box-shadow 补。
+   *    参考图的卡片边缘就是「一圈白、一圈色」。
+   *    ⚠️ 白环必须用 box-shadow 而不是 outline —— 它要和投影一起参与叠放顺序，
+   *    而且 outline 在部分实现里不跟随圆角，会露出直角。 */
+  border: 2px solid var(--tc, var(--line2));
+  box-shadow: 0 0 0 5px #fff, 0 14px 34px rgba(28,31,36,.14);
+  overflow: hidden;
+  transition: transform .25s var(--ease), box-shadow .25s;
+}
+.fslot:hover .fx[data-pos="cur"] .cover {
+  transform: translateY(-4px);
+  box-shadow: 0 0 0 5px #fff, 0 20px 44px rgba(28,31,36,.18);
+}
+/* 背景碎片层：绝对定位铺满。viewBox 与卡面同为 1:1.4 → 铺满即不变形。
+ * 颜色吃 --tc，透明度压到 .22 —— 它是氛围，不能盖过角色和赛道名。 */
+.cv-deco {
+  position: absolute; inset: 0; width: 100%; height: 100%;
+  color: var(--tc, var(--ink)); opacity: .4;
+  pointer-events: none;
+}
+/* 名次行：左「符号 + 名次」右「最高分」。两者都放大一档 ——
+ * 参考图里名次与分数是卡面第一眼的信息（分数比赛道名还抢眼）。 */
 .cover-top {
-  flex: 0 0 auto; height: 22px;
+  position: relative;              /* 压在碎片层之上 */
+  flex: 0 0 auto; height: calc(var(--fw) * .133);
   display: flex; align-items: center; justify-content: space-between;
 }
-.cover-top .left { display: flex; align-items: center; gap: 4px; }
+.cover-top .left {
+  display: flex; align-items: center; gap: calc(var(--fw) * .017);
+  color: var(--tc);
+}
 .cover-top .left svg { display: block; }
 .cover-rank, .cover-score {
-  font-family: Inter, sans-serif; font-weight: 900; font-size: 19px; line-height: 1;
+  font-family: Inter, sans-serif; font-weight: 900;
+  font-size: calc(var(--fw) * .127); line-height: 1;
+  color: var(--tc);
 }
-/* 赛道名：参考图那套是粗描边毛笔感，网页字体模仿不来，
- * 但用 900 字重 + 负字距已经能把「砸下来」的语气做出来。 */
-.cover-name {
-  flex: 0 0 auto; margin-top: 2px;
-  font-size: 26px; font-weight: 900; line-height: 30px;
-  text-align: center; letter-spacing: -.5px; white-space: nowrap;
-}
-/* 形象区 = 剩余量（不是设计值），角色图 contain 贴底「站」在卡面上 */
+/* ⚠️ 空榜的「—」不能沿用分数那档字号：38px 的 em dash 是一根实心长条，
+ *    出图后第一眼会被读成「一条进度条 / 加载中」，语义正好反了。
+ *    压到 .1（站点 30px）并转灰，「无数据」一眼可辨。 */
+.cover-score.is-empty { font-size: calc(var(--fw) * .1); color: #C9CED6; }
+/* 形象区 = 剩余量（不是设计值），角色 contain 贴底「站」在卡面上。
+ * 左右 padding 收窄角色：参考图里角色约占卡宽 2/3，四周留白让碎片呼吸。 */
 .cover-fig {
-  flex: 1 1 auto; min-height: 0; margin: 4px 0;
+  position: relative;
+  flex: 1 1 auto; min-height: 0;
+  padding: 0 calc(var(--fw) * .135);
   background-repeat: no-repeat; background-position: center bottom;
   background-size: contain;
 }
+/* 赛道名：贴纸字 = 实色字 + 八向白色 text-shadow 描边 + 一层下投影。
+ * ⚠️ 不用 -webkit-text-stroke —— 它的描边画在字形**之上**，笔画会被吃掉一圈，
+ *    40px 的字肉眼可见地变瘦；HTML 文本上的 paint-order 又不可靠。 */
+.cover-name {
+  position: relative;
+  flex: 0 0 auto; margin-top: calc(var(--fw) * .007);
+  /* ⚠️ 字号给到 .173（站点 52px）：参考图里赛道名的**绝对字号**和角色一个量级，
+   *    是卡面最大的字。第一版按 .133（40px）出图后明显偏小、被角色压住了。
+   * ⚠️ 字距不能给负值：900 字重 + 40px 时相邻字本来就贴，再收字距会让
+   *    白描边互相咬合，三个字糊成一整块白（第一版就是这个病）。 */
+  font-size: calc(var(--fw) * .173); line-height: calc(var(--fw) * .19);
+  /* 字距 0（不要负值）：中文三个字本来就不挤，而 "emo 榜" 是拉丁字母混排，
+   * 负字距会把 e/m/o 压到一起、白描边互相咬合。 */
+  font-weight: 900; letter-spacing: 0;
+  text-align: center; white-space: nowrap;
+  color: var(--tc);
+  text-shadow:
+    -2px -2px 0 #fff, 0 -2px 0 #fff, 2px -2px 0 #fff,
+    -2px 0 0 #fff, 2px 0 0 #fff,
+    -2px 2px 0 #fff, 0 2px 0 #fff, 2px 2px 0 #fff,
+    0 5px 0 rgba(28,31,36,.10);
+}
+/* 定义行：参考图里两侧各有一条小竖线，做出「夹注」的分隔感。 */
 .cover-def {
-  flex: 0 0 auto;
-  font-size: 10px; line-height: 13px; color: #6B7280;
+  position: relative;
+  flex: 0 0 auto; margin-top: calc(var(--fw) * .013);
+  font-size: max(11px, calc(var(--fw) * .04));
+  line-height: 1.35; color: #6B7280;
   text-align: center; white-space: nowrap;
   overflow: hidden; text-overflow: ellipsis;
 }
+.cover-def::before, .cover-def::after {
+  content: ''; display: inline-block;
+  width: 1px; height: 10px; margin: 0 calc(var(--fw) * .02);
+  background: #CBD2DA; vertical-align: -1px;
+}
+/* 入口：赛道色描边胶囊 */
 .cover-go {
-  flex: 0 0 auto; margin-top: 6px; height: 22px;
-  display: flex; align-items: center; justify-content: center; gap: 4px;
-  border: 1px solid var(--line2); border-radius: 999px;
-  font-size: 10px; line-height: 1; color: var(--ink2); background: #fff;
+  position: relative;
+  flex: 0 0 auto; margin-top: calc(var(--fw) * .03);
+  height: calc(var(--fw) * .113);
+  display: flex; align-items: center; justify-content: center; gap: calc(var(--fw) * .02);
+  border: 1.5px solid var(--tc, var(--line2)); border-radius: 999px;
+  font-size: max(11px, calc(var(--fw) * .04)); font-weight: 600; line-height: 1;
+  color: var(--tc, var(--ink2)); background: #fff;
 }
 .cover-go svg { display: block; }
-/* 空榜：不另做占位图 —— 名次显 0、分数显 —、入口显「暂无上榜」即可。
+/* 空榜：不另做占位图 —— 名次显 0、分数显 —、定义显「暂无上榜」即可。
  * 降一点不透明度提示「这条赛道今天没货」，仍然可点。 */
-.stack.empty .cover { opacity: .78; }
+.fx.empty .cover { opacity: .78; }
 
-/* 交互态：被点的那摞「按到」，其余五摞淡出 */
-.stack.press { transform: translateY(4px) scale(.97); }
-.deck.leaving .stack { opacity: 0; transition: opacity .22s linear; }
-.deck.leaving .stack.press { opacity: 1; }
-.stack .stack-face { transition: opacity .2s linear, box-shadow .3s var(--ease); }
-.stack.taken .stack-face.f1,
-.stack.taken .stack-face.f0 { opacity: 0; }
-.stack.taken .cover { opacity: 0; transition: opacity .12s linear .06s; }
-
-/* ---------- 发牌流程说明 1440x104 ---------- */
-.guide {
-  flex: 0 0 auto; height: 104px;
-  display: flex; align-items: center; gap: 28px;
-  padding: 18px; border-radius: 12px;
-  background: #fff; border: 1px solid var(--line);
+/* ---- 赛道小卡：悬浮在页面底色上，不带背景横条 ----
+ * 底板会把它框成「一条控件栏」，跟上面那张牌抢层级；
+ * 小卡本身就是实体卡，直接浮在底色上更轻。高度只作占位（纵向预算照旧）。 */
+.strip {
+  flex: 0 0 auto; height: var(--strip-h);
+  display: flex; align-items: center; justify-content: center; gap: 14px;
 }
-/* ⚠️ 浮层里**不显示**「怎么翻牌」那条 —— 设计稿 04（扩展浮层·六摞牌）里就没有。
- * 722 的纵向预算 = Header 56 + 摞 301 + Footer ≈48 + 三段留白；
- * 再塞一条 84 高的说明会把牌阵顶到上半屏（`.deck` 是 flex:1 居中，可用高度被它吃掉），
- * 下半屏留白全没了 —— 实测牌阵顶边从 220 掉到 160。
- * 三步骤说明是「第一次来站点」才需要的引导，浮层是随手看一眼的场景，站点版留着就够。 */
-html.embed .guide { display: none; }
-.guide-tag { flex: 0 0 auto; display: flex; flex-direction: column; gap: 3px; }
-.guide-tag b { font-size: 13px; }
-.guide-tag span { font-size: 11px; color: var(--ink3); }
-.guide-step { flex: 1 1 0; display: flex; align-items: center; gap: 10px; }
-.guide-step i {
-  flex: 0 0 auto; width: 22px; height: 22px; border-radius: 50%;
-  background: var(--ink); color: #fff; font-style: normal;
-  font-family: Inter, sans-serif; font-size: 12px; font-weight: 700;
+.fchip {
+  flex: 0 0 auto;
+  width: var(--chip-w); height: var(--chip-h);
   display: flex; align-items: center; justify-content: center;
+  border-radius: 7px;
+  background: #F0F1F3; color: #B6BCC4;
+  /* 虚线描边：小卡是「可选卡位」，实线会显得已落定、跟上面那张实体牌抢重量 */
+  border: 1.5px dashed #D3D9E0;
+  font-size: 15px; font-weight: 600; line-height: 1;
+  transition: background .2s, color .2s, border-color .2s,
+              transform .2s var(--ease), box-shadow .2s;
 }
-.guide-step b { display: block; font-size: 12px; }
-.guide-step span { display: block; margin-top: 2px; font-size: 11px; color: var(--ink3); }
-html.embed .guide-step span { display: none; }
+.fchip:hover { background: #E8EAEE; color: var(--ink2); transform: translateY(-2px); }
+/* 选中：只换颜色与底色，描边仍是虚线（同一套「卡位」语言，用色区分已选中） */
+.fchip.on {
+  background: #fff; color: var(--c, var(--ink)); border-color: var(--c, var(--ink));
+  box-shadow: 0 3px 9px rgba(28,31,36,.12);
+  transform: none;
+}
+.fchip:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+/* 空榜赛道的小卡：灰显但不隐藏 —— 「暂无上榜」是数据事实，入口仍在 */
+.fchip.is-empty { opacity: .55; }
+html.embed .strip { gap: 11px; }
+html.embed .fchip { font-size: 13px; border-radius: 6px; }
+
+/* v0.9.2：底部那条「怎么看榜」三步说明已删（用户要求）——
+ * 首页只留大牌 + 小卡条 + Footer，纵向余量交给 .ftable 居中吸收。
+ * 原来它占 104px，且浮层里本来就 display:none（722 预算装不下）。 */
 
 /* ================= 视图 2 · 赛道详情 ================= */
 .crumbs {
@@ -492,38 +761,59 @@ html.embed .crumbs { height: 32px; }
   transition: opacity .2s linear, transform .16s var(--ease), box-shadow .2s;
 }
 .round:hover { transform: scale(1.06); }
-.round[disabled] {
+/* 两端置灰：首页箭头用 .is-off（不是 disabled —— 那会让点箭头比点空白少一层反应），
+ * 详情翻牌仍用 disabled */
+.round[disabled], .round.is-off {
   background: #F0F1F3; border-color: transparent; color: #B6BCC4;
   box-shadow: none; cursor: default; transform: none;
 }
 .table.dragging .round { opacity: 0; pointer-events: none; }
 
-/* 大牌槽：三张卡叠在同一格（prev / cur / next），靠 --dx 整体跟手位移 */
-.slot {
-  position: relative; flex: 0 0 auto;
-  width: var(--card-w); height: var(--card-h);
-}
-.cx {
+/* 大牌槽：三张卡叠在同一格（prev / cur / next），靠 --dx 整体跟手位移。
+ * v0.9.0：首页大封面槽 .fslot 复用同一套机制 —— 切赛道 = 左右切牌。 */
+.slot, .fslot { position: relative; flex: 0 0 auto; }
+.slot { width: var(--card-w); height: var(--card-h); }
+.fslot { width: var(--fw); height: var(--fh); cursor: pointer; }
+.cx, .fx {
   position: absolute; inset: 0;
-  transition: transform .32s var(--ease), opacity .32s linear;
+  /* ⚠️ **只有 transform 挂过渡，opacity 不挂** —— 这是本轮修的关键。
+   * 挂`opacity .32s linear` 会让「对侧那张牌」在位移全程半透明地追：
+   *   位置 267ms 就到位，透明度 328ms 才满 → 中间那60ms 牌停在终位不动、
+   *   还在慢慢变实（实测 skew ≈ 315ms，肉眼就是「啪一下到位然后缓一下」）。
+   * 拖动时更糟：--peek 每次 pointermove 都在变，但透明度有 .32s 过渡，
+   *   永远追不上 → 「拖得快、牌跟不上」的橡皮筋感。
+   * 正确分工：**位移走 easing 曲线，透明度立即跟随**（跟手就该是即时的）。
+   * 静止态两张牌opacity 恒为 0，不需要过渡；`.slot.peek` 给多少就是多少。 */
+  transition: transform .32s var(--ease);
   will-change: transform;
 }
-/* 静止时左右两张完全退到画外，不留缝；拖动时从对侧露出牌边。
- * --dx 是「当前牌跟手位移的像素数」（无单位），由 board.js 写在 .slot 上。 */
-.cx[data-pos="cur"] { transform: translate3d(calc(var(--dx, 0) * 1px), 0, 0); }
-.cx[data-pos="next"] {
-  transform: translate3d(calc(100% + 16px + var(--dx, 0) * 1px), 0, 0);
+/* 静止时左右两张完全退到画外；拖动时从对侧露出牌边。
+ * --dx 是「当前牌跟手位移的像素数」（无单位），由 board.js 写在 .slot 上。
+ * ⚠️那个 16px 是**静止/拖动态**的呼吸位（露出下一张的牌边，暗示还有牌），
+ *    切牌动画期间必须收成0 —— 否则两张牌隔着 16px 各自平移，
+ *    看起来像「两张独立的卡在飘」而不是「一叠牌被抽走一张」。
+ *    board.js 在切牌时给 .slot 加 .sliding，用 --slidegap 覆盖它。 */
+.cx[data-pos="cur"], .fx[data-pos="cur"] { transform: translate3d(calc(var(--dx, 0) * 1px), 0, 0); }
+.cx[data-pos="next"], .fx[data-pos="next"] {
+  transform: translate3d(calc(100% + var(--slidegap, 16px) + var(--dx, 0) * 1px), 0, 0);
 }
-.cx[data-pos="prev"] {
-  transform: translate3d(calc(-100% - 16px + var(--dx, 0) * 1px), 0, 0);
+.cx[data-pos="prev"], .fx[data-pos="prev"] {
+  transform: translate3d(calc(-100% - var(--slidegap, 16px) + var(--dx, 0) * 1px), 0, 0);
 }
-.cx[data-pos="next"], .cx[data-pos="prev"] { opacity: 0; }
+/* 静止时左右两张完全退到画外，且不接收指针（对侧牌只是「下一张的预览」） */
+.cx[data-pos="next"], .cx[data-pos="prev"],
+.fx[data-pos="next"], .fx[data-pos="prev"] { opacity: 0; pointer-events: none; }
 /* --peek 拖动时按位移比例淡入，不要一上来就整张露出来 */
-.slot.peek .cx[data-pos="next"],
-.slot.peek .cx[data-pos="prev"] { opacity: var(--peek, 1); }
-.slot.instant .cx { transition: none; }
+.slot.peek .cx[data-pos="next"], .slot.peek .cx[data-pos="prev"],
+.fslot.peek .fx[data-pos="next"], .fslot.peek .fx[data-pos="prev"] { opacity: var(--peek, 1); }
+.slot.instant .cx, .fslot.instant .fx { transition: none; }
+/* 轻量档兜底：board.html 只引 board.css，app.css 那套 html.motion-lite 规则到不了这页，
+ * 所以这里补一条 —— 类由 board.js 的 resolveMotion() 落（与首页三档同口径）。 */
+html.motion-lite .cx, html.motion-lite .fx { transition: none; }
+/* 切牌动画中：两牌贴紧（--slidegap:0）—— 见上面那个 16px 的说明 */
+.slot.sliding, .fslot.sliding { --slidegap: 0px; }
 /* 没过阈值 → 弹回，比正式切牌短（160ms） */
-.slot.snapping .cx { transition-duration: var(--snapdur, 160ms); }
+.slot.snapping .cx, .fslot.snapping .fx { transition-duration: var(--snapdur, 160ms); }
 
 /* ---------- 大牌本体（396x554 = 1:1.4） ---------- */
 .bigcard {
@@ -669,8 +959,11 @@ body:has(#viewDetail:not([hidden])) .bd-ft { display: none; }
   animation: dealFly .32s var(--ease) forwards;
 }
 /* 圆角也要跟着换算：视觉圆角 = 设计圆角 × 缩放，落位时才对得上大牌的 20px。
- * 所以圆角做在 .flyer 上、由里面的 clone 继承 —— 直接改 clone 自己的圆角不会跟着缩放。 */
-.flyer > .cover { border-radius: inherit; }
+ * 所以圆角做在 .flyer 上、由里面的 clone 继承 —— 直接改 clone 自己的圆角不会跟着缩放。
+ * ⚠️ 两个选择器都要写：v0.8.1 及以前飞的是 .cover，v0.8.2 起飞的是 .bigcard
+ *    （两者的圆角规则都在各自类上，不写 .bigcard 这条的话飞出来是直角）。 */
+.flyer > .cover,
+.flyer > .bigcard { border-radius: inherit; }
 @keyframes dealFly {
   0%   { transform: translate3d(0, 0, 0) scale(var(--s0, 1));
          border-radius: 13px; }
@@ -734,9 +1027,6 @@ html.embed .mask { background: transparent; }
  * 与 app.js 的 fitStage 断点 760 必须一致（那边只写 --k，这边只改排版）。 */
 @media (max-width: 760px) {
   .board-wrap { padding: 0 12px; }
-  .deck { flex-wrap: wrap; gap: 18px; }
-  .stack { transform: scale(.78); }
-  .guide { height: auto; flex-direction: column; align-items: flex-start; gap: 12px; }
   .bd-hd { height: auto; flex-direction: column; align-items: flex-start; gap: 12px; }
   .bd-ft { flex-direction: column; align-items: flex-start; }
   .switchbar { flex-direction: column; height: auto; }

@@ -59,29 +59,32 @@
   <!-- 主体：两个视图叠在同一块区域，切视图不动 Header / Footer -->
   <div class="bd-body" id="bdBody">
 
-    <!-- ============ 视图 1 · 六摞牌 ============ -->
-    <section class="view" id="viewDeal" aria-label="六摞牌">
-      <div class="deck" id="deck"></div>
+    <!-- ============ 视图 1 · 大封面 + 小卡条 ============
+         v0.9.0：六摞牌改为「一张大牌 + 一条小卡」。
+         上方 = 当前赛道的封面大牌（1:1.4，左/右箭头切换）；
+         下方 = 六张赛道小卡（首字 + 赛道色选中态），点谁切谁。
+         切换动画 = 左右切牌（与详情翻牌同一套 --dx 位移机制）。 -->
+    <section class="view" id="viewDeal" aria-label="六大赛道">
+      <div class="ftable" id="ftable">
+        <button class="round" id="fPrev" aria-label="上一赛道">
+          <svg width="13" height="15" viewBox="0 0 13 15" fill="none" aria-hidden="true">
+            <path d="M9.4 2.6L4.6 7.5l4.8 4.9" stroke="currentColor" stroke-width="1.8"
+                  stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </button>
 
-      <!-- 发牌流程说明 1440x104 -->
-      <div class="guide">
-        <div class="guide-tag">
-          <b>怎么翻牌</b>
-          <span>点一摞 → 进详情 → 翻下一张</span>
-        </div>
-        <div class="guide-step">
-          <i>1</i>
-          <div><b>点一摞</b><span>六摞任选，进入该赛道详情页</span></div>
-        </div>
-        <div class="guide-step">
-          <i>2</i>
-          <div><b>发牌落位</b><span>顶牌飞到牌台中央，默认展示第 1 张（320ms）</span></div>
-        </div>
-        <div class="guide-step">
-          <i>3</i>
-          <div><b>翻下一张</b><span>点箭头 / 按键 / 滑动都能翻，反向翻时箭头才点亮</span></div>
-        </div>
+        <div class="fslot" id="fslot"></div>
+
+        <button class="round" id="fNext" aria-label="下一赛道">
+          <svg width="13" height="15" viewBox="0 0 13 15" fill="none" aria-hidden="true">
+            <path d="M3.6 2.6l4.8 4.9-4.8 4.9" stroke="currentColor" stroke-width="1.8"
+                  stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </button>
       </div>
+
+      <!-- 赛道小卡条：点小卡切大牌；title 带张数 -->
+      <div class="strip" id="strip" role="tablist" aria-label="选择赛道"></div>
     </section>
 
     <!-- ============ 视图 2 · 赛道详情 ============ -->
@@ -91,7 +94,7 @@
           <svg width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden="true">
             <path d="M11 4.6L6.4 9l4.6 4.4" stroke="#5C636E" stroke-width="1.6"
                   stroke-linecap="round" stroke-linejoin="round"/>
-          </svg>返回 · 六摞牌
+          </svg>返回 · 榜单
         </button>
         <span class="crumbs-sep">/</span>
         <span class="crumbs-cur" id="crumbCur">毒舌榜 · 共 0 张</span>
@@ -129,6 +132,42 @@
             翻牌 <em>·</em> <span class="txt">左右滑动也可以</span>
           </span>
         </div>
+      </div>
+    </section>
+
+    <!-- ============ 视图 3 · 评分中发牌（v0.8.0） ============
+         ⭐ 为什么单独一个视图而不是复用 .sys 那张居中卡片：
+         「把解析过程做成发牌」本身就是这一屏要展示的内容 ——
+         塞进一张 520px 的弹窗里，六摞牌根本没有落脚的地方。
+         扫描阶段（无分类信息）退化成阶段条第 1 步在转，
+         一旦 AI 返回第一批，六摞就长出来。 -->
+    <section class="view view-deal" id="viewScoring" hidden aria-label="评分中">
+      <div class="sc-phase" id="scPhase">
+        <div class="sc-step is-done">
+          <span class="sc-dot">✓</span><span class="sc-txt">抓取沸点 <b id="scScan">0</b> 条</span>
+        </div>
+        <div class="sc-step is-done">
+          <span class="sc-dot">✓</span><span class="sc-txt">按热度筛出 <b id="scCand">0</b> 条</span>
+        </div>
+        <div class="sc-step is-now" id="scStep3">
+          <span class="sc-dot">3</span><span class="sc-txt">AI 逐条分赛道 · <b id="scDone">0/0</b></span>
+        </div>
+        <div class="sc-step">
+          <span class="sc-dot">4</span><span class="sc-txt">按分数排名次</span>
+        </div>
+      </div>
+
+      <!-- 六摞：发牌过程中逐张长大。用赛道色，吃 TRACKS[].color -->
+      <div class="sc-deck" id="scDeck"></div>
+
+      <!-- 发牌台：待发的手牌 + 归榜/落选统计 -->
+      <div class="sc-hall" id="scHall">
+        <div class="sc-hall-l">
+          <b id="scHallT">第 0 条待发</b>
+          <em id="scHallNow">等 AI 发第一手</em>
+          <span id="scHallS">AI 每返回 8 条就发一手</span>
+        </div>
+        <div class="sc-hand" id="scHand"></div>
       </div>
     </section>
 

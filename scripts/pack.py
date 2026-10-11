@@ -21,7 +21,23 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 EXT = os.path.join(BASE, "extension")
 OUT = os.path.join(BASE, "dist", "juejin-feidian-card-extension.zip")
 REPORT = os.path.join(BASE, "output", "ext-pack.txt")
-NODE = r"C:\Users\apple\.workbuddy\binaries\node\versions\22.22.2-3\node.exe"
+
+
+# 与 check_extension.py 同款:managed node 目录名带 build 号、会随更新变,写死就
+# FileNotFoundError(踩过 22.22.2-3 → -6)。现 ls 一次取实际存在的那个。
+def _find_node():
+    base = os.path.join(os.path.expanduser("~"), ".workbuddy", "binaries", "node", "versions")
+    try:
+        for name in sorted(os.listdir(base), reverse=True):
+            exe = os.path.join(base, name, "node.exe")
+            if os.path.exists(exe):
+                return exe
+    except Exception:
+        pass
+    return shutil.which("node") or "node"
+
+
+NODE = _find_node()
 
 # 扩展里的 JS：手写的那几个 + 由构建生成、带补丁的 app.js + 从 site/ 复制来的榜单前端
 JS_FILES = ("content.js", "api-shim.js", "embed-boot.js", "background.js",

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "沸点抽卡 · 掘金沸点翻牌",
-  "version": "0.6.0",
+  "version": "0.8.0",
   "description": "在 juejin.cn 上悬浮站点同款的主卡与缩略卡：翻牌看当日沸点，配一句 AI 点评，一键复制点评与精彩评论；另有「魔鬼榜单」六摞牌，点一摞发牌进详情逐张翻。",
   "icons": {
     "16": "icons/16.png",

@@ -1,22 +1,60 @@
 /* board.js — 魔鬼榜单前端
  *
- * 三层：六摞牌（首页）→ 赛道详情 → 逐张切牌。
+ * 三层：大封面 + 小卡条（首页）→ 赛道详情 → 逐张切牌。
  * 口径全部对齐 docs/devil-board-spec.md 第六、七节；落地时踩到的两个关键点：
  *
- *  1) **条数不固定（1~N）**：封面牌刻意不写数字；面包屑「共 N 张」、进度「第 x / 共 N 张」
- *     两个数字都动态；缩略进度是「固定宽轨道里放 N 个卡」（超出横滚），不是固定几格。
+ *  1) **条数不固定（1~N）**：面包屑「共 N 张」、进度「第 x / 共 N 张」都动态；
+ *     缩略进度是「固定宽轨道里放 N 个卡」（超出横滚），不是固定几格。
  *  2) **三种换法完全等价**：点箭头 / 键盘 ← → / 左右滑动。滑动跟手（松手前不播动画），
  *     阈值 = 牌宽 25%，拖动时箭头淡出让位。
  *
- * 发牌动画用「飞行层 + clone」：把被点那摞的封面牌克隆一份、钉在它的实测坐标上，
- * 再按 translate + scale 飞到牌台中央。两张牌同为 1:1.4，所以等比缩放不会变形，
- * 落位时与大牌矩形严丝合缝 —— 再交叉淡化换掉内容，看不到跳变。
+ * v0.9.0：首页从「六摞牌」改为「一张大牌 + 一条小卡」：
+ *   上 = 当前赛道封面大牌（1:1.4），下 = 六张赛道小卡，点谁切谁；
+ *   切赛道 = 左右切牌（与详情翻牌同一套 --dx 位移机制，.fx 复用 .cx 规则）。
+ *   点大牌进详情仍是「飞行层 + clone」：大牌与详情大牌同为 1:1.4，
+ *   单轴等比缩放落位，内容全程不变（飞的是 .bigcard 克隆）。
  */
 (function () {
   'use strict';
 
   var q = new URLSearchParams(location.search);
-  var reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  /* ---------------- 动效档（与 app.js 同口径） ----------------
+   *
+   * ⚠️ 为什么这里要把 app.js 的逻辑重抄一遍：board.html 只引 board.js、**不引 app.js**，
+   *    而首页那三档动效（完整 / 轻量 / 跟随系统）持久化在 localStorage 里、
+   *    落到 html.motion-lite / html.motion-full 两个类上。原来 board.js 只写了一句
+   *    `matchMedia('(prefers-reduced-motion: reduce)').matches`，于是两个页面口径分裂：
+   *      首页设「完整」+ 系统开了减少动效 → 首页有动画、**榜单页没动画**
+   *      首页设「轻量」                  → 首页没动画、榜单页照旧播完整动画
+   *    两边读同一份档位就一致了。另外原先那句是**加载时快照**：改了系统设置不刷新
+   *    页面不会生效（app.js 那边是监听 change 的），这里也补上。
+   *
+   * 默认档同样是 'full' 而不是 'system' —— 理由与 app.js 一致：榜单的观感主要就靠
+   * 这套切牌/飞行，不该被预览环境或系统设置静悄悄降级成「看起来没动画」。
+   * URL 覆写（临时预览用，不落盘）：?motion=full|lite|system */
+  var MOTION_MODES = ['full', 'lite', 'system'];
+  var LKEY = 'juejin-gacha-glass';   // 与 app.js 同一个键（同源共享 localStorage）
+  var motionQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
+  var urlMotion = (function () {
+    var m = /[?&]motion=([a-z]+)/.exec(location.search);
+    return m && MOTION_MODES.indexOf(m[1]) >= 0 ? m[1] : null;
+  })();
+  var motionMode = urlMotion || 'full';
+  try {
+    var mv = JSON.parse(localStorage.getItem(LKEY) || 'null');
+    if (!urlMotion && mv && MOTION_MODES.indexOf(mv.motion) >= 0) motionMode = mv.motion;
+  } catch (e) { /* 读不到就用默认档 */ }
+
+  function resolveMotion() {
+    var lite = motionMode === 'lite' || (motionMode === 'system' && motionQuery.matches);
+    var root = document.documentElement;
+    root.classList.toggle('motion-lite', lite);
+    root.classList.toggle('motion-full', !lite);
+  }
+  resolveMotion();
+  if (motionQuery.addEventListener) motionQuery.addEventListener('change', resolveMotion);
+  else if (motionQuery.addListener) motionQuery.addListener(resolveMotion);
 
   var $ = function (s) { return document.querySelector(s); };
   var esc = function (s) {
@@ -30,11 +68,38 @@
   var DUR_BACK = 240;   // 返回上一层（入场倒放，压短）
   var DUR_SNAP = 160;   // 未过阈值弹回
 
-  /* 封面牌的设计尺寸（= board.css 的 --cover-w / --cover-h）。
-   * ⚠️ 必须和 CSS 对齐：飞行层拿不到 .board 上的变量，只能在这里写一份。
-   *    202x283 = **1:1.4 纸牌比例**（与详情大牌同比例 → 发牌单轴等比缩放即可）。 */
+  /* 封面牌（摞）设计尺寸（= board.css 的 --cover-w / --cover-h）。
+   * ⚠️ v0.9.0 六摞已撤，但这对常量是 check_extension.py 的尺寸契约锚点
+   *    （与 --cover-w/h 同步、1:1.4），保留勿删。
+   *    飞行层的实际设计尺寸由 FT_W/FT_H（首页大牌）决定，见 makeFlyer。 */
   var COVER_W = 202;
   var COVER_H = 283;
+
+  /* 首页大封面牌设计尺寸（= board.css 的 --fw / --fh，站点档）。
+   * 300x420 与详情大牌 396x554 同为 1:1.4 → 飞行仍是单轴等比缩放。
+   * 浮层档是 240x336，但 scale = 视觉/设计，按 300 算照样成立（240/300=0.8）。 */
+  var FT_W = 300;
+  var FT_H = 420;
+
+  /* ---------------- 赛道元数据（v0.8.0 发牌视图需要） ----------------
+   *
+   * ⭐ 为什么前端要抄一份：`TRACKS` 定义在 board-core.mjs（ESM），而 board.js 是
+   *   普通 script，不能 import —— 更根本的原因是**发牌视图出现时还没有 S.data**：
+   *   那一刻正在算第一手，payload 一片都没有，六摞的赛道名/色得先摆出来。
+   *   所以只能前端自带一份静态元数据。
+   *
+   * ⚠️ 这份是 board-core.mjs `TRACKS` 的**手工副本**，改那边必须同步改这里。
+   *   `scripts/check_extension.py` 有一条断言会比对两处的 id / name / def / color，
+   *   对不上就构建失败 —— 别靠记性，靠那条断言。
+   *   （只需要 id/name/def/color 四项：符号走上面的 SYMBOL，维度条发牌视图不画。） */
+  var TRACKS = [
+    { id: 'venom',    name: '毒舌榜', def: '骂得最狠，而且最准',   color: '#FF5A3C' },
+    { id: 'absurd',   name: '离谱榜', def: '逻辑最崩，还理直气壮', color: '#F5A524' },
+    { id: 'passive',  name: '阴阳榜', def: '表面客气，体内捅刀',   color: '#A855F7' },
+    { id: 'stubborn', name: '嘴硬榜', def: '错了也绝不认',         color: '#1E80FF' },
+    { id: 'blah',     name: '废话榜', def: '说了很多，等于没说',   color: '#454D57' },
+    { id: 'emo',      name: 'emo 榜', def: '深夜破防，上班如上坟', color: '#12A173' },
+  ];
 
   /* ---------------- 赛道符号（SVG，无 emoji，spec 第十节） ----------------
    * 图形形状以设计稿为准：毒舌=实心水滴 / 离谱=圈问号 / 阴阳=圆+右半实心 /
@@ -82,6 +147,66 @@
       '" aria-hidden="true" style="display:block">' + (SYMBOL[id] || '') + '</svg>';
   }
 
+  /* ---------------- 卡面背景碎片（v1.0 贴纸风，用户给的参考图） ----------------
+   *
+   * 参考图里每张卡的角色背后都散着一组**贴纸碎片**，六个赛道各不相同
+   * （毒舌=闪电/皇冠，废话=纸堆，emo=星星…），这是它「潮玩贴纸」观感的一半来源。
+   *
+   * ⭐ 用**矢量现画**，不用位图：
+   *   ① 跟着赛道色走（currentColor）——改色值不用重出图，六张自动跟上；
+   *   ② 不增加任何请求。首屏本来就要拉六张角色图（合计 ~690KB），
+   *      再挂 6 张碎片 PNG 是纯浪费；
+   *   ③ 碎片的「散落」是刻意的低信息量装饰，不适合走 `make_card_faces.py`
+   *      那套抠图链（那套的产出是要精修的素材，不是几何图形）。
+   *
+   * 坐标系：viewBox 0 0 100 140 —— **与卡面同为 1:1.4**（300x420 / 240x336 都是），
+   * 所以铺满即不变形，两档共用一套坐标。
+   * 每条 = [形状, x, y, 缩放, 旋转]。形状定义在 0..10 的局部坐标里；
+   * 一块 10 单位的图形按 scale=1 铺出来是 30px（1 单位 = 3px @站点档）。
+   * ⚠️ 摆位要避开中间的形象区（x 26~74 / y 20~98），那里是角色；
+   *    碎片全落在四角与左右边缘。 */
+  var SHAPES = {
+    bolt:  '<path d="M6 0 2.2 5.6h2.4L3.4 10 7.8 4.2H5.4z"/>',
+    /* 皇冠要带底座：只画三个尖角缩到 20px 时像一座小山峰（emo 榜右侧实测如此），
+     * 补一条底边才读得出是皇冠。 */
+    crown: '<path d="M1 8.2 2.4 2.4 5 5.4 7.6 2.4 9 8.2z"/><rect x="1" y="8.3" width="8" height="1.6" rx=".5"/>',
+    spark: '<path d="M5 0 6.3 3.7 10 5 6.3 6.3 5 10 3.7 6.3 0 5 3.7 3.7z"/>',
+    sheet: '<path d="M1.6 1.2h5.2L9.2 3.6V10H1.6z" fill="none" stroke-width="1.1"/>',
+    slash: '<path d="M0.6 10 9.4 0" fill="none" stroke-width="1.7" stroke-linecap="round"/>',
+    dot:   '<circle cx="5" cy="5" r="2"/>',
+    cloud: '<path d="M2.6 8.4a2.2 2.2 0 01.2-4.3 2.8 2.8 0 015.2.8 1.9 1.9 0 01-.3 3.5z" fill="none" stroke-width="1.1"/>',
+    ring:  '<circle cx="5" cy="5" r="3.9" fill="none" stroke-width="1.2"/>',
+  };
+  var DECO = {
+    venom:    [['bolt', 9, 24, 1.0, -14],  ['crown', 84, 27, 0.8, 8],
+               ['slash', 7, 56, 0.7, 0],   ['slash', 90, 64, 0.6, 0],
+               ['spark', 12, 76, 0.65, 0], ['bolt', 86, 86, 0.7, 18]],
+    absurd:   [['sheet', 9, 26, 0.9, -10], ['ring', 85, 31, 0.75, 0],
+               ['slash', 7, 58, 0.65, 0],  ['spark', 12, 78, 0.7, 0],
+               ['dot', 90, 62, 0.5, 0],    ['dot', 83, 82, 0.6, 0]],
+    passive:  [['sheet', 10, 30, 0.85, 12], ['sheet', 83, 24, 0.7, -8],
+               ['bolt', 7, 60, 0.6, -12],  ['slash', 90, 60, 0.6, 0],
+               ['spark', 13, 80, 0.65, 0], ['ring', 83, 86, 0.6, 0]],
+    stubborn: [['slash', 8, 28, 0.9, 0],   ['slash', 88, 36, 0.75, 0],
+               ['slash', 8, 62, 0.6, 0],   ['slash', 88, 68, 0.55, 0],
+               ['dot', 14, 80, 0.55, 0],   ['spark', 83, 85, 0.7, 0]],
+    blah:     [['sheet', 9, 24, 0.9, -10], ['sheet', 82, 32, 0.75, 8],
+               ['cloud', 12, 74, 0.85, 0], ['slash', 90, 60, 0.55, 0],
+               ['dot', 83, 82, 0.55, 0],   ['dot', 7, 58, 0.5, 0]],
+    emo:      [['spark', 11, 26, 0.95, 0], ['ring', 84, 33, 0.7, 0],
+               ['slash', 7, 58, 0.6, 0],   ['crown', 82, 80, 0.75, 8],
+               ['spark', 14, 78, 0.65, 0], ['dot', 90, 62, 0.5, 0]],
+  };
+  function decoSVG(id) {
+    var list = DECO[id] || [];
+    if (!list.length) return '';
+    return '<svg class="cv-deco" viewBox="0 0 100 140" preserveAspectRatio="none" aria-hidden="true">' +
+      list.map(function (d) {
+        return '<g transform="translate(' + d[1] + ' ' + d[2] + ') scale(' + d[3] + ')' +
+          (d[4] ? ' rotate(' + d[4] + ')' : '') + '">' + (SHAPES[d[0]] || '') + '</g>';
+      }).join('') + '</svg>';
+  }
+
   /* ---------------- 状态 ---------------- */
   var S = {
     range: q.get('range') === 'week' ? 'week' : 'day',
@@ -91,10 +216,12 @@
     err: null,
     trackId: q.get('track') || null,
     idx: 0,
+    fidx: 0,             // 首页当前选中的赛道下标（大牌 / 小卡条共用）
     busy: false,         // 正在播切牌/发牌动画
   };
 
-  var deckEl = $('#deck'), slotEl = $('#slot'), trackEl = $('#track');
+  var fslotEl = $('#fslot'), stripEl = $('#strip'), ftableEl = $('#ftable');
+  var slotEl = $('#slot'), trackEl = $('#track');
   var viewDeal = $('#viewDeal'), viewDetail = $('#viewDetail'), sysEl = $('#sys');
   var tableEl = $('#table'), flyLayer = $('#flyLayer'), boardEl = $('#board');
 
@@ -105,7 +232,10 @@
     }
     return null;
   }
-  function motion() { return !reduceMotion; }
+  /* 只认 html.motion-lite 一个类（由上面的 resolveMotion 落），不在这里再读
+   * matchMedia —— 单一真相：媒体查询只在 resolveMotion 里解析一次。
+   * ⚠️ 别改成 `!motionQuery.matches`：那会绕过首页的档位选择，回到口径分裂。 */
+  function motion() { return !document.documentElement.classList.contains('motion-lite'); }
 
   /* ---------------- 取数 ---------------- */
 
@@ -148,8 +278,13 @@
 
   var pollTimer = null;
 
-  function load(fresh) {
+  function load(fresh, isPoll) {
     if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
+    /* ⭐ 新一轮打分（首屏 / 切榜期 / 点重新评分）要把发牌台清空。
+     * 判据是**这次不是轮询续期** —— 轮询必须保留 scSeen，
+     * 否则每 1.3s 清一次，六摞会反复归零。
+     * （同一批沸点重新算时 pinId 是重复的，不清就会被去重吃掉。） */
+    if (!isPoll) scReset();
     setStatus('building', { progress: S.progress, err: null });
     fetchBoard(fresh).then(function (j) {
       if (j && j.status === 'building') {
@@ -157,7 +292,7 @@
         setStatus('building', { progress: j.progress });
         /* 「评分中」要能看见进度，所以轮询 —— 一次全量抓取 + 打分要一两分钟，
          * 界面必须让人知道它在动，而不是死了。 */
-        pollTimer = setTimeout(function () { load(false); }, 1300);
+        pollTimer = setTimeout(function () { load(false, true); }, 1300);
         return;
       }
       if (j && j.status === 'failed' && !(j.boards && j.boards.length)) {
@@ -170,6 +305,185 @@
     }).catch(function (e) {
       setStatus('failed', { err: String((e && e.message) || e) });
     });
+  }
+
+  /* ---------------- 渲染：评分中发牌（v0.8.0） ----------------
+   *
+   * ⭐ 数据源是 `progress.dealt`（board-core 的 scoreCandidates 每批回报的
+   *   「本块每条分到哪个赛道」）。**必须累积，不能只留最新一批** ——
+   *   前端 1.3s 轮询而 AI 一批十几秒，不累积的话中途发出的牌会凭空消失。
+   *
+   * ⚠️ 三种内容不能混为一谈（与榜期卡同一个原则，spec §6.7）：
+   *   ranked=true  → 飞进对应赛道摞
+   *   ranked=false → 「不够 6 分不上榜」，**不是失败**（榜单宁可空着）
+   *   没拿到 dealt → 还在请求中
+   */
+  var scSeen = {};        // pinId -> 记录，防重（轮询会重复推同一批）
+  var scCols = null;      // 六个 .sc-col 元素缓存
+  /* 牌堆错开的格数上限：超过这个数就不再往下挪（否则压到赛道名，见 paintScoring）。
+   * ⚠️ 必须与 board.css 的 `--sc-fan` 一致（.sc-pile 靠它预留错开高度）。 */
+  var SC_FAN_MAX = 6;
+
+  /* 新一轮打分 = 推倒重来。⚠️ 只在「不是轮询续期」时调（见 load）：
+   * 同一批沸点重算时 pinId 会重复，去重表不清就会把新发的牌全吃掉。 */
+  function scReset() {
+    scSeen = {};
+  }
+
+  /* 赛道色的 8% 淡底 —— 给「顶牌」和计数徽标用。
+   * 用 color-mix 而不是硬编码六组浅色：赛道色一改这里自动跟着走。 */
+  function tintOf(hex) {
+    return 'color-mix(in srgb, ' + hex + ' 8%, #fff)';
+  }
+
+  function scBuckets() {
+    var b = {};
+    for (var i = 0; i < TRACKS.length; i++) b[TRACKS[i].id] = [];
+    return b;
+  }
+
+  function paintScoring() {
+    var p = S.progress || {};
+    var dealt = p.dealt || [];
+    var b = scBuckets();
+    var lost = 0, n = 0;
+    /* 最后一张落进哪一摞（给发牌台的「正在落位」提示用） */
+    var lastTop = null;
+    for (var i = 0; i < dealt.length; i++) {
+      var d = dealt[i];
+      /* 去重：轮询会重复推同一批 dealt（累积后的完整历史） */
+      if (scSeen[d.pinId]) { n++; continue; }
+      scSeen[d.pinId] = 1;
+      n++;
+      if (d.ranked && d.trackId && b[d.trackId]) b[d.trackId].push(d);
+      else if (!d.ranked) lost++;
+    }
+
+    /* 阶段条：第 1、2 步在进入打分阶段后才有确定的数字 */
+    var scan = $('#scScan'), cand = $('#scCand'), done = $('#scDone');
+    if (scan) scan.textContent = p.scanned || 0;
+    if (cand) cand.textContent = p.candidates || 0;
+    if (done) done.textContent = (p.done || 0) + '/' + (p.candidates || 0);
+    /* 扫描阶段（还没进打分）：第 1 步在动、第 2、3 步别提前打勾 */
+    var scoring = p.phase === 'score';
+    var stepEls = document.querySelectorAll('#scPhase .sc-step');
+    for (var k = 0; k < stepEls.length; k++) {
+      stepEls[k].classList.toggle('is-now', scoring ? k === 2 : k === 0);
+      stepEls[k].classList.toggle('is-done', scoring ? k < 2 : false);
+    }
+
+    /* 六摞 */
+    if (!scCols) {
+      var deck = $('#scDeck');
+      if (!deck) return;
+      deck.innerHTML = TRACKS.map(function (t) {
+        return '<div class="sc-col" data-track="' + t.id + '"' +
+          ' style="--sc-color:' + t.color + ';--sc-tint:' + tintOf(t.color) + '">' +
+          '<div class="sc-pile" data-pile="' + t.id + '"></div>' +
+          '<div class="sc-meta"><span class="sc-name">' + t.name + '</span>' +
+          '<span class="sc-num" data-num="' + t.id + '">0</span></div></div>';
+      }).join('');
+      scCols = {};
+      var cols = deck.querySelectorAll('.sc-col');
+      for (var c = 0; c < cols.length; c++) scCols[cols[c].getAttribute('data-track')] = cols[c];
+    }
+
+    for (var ti = 0; ti < TRACKS.length; ti++) {
+      var t = TRACKS[ti];
+      var col = scCols[t.id];
+      if (!col) continue;
+      var list = b[t.id];
+      var pile = col.querySelector('[data-pile]');
+      var num = col.querySelector('[data-num]');
+      if (num) num.textContent = list.length;
+      if (!pile) continue;
+
+      if (!list.length) {
+        pile.className = 'sc-pile is-empty';
+        pile.textContent = '等 AI 发牌';
+        continue;
+      }
+      pile.className = 'sc-pile';
+      /* ⭐ 一摞牌**倒着叠**：第 1 名在最上（--i:0），往后每张往下 4px。
+   *   这样两件事同时成立：
+   *     - 视觉上「越靠下名次越大」，符合牌堆直觉
+   *     - 新发的那张永远在**最下面**，也就是「刚落进这一摞」的那张
+   *       （is-top 给它赛道色 —— 用户第一眼看到的就是刚发生的事）
+   * ⚠️ 错开量在**这里封顶**（SC_FAN_MAX）：.sc-pile 固定高、不裁剪，
+   *    12 张全按 4px 挪会多出 44px，最后一张压到赛道名上（实测 5~6 张就压）。
+   *    CSS 里不做 min(var(--i),N) —— min() in calc() 兼容性不稳。
+   *    封顶后超过的那些张会**完全重叠**，只靠最下面那张露出来表示「还有更多」。 */
+      var h = '';
+      for (var m = 0; m < list.length; m++) {
+        var x = list[m];
+        var last = (m === list.length - 1);
+        h += '<div class="sc-card' + (last ? ' is-top' : '') + '"' +
+          ' style="--i:' + Math.min(m, SC_FAN_MAX) + '" title="' + esc(x.title || '') + '">' +
+          '<div class="sc-top">' +
+            '<b class="sc-rank">' + pad2(m + 1) + '</b>' +
+            '<span class="sc-sym">' + sym(t.id, 15) + '</span>' +
+          '</div>' +
+          '<div class="sc-head">' + x.score + ' · ' + esc(t.def) + '</div>' +
+          '<div class="sc-mid"><span class="sc-sym">' + sym(t.id, 34) + '</span></div>' +
+          '<div class="sc-verdict">' + esc(x.verdict || x.title || '') + '</div>' +
+          '</div>';
+      }
+      pile.innerHTML = h;
+      /* 记下「最后落到哪一摞的」——发牌台上那行提示要用。 */
+      if (m) lastTop = { t: t, n: list.length };
+    }
+
+    /* 发牌台：待发 = 候选总数 − 已打分；手牌 = 还剩几张没发（上限一手 8 张） */
+    var total = p.candidates || 0, scored = p.done || 0;
+    var left = Math.max(0, total - scored);
+    var hallT = $('#scHallT'), hallS = $('#scHallS'), hallNow = $('#scHallNow'), hand = $('#scHand');
+    /* ⭐ 「正在落位」必须**带赛道名 + 赛道色**：这一屏的全部意义就是
+     *    「什么类型进了哪个堆」。只报数字的话，用户还是不知道这一手发去了哪。 */
+    if (hallNow) {
+      if (lastTop) {
+        hallNow.textContent = '正在落位 → ' + lastTop.t.name + ' 第 ' + lastTop.n + ' 张（' + lastTop.t.def + '）';
+        hallNow.style.color = lastTop.t.color;
+      } else if (scoring) {
+        hallNow.textContent = 'AI 正在给这一手分赛道…';
+        hallNow.style.color = '';
+      } else {
+        hallNow.textContent = '等 AI 发第一手';
+        hallNow.style.color = '';
+      }
+    }
+    if (hallT) {
+      hallT.textContent = scoring
+        ? (left > 0 ? ('第 ' + (scored + 1) + ' 条待发') : '这一手发完了')
+        : ('正在翻沸点流…第 ' + (p.pages || 1) + ' 页');
+    }
+    if (hallS) {
+      hallS.textContent = scoring
+        ? ('已有 ' + (n - lost) + ' 条归榜 · ' + lost + ' 条不够 6 分不上榜')
+        : ('已扫 ' + (p.scanned || 0) + ' 条 · 抓完才开始打分');
+    }
+    if (hand) {
+      /* 手牌 = 还没发出来的那些，尾批会少于 8 张（4/4 那手），
+       * 全发完就是 0 张 —— 和「发牌台清空」视觉一致。 */
+      var show = scoring ? Math.min(8, left) : 0;
+      var hh = '';
+      for (var q = 0; q < show; q++) {
+        hh += '<i class="' + (q === 0 ? 'is-going' : '') + '" style="--i:' + q + '"></i>';
+      }
+      hand.innerHTML = hh;
+    }
+  }
+
+  /* 切到发牌视图 / 切回。⚠️ 与 viewDeal / viewDetail 是三选一，
+   * 所以每次进「评分中」都要把另两个藏起来 —— 否则三层会叠在一起。 */
+  function showScoring(on) {
+    if (on) {
+      viewDeal.hidden = true;
+      if (viewDetail) viewDetail.hidden = true;
+      $('#viewScoring').hidden = false;
+      paintScoring();
+    } else {
+      $('#viewScoring').hidden = true;
+    }
   }
 
   /* ---------------- 渲染：系统状态 ---------------- */
@@ -192,19 +506,30 @@
     var st = S.status;
     var show = false, ico = '', title = '', sub = '', bar = false, btn = '';
 
+    /* ⭐ v0.8.0：「评分中」不再弹居中卡片，改成**整个发牌视图**
+     * （六摞随 AI 返回逐张长大）。所以这里：
+     *   - 无旧榜单 → showScoring(true)，.sys 整个不显示
+     *   - 有旧榜单（stale 重算）→ 旧六摞留在下面压暗，当背景参照
+     */
     if (st === 'building' && !S.data) {
-      show = true; ico = RING; title = '正在评分';
-      var p = S.progress || {};
-      if (p.phase === 'score') {
-        var done = p.done || 0, tot = p.candidates || 0;
-        sub = '已扫描 ' + (p.scanned || 0) + ' 条 · 筛出 ' + tot + ' 条候选 · 打分 ' + done + '/' + tot;
-        bar = true;
-        $('#sysBarIn') && ($('#sysBarIn').style.width = (tot ? Math.round(done / tot * 100) : 4) + '%');
-      } else {
-        sub = '正在翻沸点流…已扫描 ' + ((p.scanned || 0)) + ' 条 · 第 ' + (p.pages || 1) + ' 页';
-        bar = true;
-        $('#sysBarIn') && ($('#sysBarIn').style.width = Math.min(96, (p.pages || 1) * 6) + '%');
-      }
+      showScoring(true);
+    } else {
+      showScoring(false);
+    }
+
+    if (st === 'building' && S.data) {
+      /* 有旧榜可看 → 仍用居中卡片压一层（旧榜在后面，不清空） */
+      show = true; ico = RING; title = '正在重新评分';
+      var pp = S.progress || {};
+      sub = pp.phase === 'score'
+        ? ('已扫 ' + (pp.scanned || 0) + ' 条 · 重新打分 ' + (pp.done || 0) + '/' + (pp.candidates || 0))
+        : ('正在翻沸点流…已扫描 ' + ((pp.scanned || 0)) + ' 条');
+      bar = true;
+      $('#sysBarIn') && ($('#sysBarIn').style.width =
+        pp.candidates ? Math.round((pp.done || 0) / pp.candidates * 100) + '%' : '4%');
+    } else if (st === 'building' && !S.data) {
+      /* 已交给发牌视图，这里只保留变量（保持分支可读，实际不显示） */
+      show = false;
     } else if (st === 'failed') {
       show = true; ico = ICO_FAIL; title = '这次没算出来';
       sub = (S.err || '接口异常') + '。已经算好的榜单不会丢，可以稍后在下方重新评分。';
@@ -245,38 +570,82 @@
    *
    * 空榜（合法状态，spec 6.4）：名次显 0、分数显 —、入口显「暂无上榜」，
    * 不另做占位图，靠 .stack.empty 降不透明度提示。 */
+  /* ⭐ v1.0 版式（按用户给的参考图重排）：顶「名次 + 分数」→ 中「角色」→ 下「赛道名 + 定义」→ 底「入口」。
+   *   与 v0.6.0 的差别只有两处，但都是参考图的重点：
+   *     ① 赛道名从**角色上方**移到**角色下方**并放大（参考图里它是视觉重心，压在角色脚上）；
+   *     ② 多一层背景碎片（decoSVG），角色不再是「白底上一个孤零零的形象」。
+   *   颜色一律走 CSS 变量 --tc（由 paintFeature 写在 .fx 上）—— 原来每个元素各写一次
+   *   内联 color，六处颜色散在字符串里，改配色要改六遍。 */
   function coverHTML(b) {
     var empty = !b.top || !b.top.length;
     var best = empty ? null : b.top[0];
     return '' +
+      decoSVG(b.id) +
       '<div class="cover-top">' +
-        '<span class="left" style="color:' + b.color + '">' +
-          '<span style="display:flex">' + sym(b.id, 13) + '</span>' +
+        '<span class="left">' +
+          '<span class="cv-sym">' + sym(b.id, 20) + '</span>' +
           '<b class="cover-rank">' + (empty ? '0' : '1') + '</b>' +
         '</span>' +
-        '<b class="cover-score">' + (empty ? '—' : best.score.toFixed(1)) + '</b>' +
+        '<b class="cover-score' + (empty ? ' is-empty' : '') + '">' +
+          (empty ? '—' : best.score.toFixed(1)) + '</b>' +
       '</div>' +
-      '<div class="cover-name" style="color:' + b.color + '">' + esc(b.name) + '</div>' +
       '<div class="cover-fig" style="background-image:url(cards/' + CARD_CHAR[b.id] + '.png)"></div>' +
-      '<div class="cover-def">' + esc(b.def) + '</div>' +
+      '<div class="cover-name">' + esc(b.name) + '</div>' +
+      /* ⚠️ 空榜时定义行与入口**不能都写「暂无上榜」** —— 两行同文案挨在一起，
+       *    第一版出图后像渲染重复。定义行保留「暂无上榜」这个数据事实，
+       *    入口退回「查看赛道 →」，与正常态的「点击进入 →」同构。 */
+      '<div class="cover-def">' + (empty ? '今日暂无上榜' : esc(b.def)) + '</div>' +
       '<div class="cover-go">' +
-        '<span style="display:flex;color:' + b.color + '">' + sym(b.id, 10) + '</span>' +
-        (empty ? '暂无上榜' : '点击进入 →') +
+        '<span class="cv-sym">' + sym(b.id, 13) + '</span>' +
+        (empty ? '查看赛道 →' : '点击进入 → 看完整榜单') +
       '</div>';
   }
 
-  function paintDeck() {
+  /* 首页大牌：三张封面（prev / cur / next）叠在同一格，切赛道 = 左右切牌。
+   * 结构与详情 .slot 的 .cx 同构（data-pos 驱动 CSS 位移），复用 --dx 机制。 */
+  function paintFeature() {
     var bs = (S.data && S.data.boards) || [];
-    deckEl.innerHTML = bs.map(function (b) {
+    var parts = [];
+    [-1, 0, 1].forEach(function (d) {
+      var i = S.fidx + d;
+      if (i < 0 || i >= bs.length) return;
+      var b = bs[i];
       var empty = !b.top || !b.top.length;
-      return '<div class="stack' + (empty ? ' empty' : '') + '" data-track="' + b.id + '" role="button" ' +
-        'tabindex="0" aria-label="' + esc(b.name) + (empty ? '（暂无上榜）' : '，' + b.top.length + ' 张') + '">' +
-        '<span class="stack-face f0"></span>' +
-        '<span class="stack-face f1"></span>' +
-        '<span class="stack-face f2"></span>' +
-        '<div class="cover">' + coverHTML(b) + '</div>' +
-      '</div>';
+      /* --tc = 赛道色，整张卡（描边 / 名次 / 分数 / 赛道名 / 入口 / 背景碎片）
+       * 都从它派生；写在 .fx 上由 .cover 继承，一处改色全卡跟。 */
+      parts.push('<div class="fx' + (empty ? ' empty' : '') +
+        '" data-pos="' + (d === 0 ? 'cur' : (d > 0 ? 'next' : 'prev')) + '"' +
+        ' style="--tc:' + b.color + '">' +
+        '<div class="cover">' + coverHTML(b) + '</div></div>');
+    });
+    fslotEl.innerHTML = parts.join('');
+    fslotEl.classList.remove('peek');
+    var cur = bs[S.fidx];
+    fslotEl.setAttribute('role', 'button');
+    fslotEl.setAttribute('tabindex', '0');
+    fslotEl.setAttribute('aria-label', cur
+      ? (cur.name + (cur.top.length ? '，' + cur.top.length + ' 张，回车进入' : '（暂无上榜）'))
+      : '正在取数');
+  }
+
+  /* 小卡条：六张赛道卡（首字 + 赛道色选中态），点谁切谁。title 带张数。 */
+  function paintStrip() {
+    var bs = (S.data && S.data.boards) || [];
+    stripEl.innerHTML = bs.map(function (b, i) {
+      var empty = !b.top || !b.top.length;
+      return '<button class="fchip' + (i === S.fidx ? ' on' : '') + (empty ? ' is-empty' : '') +
+        '" data-j="' + i + '" role="tab" aria-selected="' + (i === S.fidx) +
+        '" style="--c:' + b.color + '"' +
+        ' title="' + esc(b.name) + ' · ' + (b.top ? b.top.length : 0) + ' 张"' +
+        ' aria-label="' + esc(b.name) + (empty ? '（暂无上榜）' : '，' + b.top.length + ' 张') + '">' +
+        esc((b.name || ' ').charAt(0)) + '</button>';
     }).join('');
+    /* 首页箭头两端置灰：用类而不是 disabled —— disabled 的 button 不派发事件，
+     * 「点箭头」会比「点同侧空白」少一层反应，两者必须等价（越界时 fstep 自然不动） */
+    $('#fPrev').classList.toggle('is-off', S.fidx <= 0);
+    $('#fNext').classList.toggle('is-off', S.fidx >= bs.length - 1);
+    $('#fPrev').setAttribute('aria-disabled', S.fidx <= 0 ? 'true' : 'false');
+    $('#fNext').setAttribute('aria-disabled', S.fidx >= bs.length - 1 ? 'true' : 'false');
   }
 
   /* ---------------- 渲染：详情大牌 ---------------- */
@@ -385,18 +754,28 @@
    * 飞行层挂在 body 下（不在 .board 里），刻意不参与 --k 缩放：
    * 这样 clone 始终按设计像素**导出尺寸**渲染，再靠 scale 追平视觉尺寸。
    * ⭐ 封面牌与详情大牌同为 1:1.4 → **单轴等比缩放**即可（--s0 出发 / --s 落位）。
-   *    （v0.5.1 那版封面是 1:1.218、大牌 1:1.4，比例不同才需要分轴。） */
-  function makeFlyer(coverEl, from, to) {
+   *    （v0.5.1 那版封面是 1:1.218、大牌 1:1.4，比例不同才需要分轴。）
+   *
+   * ⭐ v0.8.2：飞的内容从**封面牌**换成**详情大牌的缩略版**。
+   *   原来飞的是 `coverEl.outerHTML`，于是整个 320ms 里用户看到的是一张
+   *   写着「emo 榜 / 点击进入 →」的**封面小牌**在放大，落位后突然整张换成
+   *   详情大牌（名次 / 分数 / 判词 / 看原文）—— 一次明显的内容突变，
+   *   而且「点击进入」这个按钮飞到了详情页，语义上已经过期。
+   *   改飞大牌的clone 后：飞过去的就是落位后那张牌，**内容全程不变**，
+   *   视觉上只剩位移+缩放这一件事（spec §6.2「顶牌飞到牌台中央并放大到详情尺寸」
+   *   说的就是这件事）。 */
+  function makeFlyer(srcEl, from, to, dw, dh) {
     var flyer = document.createElement('div');
     flyer.className = 'flyer';
     flyer.style.left = from.left + 'px';
     flyer.style.top = from.top + 'px';
-    flyer.style.width = COVER_W + 'px';
-    flyer.style.height = COVER_H + 'px';
-    flyer.innerHTML = coverEl.outerHTML;
-    /* 视觉尺寸 = 设计尺寸 x k → scale 就是「视觉宽 / 设计宽」；同比例所以只算宽度 */
-    flyer.style.setProperty('--s0', (from.width / COVER_W).toFixed(4));
-    flyer.style.setProperty('--s', (to.width / COVER_W).toFixed(4));
+    /* 设计尺寸由调用方传（v0.9.0 起首页大牌是 300x420，不再是封面小牌 202x283）：
+     * 视觉尺寸 = 设计尺寸 x k → scale 就是「视觉宽 / 设计宽」；同比例所以只算宽度 */
+    flyer.style.width = dw + 'px';
+    flyer.style.height = dh + 'px';
+    flyer.innerHTML = srcEl.outerHTML;
+    flyer.style.setProperty('--s0', (from.width / dw).toFixed(4));
+    flyer.style.setProperty('--s', (to.width / dw).toFixed(4));
     flyer.style.setProperty('--dx', (to.left - from.left).toFixed(1) + 'px');
     flyer.style.setProperty('--dy', (to.top - from.top).toFixed(1) + 'px');
     flyLayer.appendChild(flyer);
@@ -412,11 +791,16 @@
 
   function openTrack(trackId) {
     if (S.busy || S.trackId) return;
-    var stack = deckEl.querySelector('.stack[data-track="' + trackId + '"]');
-    if (!stack) return;
+    var bs = (S.data && S.data.boards) || [];
+    var b = null;
+    for (var i = 0; i < bs.length; i++) if (bs[i].id === trackId) { b = bs[i]; break; }
+    if (!b) return;
     S.busy = true;
     S.trackId = trackId;
     S.idx = 0;
+    /* 大牌槽与小卡条必须对齐到要进的赛道（URL ?track= 直达时可能不一致）：
+     * viewDeal 此刻多半还可见，重绘要赶在量矩形之前 */
+    if (S.fidx !== i) { S.fidx = i; paintFeature(); paintStrip(); }
 
     if (!motion()) {
       S.busy = false;
@@ -431,24 +815,36 @@
     var big = slotEl.querySelector('.bigcard');
     if (big) big.style.opacity = '0';
 
-    var cover = stack.querySelector('.cover');
-    var from = cover.getBoundingClientRect();
+    var cover = fslotEl.querySelector('.fx[data-pos="cur"] .cover');
+    var from = cover ? cover.getBoundingClientRect() : fslotEl.getBoundingClientRect();
     var to = cardRect();
     /* 空榜：没有大牌可落，就地淡出 */
-    if (!board() || !board().top.length) to = from;
+    if (!b.top || !b.top.length) to = from;
 
-    /* 0ms 按下 → 整摞 scale .97 下沉；80ms 顶牌抽出、另两张淡出；180ms 飞；320ms 落位 */
-    stack.classList.add('press');
-    deckEl.classList.add('leaving');
-    stack.classList.add('taken');
+    /* 首页内容整体淡出让位（旧版是六摞 .deck.leaving），
+     * 飞行层是唯一焦点 —— 与 v0.8.2 同一原则 */
+    viewDeal.style.transition = 'opacity 200ms linear';
+    viewDeal.style.opacity = '0';
 
-    var flyer = makeFlyer(cover, from, to);
+    /* ⚠️ 飞的是**大牌的克隆**（v0.8.2 起不变），不是封面牌。
+     *   克隆源必须是已经渲染好的 .bigcard —— 它此刻 opacity:0，
+     *   但 outerHTML 不带行内 style 之外的状态，且下面立刻把clone
+     *   的 opacity 强制成 1（.bigcard 的 opacity:0 是行内样式，
+     *   outerHTML 会把它**一起克隆过去**，不处理的话飞出来是张空牌）。 */
+    var flyer = makeFlyer(big || cover, from, to, FT_W, FT_H);
+    var fclone = flyer.firstElementChild;
+    if (fclone) {
+      /* 克隆带过来的行内 opacity 要清掉，再由 .flyer 自己控制整体透明度 */
+      fclone.style.opacity = '';
+      fclone.style.width = '100%';
+      fclone.style.height = '100%';
+    }
 
     setTimeout(function () {
       viewDetail.style.opacity = '';
       viewDeal.hidden = true;
-      deckEl.classList.remove('leaving');
-      stack.classList.remove('press', 'taken');
+      viewDeal.style.opacity = '';
+      viewDeal.style.transition = '';
       crossFade(big);
       flyer.style.transition = 'opacity ' + (motion() ? 110 : 0) + 'ms linear';
       flyer.style.opacity = '0';
@@ -463,29 +859,36 @@
 
   function closeDetail() {
     if (S.busy || !S.trackId) return;
-    var track = S.trackId;
-    var stack = deckEl.querySelector('.stack[data-track="' + track + '"]');
-    if (!stack || !motion()) { backToDeal(); return; }
+    var cover = fslotEl.querySelector('.fx[data-pos="cur"] .cover');
+    if (!cover || !motion()) { backToDeal(); return; }
     S.busy = true;
 
     var from = cardRect();
-    /* 牌堆视图先「摆出来但不显示」，否则量不到封面牌的位置 */
+    /* 首页大牌视图先「摆出来但不显示」，否则量不到封面大牌的位置 */
     viewDeal.hidden = false;
     viewDeal.style.opacity = '0';
-    stack.classList.remove('press', 'taken');
-    var to = stack.querySelector('.cover').getBoundingClientRect();
+    var to = cover.getBoundingClientRect();
 
     var big = slotEl.querySelector('.bigcard');
     if (big) { big.style.transition = 'opacity 120ms linear'; big.style.opacity = '0'; }
 
-    var flyer = makeFlyer(stack.querySelector('.cover'), to, from);
+    /* ⚠️ 与 openTrack 配对：飞**大牌的克隆**（v0.8.2 起不变）。
+     *   返回全程内容不变，只是缩回首页大牌位。 */
+    var flyer = makeFlyer(big || cover, to, from, FT_W, FT_H);
+    var fclone2 = flyer.firstElementChild;
+    if (fclone2) {
+      fclone2.style.opacity = '';
+      fclone2.style.transition = '';
+      fclone2.style.width = '100%';
+      fclone2.style.height = '100%';
+    }
     flyer.classList.add('back');
 
     setTimeout(function () {
       flyer.remove();
       if (big) { big.style.transition = ''; big.style.opacity = ''; }
       viewDetail.hidden = true;
-      /* 其余五摞跟着牌一起淡回来 */
+      /* 首页跟着牌一起淡回来 */
       viewDeal.style.transition = 'opacity 200ms linear';
       viewDeal.style.opacity = '';
       setTimeout(function () { viewDeal.style.transition = ''; }, 220);
@@ -498,8 +901,6 @@
     viewDetail.hidden = true;
     viewDeal.hidden = false;
     viewDeal.style.opacity = '';
-    var stack = deckEl.querySelector('.stack[data-track="' + S.trackId + '"]');
-    if (stack) stack.classList.remove('press', 'taken');
     showDeal();
   }
 
@@ -532,20 +933,26 @@
   }
 
   /* 把牌台推到第 ni 张：目标方向的牌已经在槽里了，只要推 --dx 走完那段距离。
-   * 走到头再落数据（换 idx、重排三张卡），所以交接过程牌台一直是满的。 */
+   * 走到头再落数据（换 idx、重排三张卡），所以交接过程牌台一直是满的。
+   * ⚠️ 距离必须与 CSS 的 --slidegap 联动：切牌期间 --slidegap:0（两牌贴紧），
+   *    终点就是整整一张牌宽（396）；拖动那条路gap 还是 16，终点是 412。
+   *    写死 412 会在 .sliding 下冲过头16px —— 落位时牌「越过」中心再弹回来。*/
   function slideTo(ni, d, dur) {
     if (!motion()) { S.idx = ni; paintDetail(); return; }
     S.busy = true;
-    var dist = slotEl.offsetWidth + 16;
     slotEl.style.setProperty('--peek', '1');
-    slotEl.classList.add('peek');
+    /* ⚠️ 顺序：**先加 .sliding 再算 dist**。
+     * 写反的话 contains('sliding') 读到 false，dist 恒为 slotW+16，
+     * 而 CSS 的 --slidegap 已经是 0 → 终点少16px，牌在落位时「差一截」。 */
+    slotEl.classList.add('peek', 'sliding');
+    var dist = slotEl.offsetWidth;
     setDx(0);
     void slotEl.offsetWidth;
     setDx(-d * dist);
     setTimeout(function () {
       S.idx = ni;
       setDx(0, true);
-      slotEl.classList.remove('peek');
+      slotEl.classList.remove('peek', 'sliding');
       paintDetail();
       S.busy = false;
     }, dur);
@@ -556,6 +963,55 @@
     $('#btnNext').addEventListener('click', function () { step(1); });
   }
   bindArrows();
+
+  /* ---------------- 首页切赛道（v0.9.0：左右切大牌） ----------------
+   * 与详情 slideTo 同一套机制：目标牌已在 .fslot 的对侧槽里（paintFeature
+   * 按 fidx 渲染 [-1,0,1]），只要推 --dx 走完一段距离，落位后重排。
+   * ⚠️ 同样的顺序坑：**先加 .sliding 再算 dist**（--slidegap 收 0 后
+   *    终点才是整整一张牌宽，否则差 16px，落位会「越过中心再弹回」）。 */
+  function setFDx(v, snap) {
+    if (snap) {
+      fslotEl.classList.add('instant');
+      fslotEl.style.setProperty('--dx', v);
+      void fslotEl.offsetWidth;
+      fslotEl.classList.remove('instant');
+      return;
+    }
+    fslotEl.style.setProperty('--dx', v);
+  }
+
+  function fstep(d) {
+    var bs = (S.data && S.data.boards) || [];
+    var ni = S.fidx + d;
+    if (S.busy || ni < 0 || ni >= bs.length) return;
+    fslideTo(ni, d);
+  }
+
+  function fslideTo(ni, d) {
+    var bs = (S.data && S.data.boards) || [];
+    if (ni < 0 || ni >= bs.length) return;
+    /* 跨多张（小卡直接点远端）或减动效环境：跳过动画直接落位 ——
+     * 对侧槽里只有相邻那张，多张跳跃播动画会露出空槽 */
+    if (!motion() || Math.abs(ni - S.fidx) !== 1) {
+      S.fidx = ni;
+      paintFeature(); paintStrip();
+      return;
+    }
+    S.busy = true;
+    fslotEl.style.setProperty('--peek', '1');
+    fslotEl.classList.add('peek', 'sliding');
+    var dist = fslotEl.offsetWidth;
+    setFDx(0);
+    void fslotEl.offsetWidth;
+    setFDx(-d * dist);
+    setTimeout(function () {
+      S.fidx = ni;
+      setFDx(0, true);
+      fslotEl.classList.remove('peek', 'sliding');
+      paintFeature(); paintStrip();
+      S.busy = false;
+    }, DUR);
+  }
 
   function bindTrack() {
     trackEl.addEventListener('click', function (e) {
@@ -580,10 +1036,16 @@
       if (e.key === 'Escape') closeRule();
       return;
     }
-    if (viewDetail.hidden) return;
-    if (e.key === 'ArrowLeft') { e.preventDefault(); step(-1); }
-    else if (e.key === 'ArrowRight') { e.preventDefault(); step(1); }
-    else if (e.key === 'Escape') { e.preventDefault(); closeDetail(); }
+    if (!viewDetail.hidden) {
+      if (e.key === 'ArrowLeft') { e.preventDefault(); step(-1); }
+      else if (e.key === 'ArrowRight') { e.preventDefault(); step(1); }
+      else if (e.key === 'Escape') { e.preventDefault(); closeDetail(); }
+      return;
+    }
+    /* 首页：← → 切赛道（与详情翻同一套键位直觉） */
+    if (viewDeal.hidden) return;
+    if (e.key === 'ArrowLeft') { e.preventDefault(); fstep(-1); }
+    else if (e.key === 'ArrowRight') { e.preventDefault(); fstep(1); }
   });
 
   /* ---------------- 左右滑动（跟手） ---------------- */
@@ -627,13 +1089,17 @@
       var th = cardW * 0.25;               // 吸附阈值 = 牌宽 25%
 
       if (Math.abs(dx) >= th && ni >= 0 && ni < n) {
-        /* 过阈值：接着走完 320ms（当前已经在 dx 上，直接推到终点即可） */
+        /* 过阈值：接着走完 320ms（当前已经在 dx 上，直接推到终点即可）。
+         * ⚠️ 拖动起手时 gap 还是 16px（要露牌边），所以**先切到 sliding**
+         *    （gap→0）再算终点 —— 终点是 cardW 而非 cardW+16，
+         *    跟 slideTo() 用同一套距离，两条路径动画才对得上。 */
         S.busy = true;
-        setDx(-d * (cardW + 16));
+        slotEl.classList.add('sliding');
+        setDx(-d * cardW);
         setTimeout(function () {
           S.idx = ni;
           setDx(0, true);
-          slotEl.classList.remove('peek');
+          slotEl.classList.remove('peek', 'sliding');
           paintDetail();
           S.busy = false;
         }, DUR);
@@ -686,9 +1152,14 @@
   /* ---------------- 启动 ---------------- */
 
   function paint() {
-    paintDeck();
-    /* 有 track 锚（刷新 / 从详情链接进来）就直接停在详情 */
+    paintFeature(); paintStrip();
+    /* 有 track 锚（刷新 / 从详情链接进来）就对齐赛道再停到详情 */
     if (S.trackId && board()) {
+      var bs = (S.data && S.data.boards) || [];
+      for (var i = 0; i < bs.length; i++) {
+        if (bs[i].id === S.trackId) { S.fidx = i; break; }
+      }
+      paintFeature(); paintStrip();
       if (board().top.length) { viewDeal.hidden = true; showDetail(); }
       else { S.trackId = null; showDeal(); }
     } else {
@@ -876,7 +1347,7 @@
   function switchRange(r) {
     if (r === S.range) { toggleRangePop(false); return; }
     S.range = r;
-    S.trackId = null; S.idx = 0; S.data = null;
+    S.trackId = null; S.idx = 0; S.fidx = 0; S.data = null;
     q.set('range', r); q.delete('track');
     history.replaceState(null, '', location.pathname + '?' + q.toString());
     toggleRangePop(false);
@@ -917,14 +1388,40 @@
       setTimeout(function () { b.disabled = false; }, 2500);
     });
 
-    deckEl.addEventListener('click', function (e) {
-      var st = e.target.closest('.stack');
-      if (st) openTrack(st.getAttribute('data-track'));
+    /* 首页大牌台：**只有点中大牌本身**才进详情；
+     * 牌子左右两侧（箭头 + 箭头周围的空白）一律「切赛道」——
+     * 点左半区 = 上一个榜，点右半区 = 下一个榜。
+     * ⚠️ 箭头不单独绑 click，全走这一处委托：单独绑 + 冒泡会双触发；
+     *    而且 disabled 的 button 不派发事件，会变成「点空白能切、点箭头没反应」。 */
+    ftableEl.addEventListener('click', function (e) {
+      if (S.busy) return;
+      if (e.target.closest('.fslot')) {
+        var bs = (S.data && S.data.boards) || [];
+        if (bs[S.fidx]) openTrack(bs[S.fidx].id);
+        return;
+      }
+      /* 箭头按自身语义走方向（键盘 Enter 触发的 click 没有坐标，clientX=0）；
+       * 空白区按「落在牌子左半还是右半」决定方向 */
+      var rt = e.target.closest('.round');
+      if (rt) { fstep(rt.id === 'fPrev' ? -1 : 1); return; }
+      var r = fslotEl.getBoundingClientRect();
+      fstep(e.clientX < r.left + r.width / 2 ? -1 : 1);
     });
-    deckEl.addEventListener('keydown', function (e) {
-      var st = e.target.closest('.stack');
-      if (st && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); openTrack(st.getAttribute('data-track')); }
+    fslotEl.addEventListener('keydown', function (e) {
+      if (e.key !== 'Enter' && e.key !== ' ') return;
+      e.preventDefault();
+      var bs = (S.data && S.data.boards) || [];
+      if (bs[S.fidx] && !S.busy) openTrack(bs[S.fidx].id);
     });
+    /* 小卡条：点谁切谁；跨多张直接落位（见 fslideTo） */
+    stripEl.addEventListener('click', function (e) {
+      var c = e.target.closest('.fchip');
+      if (!c || S.busy) return;
+      var j = Number(c.getAttribute('data-j'));
+      if (!(j >= 0) || j === S.fidx) return;
+      fslideTo(j, j > S.fidx ? 1 : -1);
+    });
+    /* 箭头不单独绑 click —— 见上面 ftable 的委托注释 */
 
     $('#btnBack').addEventListener('click', closeDetail);
     $('#btnRule').addEventListener('click', openRule);
@@ -942,9 +1439,10 @@
     fitStage();
     paintRangeCard();
     bind();
-    /* 首屏先摆出六摞的空壳（避免「正在评分」时下面一片空白） */
+    /* 首屏先摆出大牌的空壳（避免「正在评分」时下面一片空白） */
     if (!S.data) {
-      deckEl.innerHTML = '';
+      fslotEl.innerHTML = '';
+      stripEl.innerHTML = '';
       paintSys();
     }
     load(false);
