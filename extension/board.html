@@ -181,15 +181,19 @@
         </div>
 
         <div class="sc-body">
-          <!-- 左：已读牌堆（扫描期 = 已读的牌越摞越厚；分析期 = 待发的牌） -->
+          <!-- 左：发牌区（v1.6 Balatro 牌桌：扇形待发牌 + 旁侧信息组）
+               扫描期 = 已读的牌越摞越厚；分析期 = 扇形手牌每发一手薄一层 -->
           <div class="sc-hall" id="scHall">
             <div class="sc-hand" id="scHand"></div>
-            <b class="fm-count" id="fmCount">已读 0 条</b>
-            <em id="scHallNow">等 AI 发第一手</em>
-            <span id="scHallS">AI 每返回 8 条就发一手</span>
+            <div class="sc-note">
+              <b class="fm-count" id="fmCount">已读 0 条</b>
+              <em id="scHallNow">等 AI 发第一手</em>
+              <span id="scHallS">AI 每返回 8 条就发一手</span>
+            </div>
           </div>
 
-          <!-- 右：六个分类牌堆（3×2）。发牌过程中逐堆长大，用赛道色 -->
+          <!-- 右/下：六个赛道 Joker 位（v1.6 起 1×6 横排牌桌底栏）。
+               发牌过程中逐堆长大，用赛道色 -->
           <div class="sc-deck fm-grid" id="scDeck"></div>
         </div>
 

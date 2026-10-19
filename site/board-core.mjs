@@ -598,6 +598,13 @@ export function createBoardEngine({ fetchPage, resolveAi, loadCache, saveCache, 
     const cur = jobs.get(range);
     if (cur && cur.state === 'building') return snapshot(range);
     if (cur && cur.state === 'ready' && !fresh) return snapshot(range);
+    /* ⚠️ 失败过的档位：轮询（!fresh）**绝不替用户自动重跑**。
+     * 少了这道闸，打分一失败（限流 / 余额不足 / 网络）就会死循环：
+     * 失败落 state:'failed' → 下一拍轮询走到这里没有分支接住 → 又起新 job
+     * → 重新抓取 → 重新打分 → 又失败…… 界面表现就是「AI 分析完立马跳回数据抓取」，
+     * 前端连 failed 那一帧都看不到（快照在 ensure 里就被新 job 顶掉了），
+     * 还一直烧抓取流量和 token。重试只能来自 fresh=1（用户点「重试 / 重新评分」）。 */
+    if (cur && cur.state === 'failed' && !fresh) return snapshot(range);
     /* ⚠️ 撤销过的档位：**非用户主动就绝不自动起跑**。
      * 这道闸是 `cancelRestore()` 留那个 state:'cancelled' 空壳的唯一理由 ——
      * 少了它，「点了撤销」在下次刷新 / 切榜期回来 / boot 时会变成「又跑一轮 45 页扫描」，

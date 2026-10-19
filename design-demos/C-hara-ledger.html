@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>方向 C · 精密仪器观测记录 — AI 评分中</title>
+<!--
+  方向 C（🧠 最佳设计师 · 原研哉式减法：MUJI 的「空」× 日本实验仪器排印）
+  设计哲学：等待不需要被娱乐，需要被「照亮」——像仪器面板一样，只留此刻唯一重要的读数。
+  form 来自内容：「16/48」是这份记录里唯一跳动的心脏 —— 所以它占掉整窗最大的字号，
+  六赛道退成六行发丝线 ledger，像实验记录纸上的观测行。朱色只给「正在发生」。
+  骨架特征：居中窄栏单列（标题印 → 大读数 → 发丝进度线 → 六行记录 →  quiet 出口），
+  无卡片、无面板、无阴影——与 A（像素面板网格）/ B（牌桌横三段）结构性互异。
+-->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@300;400;500;700&family=Noto+Serif+SC:wght@300;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --paper:#FAF9F6; --ink:#222220; --ink2:#6E6C66; --ink3:#A6A39B;
+  --hair:#E4E2DC; --shu:#B5492F;
+  --c1:#FF5A3C; --c2:#F5A524; --c3:#A855F7; --c4:#1E80FF; --c5:#454D57; --c6:#12A173;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+body{width:1440px;height:900px;overflow:hidden;background:var(--paper);
+  font-family:'Noto Sans SC',sans-serif;color:var(--ink);position:relative}
+/* 背后压暗的榜单页：只留纸面起伏 */
+.dim{position:absolute;inset:0;background:rgba(250,249,246,.55)}
+.dim .fake{position:absolute;width:190px;height:266px;background:#F0EFEA;border:1px solid var(--hair);
+  filter:blur(2px);opacity:.7}
+.f1{left:80px;top:160px;transform:rotate(-8deg)} .f2{left:250px;top:140px;transform:rotate(-3deg)}
+.f3{right:250px;top:140px;transform:rotate(3deg)} .f4{right:80px;top:160px;transform:rotate(8deg)}
+
+/* ===== 记录纸（弹窗） ===== */
+.sheet{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);
+  width:860px;background:#fff;border:1px solid var(--hair);
+  padding:56px 72px 40px;display:flex;flex-direction:column}
+
+/* 页眉：小签 + 印章 */
+.mast{display:flex;align-items:flex-start}
+.mast .k{letter-spacing:.42em;font-size:12px;font-weight:500;color:var(--ink2)}
+.mast .k b{display:block;letter-spacing:.18em;font-size:15px;font-weight:700;color:var(--ink);margin-top:10px}
+.seal{margin-left:auto;width:34px;height:34px;background:var(--shu);color:#fff;
+  font-family:'Noto Serif SC';font-weight:600;font-size:19px;
+  display:flex;align-items:center;justify-content:center;border-radius:3px}
+
+/* 大读数 */
+.read{margin-top:46px;display:flex;align-items:baseline;gap:14px}
+.read .now{font-family:'Noto Serif SC';font-weight:300;font-size:104px;line-height:1;
+  font-variant-numeric:tabular-nums;letter-spacing:-.01em}
+.read .of{font-size:17px;color:var(--ink3);font-variant-numeric:tabular-nums}
+.read .unit{margin-left:auto;font-size:12px;color:var(--shu);letter-spacing:.28em;writing-mode:horizontal-tb}
+.track{position:relative;height:1px;background:var(--hair);margin:26px 0 0}
+.track i{position:absolute;left:0;top:0;height:1px;width:33.3%;background:var(--ink)}
+.track u{position:absolute;left:33.3%;top:-3px;width:7px;height:7px;background:var(--shu)}
+.sub{margin-top:14px;font-size:13px;color:var(--ink2)}
+.sub b{font-weight:700;color:var(--ink)}
+.sub .em{color:var(--c6);font-weight:700}
+
+/* 六行观测 ledger */
+.ledger{margin-top:40px;border-top:1px solid var(--ink)}
+.row{display:flex;align-items:center;gap:16px;height:52px;border-bottom:1px solid var(--hair)}
+.row .sq{flex:0 0 auto;width:8px;height:8px;background:var(--sc)}
+.row .nm{flex:0 0 76px;font-size:14px;font-weight:700}
+.row .score{flex:0 0 44px;font-size:15px;font-weight:500;font-variant-numeric:tabular-nums;color:var(--sc)}
+.row .cnt{flex:0 0 58px;font-size:12px;color:var(--ink3);font-variant-numeric:tabular-nums}
+.row .vd{flex:1;font-size:13px;color:var(--ink2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.row .bar{flex:0 0 120px;height:1px;background:var(--hair);position:relative}
+.row .bar i{position:absolute;left:0;top:0;height:1px;background:var(--sc);width:var(--w)}
+.row.wait .nm,.row.wait .vd{color:var(--ink3);font-weight:400}
+.row.wait .sq{background:none;border:1px solid var(--sc)}
+
+/* 页脚：阶段 + 出口 */
+.foot{margin-top:44px;display:flex;align-items:center}
+.phases{display:flex;gap:20px;font-size:12px;color:var(--ink3);font-variant-numeric:tabular-nums}
+.phases b{color:var(--ink);font-weight:500}
+.phases .on{color:var(--shu)}
+.exits{margin-left:auto;display:flex;gap:22px;align-items:center}
+.xb{font-size:13px;color:var(--ink2);background:none;border:0;cursor:pointer;
+  border-bottom:1px solid var(--hair);padding-bottom:3px}
+.xb:hover{color:var(--ink)}
+.xb.stop{color:var(--ink);border-bottom:1px solid var(--ink)}
+</style>
+</head>
+<body>
+<div class="dim"><i class="fake f1"></i><i class="fake f2"></i><i class="fake f3"></i><i class="fake f4"></i></div>
+
+<div class="sheet">
+  <div class="mast">
+    <div class="k">魔鬼榜单 · 观测记录<b>AI 正在分赛道</b></div>
+    <div class="seal">評</div>
+  </div>
+
+  <div class="read">
+    <span class="now">16</span>
+    <span class="of">/ 48 条已分赛道 · 第 17 条待发</span>
+    <span class="unit">分析中</span>
+  </div>
+  <div class="track"><i></i><u></u></div>
+  <p class="sub">正在落位 → <span class="em">emo 榜 第 2 张</span>（深夜破防，上班如上坟）　·　已有 <b>15</b> 条归榜，1 条不够 6 分不上榜</p>
+
+  <div class="ledger">
+    <div class="row" style="--sc:var(--c1)">
+      <span class="sq"></span><span class="nm">毒舌榜</span><span class="score">8.5</span><span class="cnt">4 张</span>
+      <span class="vd">「装逼成瘾者的嘴，终于有人想物理静音了」</span>
+      <span class="bar" style="--w:80%"><i></i></span>
+    </div>
+    <div class="row" style="--sc:var(--c2)">
+      <span class="sq"></span><span class="nm">离谱榜</span><span class="score">9.0</span><span class="cnt">3 张</span>
+      <span class="vd">「AI再快，也只能帮人类提前进2027」</span>
+      <span class="bar" style="--w:60%"><i></i></span>
+    </div>
+    <div class="row wait" style="--sc:var(--c3)">
+      <span class="sq"></span><span class="nm">阴阳榜</span><span class="score">—</span><span class="cnt">0 张</span>
+      <span class="vd">等 AI 发牌</span>
+      <span class="bar" style="--w:0%"><i></i></span>
+    </div>
+    <div class="row" style="--sc:var(--c4)">
+      <span class="sq"></span><span class="nm">嘴硬榜</span><span class="score">6.1</span><span class="cnt">5 张</span>
+      <span class="vd">「证据都摆脸上了，还能接着辩」</span>
+      <span class="bar" style="--w:100%"><i></i></span>
+    </div>
+    <div class="row" style="--sc:var(--c5)">
+      <span class="sq"></span><span class="nm">废话榜</span><span class="score">7.4</span><span class="cnt">1 张</span>
+      <span class="vd">「术语堆了一片，结论等于没说」</span>
+      <span class="bar" style="--w:20%"><i></i></span>
+    </div>
+    <div class="row" style="--sc:var(--c6)">
+      <span class="sq"></span><span class="nm">emo 榜</span><span class="score">7.8</span><span class="cnt">2 张</span>
+      <span class="vd">「这几个字背后是整宿没睡」</span>
+      <span class="bar" style="--w:40%"><i></i></span>
+    </div>
+  </div>
+
+  <div class="foot">
+    <div class="phases">
+      <span><b>抓取</b> 415 ✓</span>
+      <span><b>筛选</b> 48 ✓</span>
+      <span class="on"><b>分赛道</b> 16/48 ●</span>
+      <span><b>排名次</b> ○</span>
+    </div>
+    <div class="exits">
+      <button class="xb">取消本次评分</button>
+      <button class="xb stop">提前结束</button>
+    </div>
+  </div>
+</div>
+</body>
+</html>

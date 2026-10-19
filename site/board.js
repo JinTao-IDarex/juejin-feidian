@@ -114,6 +114,11 @@
     { id: 'blah',     name: '废话榜', def: '说了很多，等于没说',   color: '#454D57' },
     { id: 'emo',      name: 'emo 榜', def: '深夜破防，上班如上坟', color: '#12A173' },
   ];
+  /* 赛道 → Joker 位立绘文件名（assets/board-cards/char-*.png，v1.6 牌桌底栏用） */
+  var TRACK_CHAR = {
+    venom: 'char-c1-vicious', absurd: 'char-c2-absurd', passive: 'char-c3-passive',
+    stubborn: 'char-c4-stubborn', blah: 'char-c5-blah', emo: 'char-c6-emo',
+  };
 
   /* ---------------- 赛道符号（SVG，无 emoji，spec 第十节） ----------------
    * 图形形状以设计稿为准：毒舌=实心水滴 / 离谱=圈问号 / 阴阳=圆+右半实心 /
@@ -898,9 +903,13 @@
     if (!scCols) {
       var deck = $('#scDeck');
       if (!deck) return;
+      /* v1.8：赛道位直接发「封面卡」—— 与榜单成品态同一视觉语言
+       * （名次 + 赛道符号 + 角色立绘 + 分数），立绘经 --sc-char 变量传进 CSS，
+       * 站点由 serve.mjs 挂 /cards/，扩展端由 build_extension.py 复制 —— 相对路径两端通吃。 */
       deck.innerHTML = TRACKS.map(function (t) {
         return '<div class="sc-col" data-track="' + t.id + '"' +
-          ' style="--sc-color:' + t.color + ';--sc-tint:' + tintOf(t.color) + '">' +
+          ' style="--sc-color:' + t.color + ';--sc-tint:' + tintOf(t.color) + ';' +
+          '--sc-char:url(cards/' + TRACK_CHAR[t.id] + '.png)">' +
           '<div class="sc-pile" data-pile="' + t.id + '"></div>' +
           '<div class="sc-meta"><span class="sc-name">' + t.name + '</span>' +
           '<span class="sc-num" data-num="' + t.id + '">0</span></div></div>';
@@ -923,9 +932,11 @@
       if (!list.length) {
         pile.className = 'sc-pile is-empty';
         pile.textContent = '等 AI 发牌';
+        col.classList.add('is-empty');   // v1.6：整张 Joker 卡灰显（立绘去色 + 虚线边）
         continue;
       }
       pile.className = 'sc-pile';
+      col.classList.remove('is-empty');
       /* ⭐ 一摞牌**倒着叠**：第 1 名在最上（--i:0），往后每张往下 4px。
    *   这样两件事同时成立：
    *     - 视觉上「越靠下名次越大」，符合牌堆直觉
@@ -948,9 +959,8 @@
             '<b class="sc-rank">' + pad2(m + 1) + '</b>' +
             '<span class="sc-sym">' + sym(t.id, 15) + '</span>' +
           '</div>' +
-          '<div class="sc-head">' + x.score + ' · ' + esc(t.def) + '</div>' +
-          '<div class="sc-mid"><span class="sc-sym">' + sym(t.id, 34) + '</span></div>' +
-          '<div class="sc-verdict">' + esc(x.verdict || x.title || '') + '</div>' +
+          '<div class="sc-mid" aria-hidden="true"></div>' +
+          '<div class="sc-score">' + x.score + '</div>' +
           '</div>';
       }
       pile.innerHTML = h;

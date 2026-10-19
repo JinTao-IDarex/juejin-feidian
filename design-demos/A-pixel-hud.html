@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>方向 A · 像素游戏 HUD — AI 评分中</title>
+<!--
+  方向 A（🎲 轮盘 #9 · Pixel-Game Side-Scroller / Robby Leonardi 系）
+  假设：评分等待 = 游戏闯关加载。用户是玩家，AI 是 NPC 队友，六赛道是六个关卡宝箱。
+  form 来自内容：「16/48」本身就是血条/关卡进度 —— 所以主视觉是一条 48 格像素进度条。
+  骨架特征：顶部全宽像素分段进度条 + 左侧竖向 QUEST LOG（任务清单）+ 右侧 3×2 像素卡槽。
+  字体：Press Start 2P（数字/拉丁）+ ZCOOL QingKe HuangYou（中文标题，黄油体=方块游戏感）+ Noto Sans SC（正文兜底）。
+-->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=ZCOOL+QingKe+HuangYou&family=Noto+Sans+SC:wght@400;500;700;900&display=swap" rel="stylesheet">
+<style>
+:root{
+  --ink:#1B1B22; --cream:#F4EDDC; --cream2:#EAE0C8; --space:#2C2A4A; --space2:#232142;
+  --go:#38B6FF; --ok:#7ED957; --star:#FFD23F;
+  --c1:#FF5A3C; --c2:#F5A524; --c3:#A855F7; --c4:#1E80FF; --c5:#454D57; --c6:#12A173;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+body{width:1440px;height:900px;overflow:hidden;background:var(--space);
+  font-family:'Noto Sans SC',sans-serif;color:var(--ink);position:relative}
+/* 星空 */
+.stars{position:absolute;inset:0;
+  background-image:
+    radial-gradient(2px 2px at 120px 80px,#fff 50%,transparent 51%),
+    radial-gradient(2px 2px at 480px 200px,#FFD23F 50%,transparent 51%),
+    radial-gradient(3px 3px at 900px 90px,#fff 50%,transparent 51%),
+    radial-gradient(2px 2px at 1250px 260px,#7ED957 50%,transparent 51%),
+    radial-gradient(2px 2px at 700px 780px,#fff 50%,transparent 51%),
+    radial-gradient(3px 3px at 180px 700px,#FF8A5C 50%,transparent 51%),
+    radial-gradient(2px 2px at 1120px 820px,#fff 50%,transparent 51%),
+    radial-gradient(2px 2px at 340px 420px,#B9B3E8 50%,transparent 51%);
+  opacity:.8}
+/* 背后压暗的榜单页（诚实简化为像素色块 + 模糊） */
+.dim{position:absolute;inset:0;background:rgba(20,18,38,.55)}
+.dim .fake{position:absolute;border:4px solid rgba(255,255,255,.14);border-radius:6px;filter:blur(3px)}
+.fake.f1{left:70px;top:150px;width:200px;height:280px;transform:rotate(-8deg)}
+.fake.f2{left:250px;top:130px;width:200px;height:280px;transform:rotate(-3deg)}
+.fake.f3{right:260px;top:130px;width:200px;height:280px;transform:rotate(3deg)}
+.fake.f4{right:70px;top:150px;width:200px;height:280px;transform:rotate(8deg)}
+
+/* ===== HUD 弹窗 ===== */
+.hud{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);
+  width:1080px;background:var(--cream);border:4px solid var(--ink);
+  /* 像素缺角 */
+  clip-path:polygon(0 12px,6px 12px,6px 6px,12px 6px,12px 0,calc(100% - 12px) 0,calc(100% - 12px) 6px,calc(100% - 6px) 6px,calc(100% - 6px) 12px,100% 12px,100% calc(100% - 12px),calc(100% - 6px) calc(100% - 12px),calc(100% - 6px) calc(100% - 6px),calc(100% - 12px) calc(100% - 6px),calc(100% - 12px) 100%,12px 100%,12px calc(100% - 6px),6px calc(100% - 6px),6px calc(100% - 12px),0 calc(100% - 12px));
+  box-shadow:10px 10px 0 rgba(10,8,24,.55);
+  padding:22px 26px 24px;display:flex;flex-direction:column;gap:16px}
+
+/* 头部 */
+.hd{display:flex;align-items:flex-end;gap:16px}
+.hd .ttl{font-family:'ZCOOL QingKe HuangYou';font-size:30px;letter-spacing:2px;line-height:1}
+.hd .ttl small{display:block;font-family:'Press Start 2P';font-size:10px;color:#6E6A83;margin-top:8px;letter-spacing:0}
+.hd .sub{font-family:'Press Start 2P';font-size:10px;color:var(--go);margin-bottom:4px;text-shadow:2px 2px 0 rgba(56,182,255,.25)}
+.hd .exits{margin-left:auto;display:flex;gap:10px;align-items:center}
+.btn-x{font-family:'Noto Sans SC';font-weight:700;font-size:13px;border:3px solid var(--ink);background:var(--cream2);
+  padding:7px 14px;cursor:pointer;box-shadow:4px 4px 0 var(--ink)}
+.btn-x.ghost{border-color:transparent;background:none;box-shadow:none;color:#6E6A83}
+.btn-x:active{transform:translate(3px,3px);box-shadow:1px 1px 0 var(--ink)}
+
+/* ===== 顶部全宽像素进度条（48 格） ===== */
+.prog{border:4px solid var(--ink);background:#fff;padding:8px 10px;display:flex;flex-direction:column;gap:8px}
+.prog .lab{display:flex;justify-content:space-between;align-items:center}
+.prog .lab b{font-family:'ZCOOL QingKe HuangYou';font-size:16px;letter-spacing:1px}
+.prog .lab b i{font-style:normal;color:var(--go)}
+.prog .lab span{font-family:'Press Start 2P';font-size:11px}
+.segs{display:grid;grid-template-columns:repeat(48,1fr);gap:2px;height:22px}
+.segs i{background:#E3DAC2;border:1px solid #CFC4A6}
+.segs i.on{background:var(--go);border-color:#1C7FB8;animation:blink 1s steps(2) infinite}
+.segs i.on.done{background:var(--ok);border-color:#4E9E33;animation:none}
+@keyframes blink{50%{background:#8FD6FF}}
+@media (prefers-reduced-motion:reduce){.segs i.on{animation:none}}
+
+/* ===== 主体三栏：任务日志 | 牌堆 | 卡槽 ===== */
+.main{display:flex;gap:18px;align-items:stretch}
+
+/* 左：QUEST LOG 竖向任务清单 */
+.quest{flex:0 0 240px;border:4px solid var(--ink);background:#fff;padding:14px;display:flex;flex-direction:column;gap:12px}
+.quest h3{font-family:'Press Start 2P';font-size:10px;color:#6E6A83;letter-spacing:1px}
+.qstep{display:flex;gap:10px;align-items:flex-start;padding:10px 8px;border:3px solid transparent}
+.qstep .box{flex:0 0 auto;width:20px;height:20px;border:3px solid var(--ink);background:var(--cream2);
+  display:flex;align-items:center;justify-content:center;font-family:'Press Start 2P';font-size:10px;color:var(--ok)}
+.qstep p{font-size:14px;font-weight:700;line-height:1.35}
+.qstep p small{display:block;font-size:12px;font-weight:500;color:#6E6A83;margin-top:3px}
+.qstep.done .box{background:var(--ok);color:#fff;border-color:#2F7A1E}
+.qstep.now{border-color:var(--go);background:#EAF6FF;box-shadow:4px 4px 0 rgba(56,182,255,.3)}
+.qstep.todo{opacity:.45}
+
+/* 中：待发牌堆（像素卡背） */
+.deck{flex:0 0 190px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;
+  border:4px solid var(--ink);background:var(--cream2)}
+.pstack{position:relative;width:96px;height:132px}
+.pstack i{position:absolute;inset:0;background:#3B3B6B;border:4px solid var(--ink);
+  background-image:repeating-linear-gradient(45deg,#4A4A85 0 6px,#3B3B6B 6px 12px)}
+.pstack i:nth-child(1){transform:translate(-6px,-6px)}
+.pstack i:nth-child(2){transform:translate(-3px,-3px)}
+.pstack i.go{border-color:var(--star);box-shadow:0 0 0 3px rgba(255,210,63,.35)}
+.deck b{font-family:'Press Start 2P';font-size:12px}
+.deck em{font-style:normal;font-size:13px;font-weight:700;color:var(--c6);text-align:center;line-height:1.4;max-width:150px}
+.deck span{font-size:12px;color:#6E6A83;text-align:center;line-height:1.5}
+
+/* 右：六赛道卡槽 3×2 */
+.slots{flex:1;display:grid;grid-template-columns:repeat(3,1fr);gap:14px 16px;align-content:center}
+.slot{display:flex;flex-direction:column;gap:10px}
+.pile{position:relative;height:166px;border:4px dashed #CFC4A6;background:#FBF7EA;
+  display:flex;align-items:center;justify-content:center}
+.pile .wait{font-size:13px;font-weight:700;color:var(--sc,#B0A788)}
+.pcard{position:absolute;left:8px;right:8px;top:8px;bottom:8px;background:#fff;border:4px solid var(--sc,var(--ink));
+  box-shadow:5px 5px 0 rgba(27,27,34,.25);padding:8px 10px;display:flex;flex-direction:column;gap:4px}
+.pcard .r{display:flex;justify-content:space-between;align-items:baseline}
+.pcard .rank{font-family:'Press Start 2P';font-size:14px;color:var(--sc)}
+.pcard .score{font-family:'Press Start 2P';font-size:13px;color:var(--sc)}
+.pcard .def{font-size:12px;font-weight:700;color:#6E6A83}
+.pcard .vd{margin-top:auto;font-size:13px;font-weight:500;line-height:1.4;color:var(--ink);
+  border-top:3px solid var(--cream2);padding-top:6px}
+.smeta{display:flex;align-items:center;gap:8px;min-height:28px}
+.smeta b{font-family:'Noto Sans SC';font-weight:900;font-size:16px;line-height:28px;color:var(--sc);letter-spacing:2px}
+.smeta span{font-family:'Press Start 2P';font-size:10px;line-height:1;color:#fff;background:var(--sc);padding:5px 7px;border:2px solid var(--ink)}
+</style>
+</head>
+<body>
+<div class="stars"></div>
+<div class="dim"><i class="fake f1"></i><i class="fake f2"></i><i class="fake f3"></i><i class="fake f4"></i></div>
+
+<div class="hud">
+  <div class="hd">
+    <div class="ttl">AI 正在分赛道<small>NOW DEALING…</small></div>
+    <div class="sub">STAGE 3 / 4 · 第 17 条待发</div>
+    <div class="exits">
+      <button class="btn-x ghost">取消本次评分</button>
+      <button class="btn-x">■ 提前结束</button>
+    </div>
+  </div>
+
+  <!-- 48 格像素进度条 -->
+  <div class="prog">
+    <div class="lab"><b>闯关进度 · <i>AI 逐条分赛道</i></b><span>16 / 48</span></div>
+    <div class="segs" id="segs"></div>
+  </div>
+
+  <div class="main">
+    <!-- QUEST LOG -->
+    <div class="quest">
+      <h3>QUEST LOG</h3>
+      <div class="qstep done"><span class="box">✓</span><p>抓取沸点<small>415 条已入包</small></p></div>
+      <div class="qstep done"><span class="box">✓</span><p>按热度筛出<small>48 条候选</small></p></div>
+      <div class="qstep now"><span class="box">3</span><p>AI 逐条分赛道<small>已发 16 / 48 手</small></p></div>
+      <div class="qstep todo"><span class="box">4</span><p>按分数排名次<small>等上一关</small></p></div>
+    </div>
+
+    <!-- 待发牌堆 -->
+    <div class="deck">
+      <div class="pstack"><i></i><i></i><i class="go"></i></div>
+      <b>待发 ×32</b>
+      <em>正在落位 → emo 榜 第 2 张「深夜破防，上班如上坟」</em>
+      <span>已有 15 条归榜<br>1 条不够 6 分不上榜</span>
+    </div>
+
+    <!-- 六赛道卡槽 -->
+    <div class="slots">
+      <div class="slot" style="--sc:var(--c1)">
+        <div class="pile"><div class="pcard">
+          <div class="r"><span class="rank">#1</span><span class="score">8.5</span></div>
+          <div class="def">骂得最狠，而且最准</div>
+          <div class="vd">装逼成瘾者的嘴，终于有人想物理静音了。</div>
+        </div></div>
+        <div class="smeta"><b>毒舌榜</b><span>×4</span></div>
+      </div>
+      <div class="slot" style="--sc:var(--c2)">
+        <div class="pile"><div class="pcard">
+          <div class="r"><span class="rank">#1</span><span class="score">9.0</span></div>
+          <div class="def">逻辑最崩，还理直气壮</div>
+          <div class="vd">AI再快，也只能帮人类提前进2027。</div>
+        </div></div>
+        <div class="smeta"><b>离谱榜</b><span>×3</span></div>
+      </div>
+      <div class="slot" style="--sc:var(--c3)">
+        <div class="pile"><span class="wait">等 AI 发牌…</span></div>
+        <div class="smeta"><b>阴阳榜</b><span>×0</span></div>
+      </div>
+      <div class="slot" style="--sc:var(--c4)">
+        <div class="pile"><div class="pcard">
+          <div class="r"><span class="rank">#1</span><span class="score">6.1</span></div>
+          <div class="def">错了也绝不认</div>
+          <div class="vd">证据都摆脸上了，还能接着辩。</div>
+        </div></div>
+        <div class="smeta"><b>嘴硬榜</b><span>×5</span></div>
+      </div>
+      <div class="slot" style="--sc:var(--c5)">
+        <div class="pile"><div class="pcard">
+          <div class="r"><span class="rank">#1</span><span class="score">7.4</span></div>
+          <div class="def">说了很多，等于没说</div>
+          <div class="vd">术语堆了一片，结论等于没说。</div>
+        </div></div>
+        <div class="smeta"><b>废话榜</b><span>×1</span></div>
+      </div>
+      <div class="slot" style="--sc:var(--c6)">
+        <div class="pile"><div class="pcard">
+          <div class="r"><span class="rank">#2</span><span class="score">7.8</span></div>
+          <div class="def">深夜破防，上班如上坟</div>
+          <div class="vd">这几个字背后是整宿没睡。</div>
+        </div></div>
+        <div class="smeta"><b>emo 榜</b><span>×2</span></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+/* 48 格：前 15 格绿（已完成），第 16 格蓝闪（正在发） */
+var s=document.getElementById('segs'),h='';
+for(var i=1;i<=48;i++){h+='<i class="'+(i<16?'on done':(i===16?'on':''))+'"></i>';}
+s.innerHTML=h;
+</script>
+</body>
+</html>

@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>方向 B · Balatro 牌桌 — AI 评分中</title>
+<!--
+  方向 B（🏆 现实参照 · Balatro / LocalThunk，Apple Design Award 2025、TGA 2024 三奖）
+  迁移的设计语言：绿呢桌面 + 奶油粗描边卡牌 + CRT 扫描线/暗角 + 蓝筹码×红倍率计分丸 + 晃动发牌。
+  form 来自内容：「每条只进分最高的那个榜」本来就是一局发牌计分 —— 所以整个弹窗就是牌桌：
+  上方计分丸 = 这局比分，中央扇形手牌 = 待发，底部六张 Joker 位 = 六赛道（沿用产品自己的角色立绘）。
+  骨架特征：横三段牌桌视角（计分带 / 中央牌局 / Joker 条 + 日志 ticker），无侧栏无网格。
+-->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Baloo+2:wght@600;700;800&family=ZCOOL+KuaiLe&family=Noto+Sans+SC:wght@400;500;700;900&display=swap" rel="stylesheet">
+<style>
+:root{
+  --ink:#221F1A; --cream:#FFF6E3; --felt1:#2E8B66; --felt2:#14453A;
+  --chip:#3B7DED; --mult:#E23B3B; --gold:#FFC53D;
+  --c1:#FF5A3C; --c2:#F5A524; --c3:#A855F7; --c4:#1E80FF; --c5:#454D57; --c6:#12A173;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+body{width:1440px;height:900px;overflow:hidden;position:relative;
+  font-family:'Noto Sans SC',sans-serif;color:var(--ink);
+  background:radial-gradient(1200px 700px at 50% 42%,var(--felt1),var(--felt2) 78%)}
+/* CRT 扫描线 + 暗角 */
+body::before{content:'';position:absolute;inset:0;pointer-events:none;z-index:40;
+  background:repeating-linear-gradient(0deg,rgba(0,0,0,.07) 0 2px,transparent 2px 4px)}
+body::after{content:'';position:absolute;inset:0;pointer-events:none;z-index:41;
+  background:radial-gradient(1150px 720px at 50% 45%,transparent 62%,rgba(6,20,15,.55))}
+/* 背后压暗的榜单页轮廓 */
+.dim{position:absolute;inset:0;background:rgba(9,26,20,.45)}
+.dim .fake{position:absolute;width:190px;height:266px;border-radius:14px;
+  border:3px solid rgba(255,246,227,.16);filter:blur(3px)}
+.f1{left:60px;top:170px;transform:rotate(-9deg)} .f2{left:230px;top:150px;transform:rotate(-4deg)}
+.f3{right:230px;top:150px;transform:rotate(4deg)} .f4{right:60px;top:170px;transform:rotate(9deg)}
+
+/* ===== 牌桌（弹窗本体 = 整张桌面） ===== */
+.table{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);z-index:10;
+  width:1120px;height:600px;border-radius:26px;
+  background:radial-gradient(900px 480px at 50% 40%,#37A077,var(--felt1) 55%,#1D5C47);
+  border:5px solid #0E3A2D;
+  box-shadow:0 30px 70px rgba(4,18,13,.6),inset 0 0 0 3px rgba(255,246,227,.14),inset 0 0 90px rgba(6,26,19,.5);
+  display:flex;flex-direction:column;padding:18px 26px 14px}
+
+/* ---- 顶带：标题 + 计分丸 + 出口 ---- */
+.top{display:flex;align-items:center;gap:18px}
+.ttl{font-family:'ZCOOL KuaiLe';font-size:26px;color:var(--cream);text-shadow:3px 3px 0 rgba(14,58,45,.8)}
+.ttl small{display:block;font-family:'Baloo 2';font-weight:700;font-size:12px;color:#BFE3D2;letter-spacing:2px;margin-top:2px}
+.scores{display:flex;gap:12px;margin-left:8px}
+.pill{display:flex;align-items:baseline;gap:7px;border-radius:999px;padding:9px 16px;
+  font-family:'Baloo 2';border:3px solid var(--ink);box-shadow:0 4px 0 rgba(14,58,45,.9)}
+.pill b{font-size:20px;font-weight:800;color:#fff;line-height:1}
+.pill span{font-size:12px;font-weight:700;color:rgba(255,255,255,.85);font-family:'Noto Sans SC'}
+.pill.blue{background:var(--chip)} .pill.red{background:var(--mult)} .pill.gold{background:#D99A00}
+.exits{margin-left:auto;display:flex;gap:10px;align-items:center}
+.xbtn{font-family:'Noto Sans SC';font-weight:700;font-size:13px;color:var(--ink);
+  background:var(--cream);border:3px solid var(--ink);border-radius:12px;padding:8px 14px;
+  box-shadow:0 4px 0 var(--ink);cursor:pointer}
+.xbtn.ghost{background:none;border-color:rgba(255,246,227,.4);color:#BFE3D2;box-shadow:none}
+.xbtn:active{transform:translateY(3px);box-shadow:0 1px 0 var(--ink)}
+
+/* ---- 中央牌局：左计分日志 / 中央扇形待发牌 / 右正在落位 ---- */
+.mid{flex:1;display:flex;align-items:center;gap:20px;min-height:0;padding:6px 4px}
+.log{flex:0 0 250px;display:flex;flex-direction:column;gap:10px}
+.lrow{display:flex;align-items:center;gap:10px;background:rgba(9,34,25,.55);border:3px solid rgba(255,246,227,.15);
+  border-radius:14px;padding:9px 14px;color:#DFF2E7;font-size:14px;font-weight:700}
+.lrow small{font-weight:500;font-size:12px;color:#9CC9B4;margin-left:auto}
+.lrow .st{font-family:'Baloo 2';font-weight:800;font-size:14px;width:22px;height:22px;border-radius:50%;
+  display:flex;align-items:center;justify-content:center;background:#2C6B52;color:#BFE3D2;flex:0 0 auto}
+.lrow.done .st{background:var(--gold);color:var(--ink)}
+.lrow.now{border-color:var(--gold);background:rgba(217,154,0,.18)}
+.lrow.now .st{background:var(--mult);color:#fff}
+.lrow.todo{opacity:.5}
+
+.fan{flex:1;position:relative;height:300px;display:flex;align-items:center;justify-content:center}
+.card{position:absolute;width:118px;height:165px;border-radius:14px;background:var(--cream);
+  border:4px solid var(--ink);box-shadow:6px 8px 0 rgba(9,30,22,.45);
+  transform:rotate(var(--r,0deg)) translateY(var(--y,0));transform-origin:50% 130%}
+.card.back{background:
+  repeating-linear-gradient(45deg,#3B5BA9 0 8px,#2C4785 8px 16px);
+  border-color:var(--ink)}
+.card.back::after{content:'';position:absolute;inset:8px;border-radius:8px;border:3px solid rgba(255,246,227,.55)}
+/* 正在飞的那张：抬起 + 晃动 + 金光 */
+.card.fly{background:var(--cream);border-color:var(--gold);
+  box-shadow:0 0 0 4px rgba(255,197,61,.45),10px 14px 0 rgba(9,30,22,.45);
+  animation:wob 1.1s ease-in-out infinite}
+.card.fly .fv{position:absolute;inset:0;padding:12px;display:flex;flex-direction:column;gap:5px}
+.fv .q{font-size:13px;font-weight:700;line-height:1.45}
+.fv .a{margin-top:auto;font-size:12px;color:#6B6152;line-height:1.4;border-top:2px dashed #D9CCB2;padding-top:6px}
+@keyframes wob{0%,100%{transform:rotate(-3deg) translateY(-18px)}50%{transform:rotate(3deg) translateY(-26px)}}
+@media (prefers-reduced-motion:reduce){.card.fly{animation:none;transform:translateY(-20px)}}
+.fan .cap{position:absolute;bottom:-6px;left:50%;transform:translateX(-50%);
+  font-family:'Baloo 2';font-weight:800;font-size:15px;color:var(--cream);
+  background:rgba(9,34,25,.7);border:3px solid rgba(255,246,227,.25);border-radius:999px;padding:6px 16px}
+
+.land{flex:0 0 250px;background:rgba(9,34,25,.55);border:3px solid var(--c6);border-radius:18px;
+  padding:16px;display:flex;flex-direction:column;gap:8px;color:#DFF2E7}
+.land b{font-family:'ZCOOL KuaiLe';font-size:19px;color:#7BD3AE}
+.land p{font-size:13px;line-height:1.55;color:#BFE3D2}
+.land .num{font-family:'Baloo 2';font-weight:800;font-size:26px;color:#fff}
+.land .rule{margin-top:auto;font-size:12px;color:#9CC9B4;border-top:2px dashed rgba(255,246,227,.2);padding-top:8px}
+
+/* ---- 底部 Joker 条：六赛道角色卡 ---- */
+.jokers{display:flex;gap:14px;justify-content:center;padding:4px 0 2px}
+.jk{position:relative;width:128px;height:158px;border-radius:14px;background:var(--cream);
+  border:4px solid var(--sc,var(--ink));box-shadow:5px 6px 0 rgba(9,30,22,.45);
+  transform:rotate(var(--jr,0deg));display:flex;flex-direction:column;align-items:center;padding:8px 6px 6px}
+.jk img{width:74px;height:64px;object-fit:contain}
+.jk b{font-family:'ZCOOL KuaiLe';font-size:16px;color:var(--sc);margin-top:2px}
+.jk .cnt{position:absolute;top:-11px;right:-9px;min-width:30px;height:30px;border-radius:50%;
+  background:var(--sc);color:#fff;border:3px solid var(--ink);
+  font-family:'Baloo 2';font-weight:800;font-size:15px;display:flex;align-items:center;justify-content:center;padding:0 5px}
+.jk.empty{opacity:.45;border-style:dashed;background:rgba(255,246,227,.25)}
+.jk.empty img{filter:grayscale(1)}
+.jk.empty .cnt{background:#8FA79C}
+.jk .sub{font-size:11px;color:#6B6152}
+.jk.empty .sub{color:#CDE3D6}
+/* 最新落位的 joker 上浮发光 */
+.jk.hot{transform:rotate(var(--jr,0deg)) translateY(-10px);
+  box-shadow:0 0 0 4px color-mix(in srgb,var(--sc) 55%,transparent),6px 10px 0 rgba(9,30,22,.45)}
+
+/* 日志 ticker */
+.tick{margin-top:8px;border-top:3px dashed rgba(255,246,227,.25);padding-top:8px;
+  display:flex;justify-content:center;gap:26px;font-family:'Baloo 2';font-weight:700;
+  font-size:13px;color:#9CC9B4;letter-spacing:1px}
+.tick i{font-style:normal;color:var(--gold)}
+</style>
+</head>
+<body>
+<div class="dim"><i class="fake f1"></i><i class="fake f2"></i><i class="fake f3"></i><i class="fake f4"></i></div>
+
+<div class="table">
+  <div class="top">
+    <div class="ttl">魔鬼榜单 · 开局中<small>AI DEALING THE BOARD</small></div>
+    <div class="scores">
+      <div class="pill blue"><b>15</b><span>已归榜</span></div>
+      <div class="pill red"><b>×48</b><span>候选</span></div>
+      <div class="pill gold"><b>16/48</b><span>发牌中</span></div>
+    </div>
+    <div class="exits">
+      <button class="xbtn ghost">取消本次评分</button>
+      <button class="xbtn">■ 提前结束</button>
+    </div>
+  </div>
+
+  <div class="mid">
+    <!-- 左：牌局日志（四步） -->
+    <div class="log">
+      <div class="lrow done"><span class="st">✓</span>抓取沸点<small>415 条</small></div>
+      <div class="lrow done"><span class="st">✓</span>按热度筛出<small>48 条</small></div>
+      <div class="lrow now"><span class="st">3</span>AI 逐条分赛道<small>16/48</small></div>
+      <div class="lrow todo"><span class="st">4</span>按分数排名次<small>待开</small></div>
+    </div>
+
+    <!-- 中：扇形待发牌 + 正在飞的一张 -->
+    <div class="fan">
+      <div class="card back" style="--r:-22deg"></div>
+      <div class="card back" style="--r:-15deg"></div>
+      <div class="card back" style="--r:-8deg"></div>
+      <div class="card back" style="--r:0deg"></div>
+      <div class="card back" style="--r:8deg"></div>
+      <div class="card back" style="--r:15deg"></div>
+      <div class="card back" style="--r:22deg"></div>
+      <div class="card fly">
+        <div class="fv">
+          <div class="q">「bro们穿秋裤了没，今早上真冷啊」</div>
+          <div class="a">AI 正在读这条……会发去哪一榜？</div>
+        </div>
+      </div>
+      <div class="cap">待发 ×32</div>
+    </div>
+
+    <!-- 右：正在落位 -->
+    <div class="land">
+      <b>正在落位 →</b>
+      <div><span class="num">emo 榜</span></div>
+      <p>第 2 张 ·「深夜破防，上班如上坟」赛道</p>
+      <div class="rule">已有 15 条归榜 · 1 条不够 6 分不上榜</div>
+    </div>
+  </div>
+
+  <!-- 底：六张 Joker 位 -->
+  <div class="jokers">
+    <div class="jk" style="--sc:var(--c1);--jr:-2deg"><span class="cnt">4</span>
+      <img src="../assets/board-cards/char-c1-vicious.png" alt=""><b>毒舌榜</b><span class="sub">顶 8.5 分</span></div>
+    <div class="jk" style="--sc:var(--c2);--jr:2deg"><span class="cnt">3</span>
+      <img src="../assets/board-cards/char-c2-absurd.png" alt=""><b>离谱榜</b><span class="sub">顶 9.0 分</span></div>
+    <div class="jk empty" style="--sc:var(--c3)"><span class="cnt">0</span>
+      <img src="../assets/board-cards/char-c3-passive.png" alt=""><b>阴阳榜</b><span class="sub">等 AI 发牌</span></div>
+    <div class="jk" style="--sc:var(--c4);--jr:-2deg"><span class="cnt">5</span>
+      <img src="../assets/board-cards/char-c4-stubborn.png" alt=""><b>嘴硬榜</b><span class="sub">顶 6.1 分</span></div>
+    <div class="jk" style="--sc:var(--c5);--jr:2deg"><span class="cnt">1</span>
+      <img src="../assets/board-cards/char-c5-blah.png" alt=""><b>废话榜</b><span class="sub">顶 7.4 分</span></div>
+    <div class="jk hot" style="--sc:var(--c6);--jr:-2deg"><span class="cnt">2</span>
+      <img src="../assets/board-cards/char-c6-emo.png" alt=""><b>emo 榜</b><span class="sub">顶 7.8 分</span></div>
+  </div>
+
+  <div class="tick">
+    <span>ROUND <i>1</i></span><span>SCAN <i>415</i></span><span>DEALT <i>16/48</i></span>
+    <span>DROP <i>1</i>（不够 6 分）</span><span>NEXT <i>排名次</i></span>
+  </div>
+</div>
+</body>
+</html>

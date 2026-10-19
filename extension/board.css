@@ -125,7 +125,7 @@
   /* ③ 结果卡 */
   --rs-ico: 40px;
   --rs-btn-h: var(--d-btn);  /* 36px，详情大牌按钮那一档 */
-  --rs-gap: 12px;
+  --rs-gap: 16px;
   --rs-dur: 260ms;
   --rs-auto: 3200ms;         /* 完成态自动关闭（board.js 读同一个变量，别两处写） */
 
@@ -351,21 +351,24 @@ html.embed .bd-refresh { height: 30px; padding: 0 11px; font-size: 11px; }
   gap: var(--gap16);
 }
 
-/* ================= 视图 3 · 评分中发牌（v1.3.3：弹窗双栏） =================
+/* ================= 视图 3 · 评分中发牌（v1.7：浅色牌桌） =================
  *
- * v0.8.0 是整页视图（阶段条 + 六摞横排 + 发牌台）。v1.3.3 按用户交互口径
- * 收进**弹窗**：点「重新评分」（或日榜自动评分）浮出一个进度对话框 ——
- *   读取阶段：左侧牌堆随扫描页数长厚（一摞已读的牌）；
- *   分析阶段：左堆 = 待发的牌，右侧 = 六个分类堆（3×2），
- *              AI 每回一手，牌就从左堆**飞**进右侧对应的分类堆
- *              （scDeal 的 --flydx/--flydy 起点向量，JS 按实测矩形算）。
- * 后面的页面不动（遮罩压暗），任务结束弹窗自己收起。 */
+ * 结构沿用 v1.6 的「方向 B」骨架（direction-approved.md）：
+ * 顶带标题/出口，阶段条收成牌局日志 ticker，中央是扇形待发手牌
+ * （顶牌高亮晃动 = 正在飞的这张），底部六个赛道位 = 六张 Joker 卡
+ * （角色立绘 + 顶牌小叠 + 计数徽标）。AI 每回一手，牌从扇面**飞**进
+ * 对应 Joker 卡顶部的牌叠（scDeal 的 --flydx/--flydy 起点向量，JS 实测矩形）。
+ *
+ * v1.7 配色口径（用户要求「与当前页面的整体风格一致」）：
+ * 绿呢深桌退场，换成页面同一套浅色体系 —— 白卡 + --line 发丝边 + 柔和投影，
+ * 墨色标题，--go 蓝表「正在发生」，--ok 绿表「完成」，--warn 琥珀表「提示」，
+ * 赛道色只留给六个赛道位（它们是产品本身的识别色）。 */
 
-/* 遮罩 + 对话框。#viewScoring 只剩「开/关」职责，两个子元素各自 fixed。 */
+/* 遮罩 + 牌桌。#viewScoring 只剩「开/关」职责，两个子元素各自 fixed。 */
 .sc-mask {
   position: fixed; inset: 0; z-index: 59;
-  background: rgba(23, 26, 31, .44);
-  /* 压暗之外再隔一层毛玻璃：后面的牌阵虚掉，视线全落在分析舱上 */
+  background: rgba(26, 29, 33, .38);
+  /* 压暗之外再隔一层毛玻璃：后面的牌阵虚掉，视线全落在牌桌上 */
   backdrop-filter: blur(5px) saturate(.92);
   -webkit-backdrop-filter: blur(5px) saturate(.92);
 }
@@ -373,39 +376,36 @@ html.embed .bd-refresh { height: 30px; padding: 0 11px; font-size: 11px; }
   position: fixed; z-index: 60; left: 50%; top: 50%;
   transform: translate(-50%, -50%);
   width: min(1060px, 94vw); max-height: min(720px, 92vh);
-  display: flex; flex-direction: column; gap: 10px;
-  padding: 16px 16px 14px;
-  background: linear-gradient(180deg, #FFFFFF 0%, #F6F7FB 100%);
+  display: flex; flex-direction: column; gap: 12px;
+  padding: 18px 20px 16px;
+  /* 浅色桌面：与页面卡片同一材质 */
+  background: #fff;
+  border: 1px solid var(--line);
   border-radius: 18px;
-  box-shadow: 0 24px 64px rgba(0, 0, 0, .32),
-              inset 0 1px 0 rgba(255, 255, 255, .9);
+  box-shadow: 0 24px 64px rgba(26, 29, 33, .20);
   animation: scPop .22s var(--ease) both;
 }
-/* 舱顶六赛道渐变发丝：评分舱的签名条，颜色 = 六条赛道（与 board.js TRACKS 同序）。
- * 低透明度收着打 —— 是「签名」不是横幅。 */
+/* 桌沿缝线：牌桌内圈那道虚线，浅色版用 --line2。结果态换完成绿（终局信号） */
 .sc-modal::before {
-  content: ''; position: absolute; left: 18px; right: 18px; top: 0; height: 3px;
-  border-radius: 0 0 3px 3px; pointer-events: none;
-  background: linear-gradient(90deg, #FF5A3C, #F5A524, #A855F7, #1E80FF, #454D57, #12A173);
-  opacity: .5;
+  content: ''; position: absolute; inset: 9px; pointer-events: none;
+  border: 2px dashed var(--line2); border-radius: 12px;
 }
+.sc-modal.is-result::before { border-color: color-mix(in srgb, var(--ok) 45%, #fff); }
 @keyframes scPop {
   from { transform: translate(-50%, -50%) scale(.96); opacity: 0; }
   to   { transform: translate(-50%, -50%) scale(1); opacity: 1; }
 }
 @media (prefers-reduced-motion: reduce) { .sc-modal { animation: none; } }
 
-/* 头部：标题 + 动态副题 + 提前结束。副题 = 原「发牌台标题」的职责 */
+/* 头部：标题 + 动态副题 + 两个出口。副题 = 原「发牌台标题」的职责 */
 .sc-modal-hd { display: flex; align-items: center; gap: 12px; }
 .sc-modal-hd b {
   display: flex; align-items: center; gap: 7px;
-  font-size: 15px; font-weight: 900; color: var(--ink);
+  font-size: 16px; font-weight: 900; color: var(--ink);
 }
-/* 标题前的 AI 火花：蓝紫渐变 + 呼吸闪烁（减动效下静止） */
+/* 标题前的琥珀火花：呼吸闪烁（减动效下静止） */
 .sc-modal-hd b::before {
-  content: '✦'; font-size: 13px; line-height: 1;
-  background: linear-gradient(135deg, #1E80FF, #A855F7);
-  -webkit-background-clip: text; background-clip: text; color: transparent;
+  content: '✦'; font-size: 14px; line-height: 1; color: var(--warn);
   animation: scTwinkle 2.2s ease-in-out infinite;
 }
 @keyframes scTwinkle {
@@ -415,209 +415,245 @@ html.embed .bd-refresh { height: 30px; padding: 0 11px; font-size: 11px; }
 html.motion-lite .sc-modal-hd b::before { animation: none; }
 .sc-modal-sub {
   flex: 1 1 auto; min-width: 0;
-  font-size: 12px; font-weight: 600; color: var(--ink2);
+  font-size: 12px; font-weight: 600; color: var(--ink3);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 
-/* 提前结束（v1.3.1）：与「重新评分」同一套描边按钮语言，但收着一档
- * —— 它是「止损」不是主操作，别跟发牌抢视觉。 */
+/* 提前结束（v1.3.1）：描边按钮，与页内次级控件同族 —— 它是「止损」不是主操作。 */
 .sc-stop {
   flex: 0 0 auto; display: flex; align-items: center; gap: 6px;
-  height: 30px; padding: 0 12px; border-radius: 999px;
+  height: 30px; padding: 0 12px; border-radius: 10px;
   border: 1px solid var(--line2); background: #fff; color: var(--ink2);
+  box-shadow: 0 1px 3px rgba(26, 29, 33, .08);
   font-size: 12px; font-weight: 600; line-height: 1; cursor: pointer;
-  transition: border-color .15s, color .15s, background .15s;
+  transition: color .15s, border-color .15s;
 }
-.sc-stop:hover { border-color: #C9CDD4; color: var(--ink); background: #F7F8FA; }
+.sc-stop:hover { color: var(--ink); border-color: #C9CDD4; }
+.sc-stop:active { background: #F7F8FA; }
 
-/* ---- 阶段条：把「抓取 → 筛选 → 分赛道 → 排名次」四步显式化 ----
+/* ---- 阶段条 = 牌局日志 ticker：把「抓取 → 筛选 → 分赛道 → 排名次」四步显式化 ----
  * 动机：730 条扫描在 45 页里发生，用户此前只知道「在转圈」。
  * 现在第 1、2 步的完成态是**带数字的事实**（730 / 48），不再是等待。 */
 .sc-phase {
   flex: 0 0 auto;
   display: flex; align-items: center; justify-content: space-between;
   gap: 4px;
-  height: 40px; padding: 0 8px;
-  background: #fff; border: 1px solid var(--line); border-radius: 12px;
+  height: 38px; padding: 0 10px;
+  background: #F7F8FA;
+  border: 1px solid var(--line); border-radius: 12px;
 }
 .sc-step {
   display: flex; align-items: center; gap: 8px;
   height: 100%; padding: 0 12px;
   border-radius: 8px;
-  font-size: 12px; font-weight: 600; color: var(--ink2);
+  font-size: 12px; font-weight: 600; color: var(--ink3);
   white-space: nowrap;
 }
-.sc-step.is-now {
-  background: linear-gradient(180deg, #EFF5FF, #F7FAFF);
-  color: #1E80FF; font-weight: 700;
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, #1E80FF 22%, #fff);
-}
+.sc-step.is-now { color: var(--go); font-weight: 700; }
 .sc-dot {
   display: flex; align-items: center; justify-content: center;
   width: 20px; height: 20px; flex: 0 0 auto;
-  border-radius: 10px;
-  background: #E9EBEF; color: var(--ink3);
+  border-radius: 50%;
+  background: #EDEFF2; color: var(--ink3);
   font-size: 11px; font-weight: 700;
 }
-.sc-step.is-done .sc-dot { background: #12A173; color: #fff; }
-.sc-step.is-now  .sc-dot { background: #1E80FF; color: #fff; animation: scPulse 1.6s ease-out infinite; }
+.sc-step.is-done .sc-dot { background: var(--ok); color: #fff; }
+.sc-step.is-now  .sc-dot { background: var(--go); color: #fff; animation: scPulse 1.6s ease-out infinite; }
 /* 当前步的呼吸光圈：四步里只有「正在发生的」会呼吸 */
 @keyframes scPulse {
-  0%   { box-shadow: 0 0 0 0 rgba(30, 128, 255, .38); }
+  0%   { box-shadow: 0 0 0 0 rgba(30, 128, 255, .35); }
   70%  { box-shadow: 0 0 0 7px rgba(30, 128, 255, 0); }
   100% { box-shadow: 0 0 0 0 rgba(30, 128, 255, 0); }
 }
 html.motion-lite .sc-step.is-now .sc-dot { animation: none; }
 .sc-txt b { font-weight: 700; color: var(--ink); }
-.sc-step.is-now .sc-txt b { color: #1E80FF; }
+.sc-step.is-now .sc-txt b { color: var(--go); }
 
-/* ---- 弹窗主体：左牌堆 + 右 3×2 分类堆 ---- */
+/* ---- 牌桌主体：上行 = 扇形手牌 + 信息组；下行 = 六张 Joker 卡 ---- */
 .sc-body {
   flex: 1 1 auto; min-height: 0;
-  display: flex; align-items: stretch; gap: 12px;
+  display: flex; flex-direction: column; gap: 12px;
 }
 
-/* 左：已读 / 待发牌堆。扫描期牌堆越摞越厚，分析期每发一手薄一层 */
+/* 上行：发牌区。扫描期手牌越扇越厚，分析期每发一手薄一层 */
 .sc-hall {
-  flex: 0 0 212px;
-  display: flex; flex-direction: column; align-items: center; justify-content: center;
-  gap: 10px; padding: 14px;
-  background: linear-gradient(180deg, #F5F8FF 0%, #FFFFFF 80%);
-  border: 1px solid #E4EAF6; border-radius: 14px;
+  flex: 0 0 auto;
+  display: flex; align-items: center; justify-content: center;
+  gap: 26px; padding: 6px 10px 2px;
 }
-/* 牌堆：一摞背面朝上的牌，向左上错开微旋 —— 「一摞读取的卡」
- * 内描边一道浅蓝框 = 牌背纹样（错开露出的边上也能看到框线） */
-.sc-hand { position: relative; width: 128px; height: 172px; flex: 0 0 auto; }
+/* 扇形手牌：一叠牌背从下圆心扇开 —— 「AI 手里还剩的牌」 */
+.sc-hand { position: relative; width: 240px; height: 158px; flex: 0 0 auto; }
 .sc-hand i {
-  position: absolute; inset: 0;
-  background: #fff; border: 1px solid var(--line); border-radius: 10px;
-  box-shadow: 0 2px 6px rgba(28, 31, 36, .08),
-              inset 0 0 0 4px #F2F6FC;
-  transform: translate(calc(var(--i) * -3px), calc(var(--i) * -3px))
-             rotate(calc(var(--i) * -1.6deg));
+  position: absolute; left: 50%; bottom: 0;
+  width: 92px; height: 129px; margin-left: -46px;   /* 1:1.4 纸牌比例 */
+  border-radius: 10px;
+  background: repeating-linear-gradient(45deg, #EAF2FD 0 8px, #D9E8FB 8px 16px);
+  border: 1.5px solid var(--line2);
+  box-shadow: 0 3px 8px rgba(28, 31, 36, .12);
+  transform-origin: 50% 150%;
+  transform: rotate(calc((var(--i) - 2.5) * 9deg));
 }
-/* 堆顶那张亮蓝边 = 下一手要从这里飞出去；光晕呼吸 = 「这张马上要发」 */
+/* 牌背内圈发丝框 */
+.sc-hand i::after {
+  content: ''; position: absolute; inset: 6px;
+  border: 1.5px solid rgba(255, 255, 255, .9); border-radius: 6px;
+}
+/* 正在飞的这张：抬起 + 蓝边 + 晃动 —— 下一手从这里发出去 */
 .sc-hand i.is-going {
-  background: #F5F8FF; border: 1.5px solid #1E80FF;
-  box-shadow: 0 4px 12px rgba(30, 128, 255, .28),
-              inset 0 0 0 4px rgba(30, 128, 255, .08);
-  animation: scGoing 1.6s ease-in-out infinite;
+  border-color: var(--go);
+  box-shadow: 0 0 0 3px rgba(30, 128, 255, .22), 0 8px 16px rgba(28, 31, 36, .16);
+  animation: scFly 1.1s ease-in-out infinite;
 }
-@keyframes scGoing {
-  0%, 100% { box-shadow: 0 4px 12px rgba(30, 128, 255, .22), inset 0 0 0 4px rgba(30, 128, 255, .08); }
-  50%      { box-shadow: 0 6px 20px rgba(30, 128, 255, .44), inset 0 0 0 4px rgba(30, 128, 255, .14); }
+@keyframes scFly {
+  0%, 100% { transform: rotate(calc((var(--i) - 2.5) * 9deg) - 3deg) translateY(-16px); }
+  50%      { transform: rotate(calc((var(--i) - 2.5) * 9deg) + 3deg) translateY(-24px); }
 }
-html.motion-lite .sc-hand i.is-going { animation: none; }
-.fm-count { font-size: 14px; font-weight: 800; color: var(--ink); }
+html.motion-lite .sc-hand i.is-going {
+  animation: none;
+  transform: rotate(calc((var(--i) - 2.5) * 9deg)) translateY(-16px);
+}
+
+/* 信息组：浅灰面牌 —— 待发数 / 正在落位 / 归榜统计 */
+.sc-note {
+  flex: 0 1 340px; min-width: 0;
+  display: flex; flex-direction: column; gap: 7px;
+  padding: 14px 18px;
+  background: #F7F8FA;
+  border: 1px solid var(--line); border-radius: 14px;
+}
+.fm-count { font-size: 20px; font-weight: 900; color: var(--ink); }
 /* ⭐ 「正在落位」这行是**动态的**：顶牌一换就换名字与颜色，
  *    否则用户只看到数字在跳，不知道这一手发去了哪个赛道。 */
-.sc-hall em {
+.sc-note em {
   max-width: 100%;
-  font-size: 12px; font-style: normal; font-weight: 600;
+  font-size: 13px; font-style: normal; font-weight: 700;
   color: var(--sc-now, var(--ink2));
-  text-align: center; line-height: 16px;
+  line-height: 18px;
 }
-.sc-hall span { font-size: 11px; color: var(--ink3); text-align: center; }
+.sc-note span { font-size: 11px; color: var(--ink3); line-height: 16px; }
 
-/* 右：六个分类堆 3×2。--fm-w 是弹窗里的牌宽（1:1.4 照旧，缩宽不压扁），
+/* 下行：六张 Joker 卡 1×6 横排 —— 赛道位就是牌桌上的小丑位。
  * 不碰 --sc-w（扩展浮层旧档位还引用它）也不碰 --cover-w（成品态尺寸源）。 */
 .fm-grid {
-  flex: 1 1 auto; min-width: 0;
-  --fm-w: 126px;
-  --fm-card-h: calc(var(--fm-w) * 1.4);
-  display: grid; grid-template-columns: repeat(3, 1fr);
-  gap: 10px 12px; align-content: center;
+  flex: 1 1 auto; min-height: 0;
+  display: grid; grid-template-columns: repeat(6, 1fr);
+  gap: 12px; align-content: stretch;
 }
+/* 一张 Joker 卡 = 白卡 + 淡赛道色描边 + 柔和投影；奇偶轻微对摇（牌桌手感） */
 .sc-col {
-  display: flex; flex-direction: column; align-items: center; gap: 4px;
-  min-width: 0;
+  position: relative;
+  display: flex; flex-direction: column; align-items: center; gap: 3px;
+  min-width: 0; padding: 8px 6px 7px;
+  background: #fff;
+  border: 1.5px solid color-mix(in srgb, var(--sc-color, #8A9099) 48%, var(--line));
+  border-radius: 14px;
+  box-shadow: 0 3px 10px rgba(28, 31, 36, .07);
 }
+.sc-col:nth-child(odd)  { transform: rotate(-1.1deg); }
+.sc-col:nth-child(even) { transform: rotate(1.1deg); }
+html.motion-lite .sc-col { transform: none; }
+/* 还没发到的赛道：整张卡灰显 —— 虚线边 + 幽灵卡，
+ * ⭐ 必须**看起来是「还没发」而不是「没有」**（嘴硬榜常常是 0 张）。 */
+.sc-col.is-empty {
+  border-style: dashed;
+  border-color: var(--line2);
+  background: #FAFBFC;
+}
+.sc-col.is-empty .sc-name { color: var(--ink3); }
+
+/* 牌叠区：发到这一道的牌 = 一摞迷你**封面卡**（v1.8），从扇形手牌飞进来 */
 .sc-pile {
   position: relative;
-  /* 高度 = 牌高 + 错开余量（SC_FAN_MAX=6 → 24px）。不裁剪、不留会静默压到
-   * 赛道名上 —— 见 spec §6.8 那段踩坑记录。 */
-  width: 100%; max-width: var(--fm-w);
-  height: calc(var(--fm-card-h) + 24px);
+  width: 100%; height: 148px;
 }
-/* 一张已发出的牌。绝对定位 + 递增的 --i → 错开 4px。
- * 牌内三段分布（头/中/尾）：头贴顶、判词贴底、中间赛道符号撑版式。 */
+/* 一张迷你封面卡（仍守 1:1.4）：顶「名次 + 赛道符号」→ 中「角色立绘」→ 底「分数」。
+ * 立绘经 --sc-char（写在 .sc-col 上）继承进来，与榜单成品态同源。
+ * 绝对定位居中 + 递增 --i 往下错 3px（封顶 SC_FAN_MAX，JS 侧控制）。 */
 .sc-card {
-  position: absolute; left: 0; top: calc(var(--i) * 4px);
-  width: 100%; height: var(--fm-card-h);
+  position: absolute; left: 50%; top: calc(var(--i) * 3px);
+  width: 92px; height: 129px; margin-left: -46px;
   display: flex; flex-direction: column; gap: 3px;
-  padding: 10px;
-  background: #fff; border: 1px solid var(--line); border-radius: 10px;
-  box-shadow: 0 2px 7px rgba(28, 31, 36, .06);
+  padding: 7px 8px 6px;
+  background: #fff; border: 1.5px solid var(--line); border-radius: 10px;
+  box-shadow: 0 2px 6px rgba(28, 31, 36, .1);
 }
 /* ⭐ 入场动画只挂 .is-new（这屏第一次出现的牌，board.js 按 scSeen 标）。
- *   起点 = 左侧牌堆中心 → 牌位的向量（JS 实测矩形写入 --flydx/--flydy）。
+ *   起点 = 扇形手牌中心 → 牌位的向量（JS 实测矩形写入 --flydx/--flydy）。
  *   曾经挂在基类上：每次轮询重绘所有牌重播 → 整屏闪（spec §6.8 有记录）。 */
 .sc-card.is-new { animation: scDeal .4s var(--ease) both; }
-.sc-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 6px; }
-.sc-sym { display: flex; align-items: center; color: var(--sc-color, var(--ink3)); opacity: .55; }
-.sc-mid { flex: 1 1 auto; min-height: 0; display: flex; align-items: center; justify-content: center; }
-/* 顶牌（最新一张）吃赛道色 + 一道色边 + 赛道色光晕 —— 一眼能看出「刚落进哪一摞」 */
+.sc-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 4px; }
+.sc-sym { display: flex; align-items: center; color: var(--sc-color, var(--ink3)); opacity: .6; }
+/* 卡面中段 = 角色立绘（contain 不进不出，叠牌时只有顶卡看得全） */
+.sc-mid {
+  flex: 1 1 auto; min-height: 0;
+  background: var(--sc-char) center / contain no-repeat;
+}
+.sc-score {
+  font-size: 12px; font-weight: 800; line-height: 1; text-align: right;
+  color: var(--sc-color, var(--ink));
+}
+/* 顶牌（最新一张）吃赛道色 —— 一眼能看出「刚落进哪一道」 */
 .sc-card.is-top {
-  border-width: 1.5px;
   background: var(--sc-tint, #FFF);
   border-color: var(--sc-color, var(--line));
-  box-shadow: 0 5px 16px color-mix(in srgb, var(--sc-color, #1A1D21) 24%, transparent);
+  box-shadow: 0 3px 10px color-mix(in srgb, var(--sc-color, #1A1D21) 28%, transparent);
 }
-.sc-rank { font-size: 17px; font-weight: 800; line-height: 1; color: var(--sc-color, var(--ink)); }
-.sc-head { font-size: 10px; font-weight: 700; color: var(--sc-color, var(--ink2)); }
-.sc-verdict {
-  font-size: 10px; line-height: 13px; color: var(--ink3);
-  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
-  overflow: hidden;
-}
+.sc-rank { font-size: 13px; font-weight: 800; line-height: 1; color: var(--sc-color, var(--ink)); }
 @keyframes scDeal {
   from { transform: translate(var(--flydx, 0), var(--flydy, 0)) scale(.7); opacity: 0; }
   to   { transform: translate(0, 0) scale(1); opacity: 1; }
 }
-/* 还没发到的赛道：虚线空堆 + 「等 AI 发牌」。
- * ⭐ 嘴硬榜常常是 0 张，这个空堆必须**看起来是「还没发」而不是「没有」**。
- * v1.5 起空堆跟赛道色淡染（--sc-color 由 .sc-col 继承下来）——
- * 六个坑位一眼对得上六个赛道，不再是六个一样的灰框。 */
-.sc-pile.is-empty {
-  display: flex; align-items: center; justify-content: center;
-  background: color-mix(in srgb, var(--sc-color, #8A9099) 4%, #FBFCFD);
-  border: 1px dashed color-mix(in srgb, var(--sc-color, #C9CDD4) 38%, #fff);
-  border-radius: 10px;
-  font-size: 11px; color: color-mix(in srgb, var(--sc-color, #B6BCC6) 60%, #fff);
+/* 空堆 = 一张幽灵封面卡：虚线框 + 去色立绘 + 「等 AI 发牌」 */
+.sc-pile.is-empty { display: block; font-size: 0; }
+.sc-pile.is-empty::before {
+  content: ''; position: absolute; left: 50%; top: 0;
+  width: 92px; height: 129px; margin-left: -46px;
+  border: 1.5px dashed var(--line2); border-radius: 10px;
+  background: var(--sc-char) center 30% / 72% no-repeat, #FAFBFC;
+  filter: grayscale(1); opacity: .55;
 }
-.sc-meta { display: flex; align-items: center; gap: 6px; }
-.sc-name { font-size: 12px; font-weight: 700; color: var(--sc-color, var(--ink)); }
-.sc-num {
-  min-width: 30px; height: 18px; padding: 0 7px;
-  display: flex; align-items: center; justify-content: center;
-  border-radius: 6px;
-  background: var(--sc-tint, #F0F2F5);
-  font-size: 11px; font-weight: 700; color: var(--sc-color, var(--ink2));
+.sc-pile.is-empty::after {
+  content: '等 AI 发牌';
+  position: absolute; left: 0; right: 0; top: 134px;
+  text-align: center; font-size: 10px; color: var(--ink3);
 }
 
-/* 浮层 722：弹窗收窄一档。⚠️⚠️ **不许动 --cover-w / --cover-h**：
+.sc-meta { display: flex; align-items: center; gap: 6px; }
+.sc-name { font-size: 12px; font-weight: 800; color: var(--sc-color, var(--ink)); }
+.sc-num {
+  min-width: 24px; height: 18px; padding: 0 6px;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 999px;
+  background: var(--sc-color, #454D57);
+  font-size: 11px; font-weight: 800; color: #fff;
+}
+
+/* 浮层 722：牌桌收窄一档。⚠️⚠️ **不许动 --cover-w / --cover-h**：
  * 那是成品态封面牌、摞、以及「点一摞 → 发牌入场」飞行动画的尺寸源。 */
-html.embed .sc-modal { width: min(920px, 96vw); max-height: min(640px, 94vh); padding: 12px; gap: 8px; }
+html.embed .sc-modal { width: min(920px, 96vw); max-height: min(640px, 94vh); padding: 12px 14px; gap: 8px; }
 html.embed .sc-modal-hd b { font-size: 13px; }
 html.embed .sc-modal-sub { font-size: 11px; }
 html.embed .sc-stop { height: 26px; padding: 0 10px; font-size: 11px; }
-html.embed .sc-phase { height: 34px; }
+html.embed .sc-phase { height: 32px; }
 html.embed .sc-step { padding: 0 8px; font-size: 11px; gap: 6px; }
 html.embed .sc-dot { width: 16px; height: 16px; font-size: 10px; }
-html.embed .sc-hall { flex-basis: 170px; padding: 10px; gap: 8px; }
-html.embed .sc-hand { width: 104px; height: 140px; }
-html.embed .fm-count { font-size: 12px; }
-html.embed .sc-hall em { font-size: 11px; line-height: 14px; }
-html.embed .sc-hall span { font-size: 10px; }
-html.embed .fm-grid { --fm-w: 96px; gap: 8px 9px; }
-html.embed .sc-card { padding: 8px; }
-html.embed .sc-rank { font-size: 14px; }
-html.embed .sc-head { font-size: 9px; }
-html.embed .sc-verdict { display: none; }
+html.embed .sc-hall { gap: 16px; padding: 2px 6px 0; }
+html.embed .sc-hand { width: 190px; height: 120px; }
+html.embed .sc-hand i { width: 72px; height: 101px; margin-left: -36px; }
+html.embed .sc-note { flex-basis: 280px; padding: 10px 14px; gap: 5px; }
+html.embed .fm-count { font-size: 15px; }
+html.embed .sc-note em { font-size: 11px; line-height: 15px; }
+html.embed .sc-note span { font-size: 10px; line-height: 14px; }
+html.embed .fm-grid { gap: 8px; }
+html.embed .sc-pile { height: 112px; }
+html.embed .sc-card { width: 70px; height: 98px; margin-left: -35px; padding: 5px 6px 5px; }
+html.embed .sc-pile.is-empty::before { width: 70px; height: 98px; margin-left: -35px; }
+html.embed .sc-pile.is-empty::after { top: 102px; font-size: 9px; }
+html.embed .sc-rank { font-size: 10px; }
+html.embed .sc-score { font-size: 10px; }
 html.embed .sc-name { font-size: 11px; }
-html.embed .sc-num { min-width: 24px; height: 16px; font-size: 10px; padding: 0 5px; }
+html.embed .sc-num { min-width: 20px; height: 16px; font-size: 10px; padding: 0 5px; }
 html.embed .sc-sym { opacity: .5; }
-html.embed .sc-hand i { width: 52px; height: 34px; }
 
 
 /* ================= 视图 1 · 扇形牌阵 + 小卡条（v1.1） =================
@@ -1351,9 +1387,13 @@ html.embed .cf-no { padding: 0 8px; }
   border: 1.5px solid currentColor; border-top-color: transparent; border-radius: 50%;
   animation: cfSpin .7s linear infinite;
 }
-/* 禁用：用颜色表达，不用 opacity（与 .bd-refresh[disabled] 的 opacity:.5 是既有，本次不改） */
-.sc-stop[disabled], .sc-cancel[disabled] {
-  color: var(--ink3); border-color: var(--line); background: #FAFBFC; cursor: default;
+/* 禁用：与页内 [disabled] 同口径（颜色表达，不用 opacity 的既有除外） */
+.sc-stop[disabled] {
+  color: var(--ink3); border-color: var(--line); background: #FAFBFC;
+  box-shadow: none; cursor: default;
+}
+.sc-cancel[disabled] {
+  color: var(--ink3); background: none; cursor: default;
 }
 html.embed .sc-cancel { font-size: 11px; padding: 0 6px; }
 html.embed .sc-cancel.is-arm { padding: 0 8px; }
@@ -1374,16 +1414,25 @@ html.motion-lite .sc-cancel.is-busy::before { display: none; }
  * 结果卡有 .rs-hd（图标 + 标题 + 用时）顶替这一行，弹窗高度已被 JS 冻结，
  * 隐藏头部只是把那 40px 让给 .sc-result（它 flex:1 + 居中），外框不动。 */
 .sc-modal.is-result .sc-modal-hd { display: none; }
-/* 结果态：舱顶六赛道发丝收成一条「完成绿」—— 发牌结束的信号 */
-.sc-modal.is-result::before {
-  background: linear-gradient(90deg, var(--ok), color-mix(in srgb, var(--ok) 55%, #7BD3AE));
-  opacity: .85;
-}
 
 .sc-result {
-  flex: 1 1 auto; min-height: 0;
+  flex: 1 1 auto; min-height: 0; position: relative;
   display: flex; flex-direction: column; align-items: center; justify-content: center;
   gap: var(--rs-gap);
+}
+/* 结果态氛围光：一团很淡的完成绿托在内容后面 —— 冻结高度留下的空白
+ * 不再是「没填满的灰盒」，而是有意留的留白。absolute ⇒ 不是 flex 子项，不挤版式。 */
+.sc-result::before {
+  content: ''; position: absolute; inset: 0; pointer-events: none;
+  background: radial-gradient(430px 230px at 50% 44%,
+              color-mix(in srgb, var(--ok) 9%, transparent), transparent 72%);
+}
+/* 结果态水印：四个超大花色压在牌桌四角 —— 冻结高度留下的大片空白
+ * 用牌桌语言（花色刻印）填成「 deliberate 的桌面」。
+ * 内联 SVG 背景：墨色 5%，看得见肌理，抢不走内容。 */
+.sc-result::after {
+  content: ''; position: absolute; inset: 0; pointer-events: none;
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='760' height='380'%3E%3Cg fill='%231A1D21' fill-opacity='.05' font-family='serif'%3E%3Ctext x='26' y='130' font-size='120'%3E%E2%99%A0%3C/text%3E%3Ctext x='26' y='350' font-size='120'%3E%E2%99%A5%3C/text%3E%3Ctext x='654' y='130' font-size='120'%3E%E2%99%A3%3C/text%3E%3Ctext x='654' y='350' font-size='120'%3E%E2%99%A6%3C/text%3E%3C/g%3E%3C/svg%3E") center / 760px 380px no-repeat;
 }
 /* v1.5：入场从「整卡一起浮」改成「逐行接力浮」（图标 → 标题 → 规模 → 赛道 → 按钮），
  * 时长仍吃 --rs-dur，只是每行错 45ms —— 结果卡内容比执行态稀疏，
@@ -1397,12 +1446,13 @@ html.motion-lite .sc-cancel.is-busy::before { display: none; }
 @keyframes cfRise { from { transform: translateY(10px); opacity: 0; } to { transform: none; opacity: 1; } }
 html.motion-lite .sc-result > * { animation: none; }
 
-.rs-hd { display: flex; align-items: center; gap: 10px; width: 100%; max-width: 560px; }
+/* 结果头：图标 + 标题 + 用时**居中抱成一团**（不再 560 撑满左右甩开） */
+.rs-hd { display: flex; align-items: center; gap: 10px; width: auto; max-width: 560px; }
 .rs-ico {
   flex: 0 0 auto; width: var(--rs-ico); height: var(--rs-ico);
   display: flex; align-items: center; justify-content: center; border-radius: 50%;
   /* 完成 = 绿勾；提前结束 = 琥珀感叹号（不是 --fail 橙红：那是失败色）。
-   * v1.5 加一圈同色光晕 —— 结果卡唯一的「情绪点」，让它撑住整屏。 */
+   * 一圈同色光晕 —— 结果卡唯一的「情绪点」，让它撑住整屏。 */
   color: var(--ok); background: color-mix(in srgb, var(--ok) 12%, #fff);
   box-shadow: 0 0 0 7px color-mix(in srgb, var(--ok) 7%, #fff),
               0 0 0 14px color-mix(in srgb, var(--ok) 3%, #fff);
@@ -1413,12 +1463,12 @@ html.motion-lite .sc-result > * { animation: none; }
               0 0 0 14px color-mix(in srgb, var(--warn) 4%, #fff);
 }
 .rs-ico svg { display: block; }
-.rs-title { font-size: 17px; font-weight: 900; color: var(--ink); }
-.rs-time { margin-left: auto; font-size: 11px; font-weight: 500; color: var(--ink3); }
+.rs-title { font-size: 19px; font-weight: 900; color: var(--ink); }
+.rs-time { margin-left: 12px; font-size: 11px; font-weight: 500; color: var(--ink3); }
 .rs-scale {
-  margin: 0; font-size: 13px; font-weight: 600; color: var(--ink2); text-align: center;
+  margin: 0; font-size: 14px; font-weight: 600; color: var(--ink2); text-align: center;
 }
-.rs-scale b { font-size: 14px; font-weight: 800; color: var(--ink); }
+.rs-scale b { font-size: 16px; font-weight: 800; color: var(--ink); }
 .rs-note {
   margin: 0; max-width: 560px;
   display: flex; align-items: center; justify-content: center;
@@ -1434,7 +1484,13 @@ html.motion-lite .sc-result > * { animation: none; }
 .rs-pct-bar { display: block; width: 160px; height: 8px; border-radius: 4px; background: #EDEFF2; overflow: hidden; }
 .rs-pct-bar > i { display: block; height: 100%; width: var(--cf-pct, 0%); border-radius: 4px; background: var(--warn); }
 .rs-pct-txt { font-size: 11px; color: var(--ink3); }
-.rs-tracks { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
+/* 六赛道汇总 = 一张「成绩条」面板：白底卡片把 pills 拢成一个整体 */
+.rs-tracks {
+  display: flex; flex-wrap: wrap; justify-content: center; gap: 8px;
+  padding: 12px 18px;
+  background: #fff; border: 1px solid var(--line); border-radius: 14px;
+  box-shadow: 0 2px 8px rgba(28, 31, 36, .05);
+}
 .rs-tr {
   display: inline-flex; align-items: center; gap: 5px;
   height: 24px; padding: 0 10px; border-radius: 999px;
@@ -1444,15 +1500,16 @@ html.motion-lite .sc-result > * { animation: none; }
 }
 /* delta 一律中性色 —— 上榜张数变少不代表变差，红绿会暗示「减少 = 退化」 */
 .rs-delta { font-size: 11px; font-weight: 700; color: var(--ink3); }
+/* 主按钮与页内「重新评分」同族：墨底白字 + 柔投影 */
 .rs-btn {
   height: var(--rs-btn-h); padding: 0 18px; border-radius: 10px;
-  background: linear-gradient(180deg, #2B3038, #1A1D21);
+  background: var(--ink);
   color: #fff; font-size: 12px; font-weight: 600;
-  box-shadow: 0 6px 16px rgba(26, 29, 33, .26);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, .18);
   transition: transform .15s var(--ease), box-shadow .15s var(--ease);
 }
-.rs-btn:hover  { transform: translateY(-1px); box-shadow: 0 9px 22px rgba(26, 29, 33, .32); }
-.rs-btn:active { transform: translateY(0); box-shadow: 0 4px 12px rgba(26, 29, 33, .24); }
+.rs-btn:hover  { transform: translateY(-1px); box-shadow: 0 6px 14px rgba(0, 0, 0, .20); }
+.rs-btn:active { transform: translateY(0); box-shadow: 0 2px 6px rgba(0, 0, 0, .18); }
 /* 出现 400ms 内不可点：防「刚点了提前结束」的手指连点穿透。
  * 用 pointer-events 不用 disabled —— disabled 会让元素失焦，而提前结束态焦点刚放在它上面。 */
 .sc-result.is-fresh .rs-btn { pointer-events: none; }
@@ -1474,6 +1531,7 @@ html.embed .rs-scale b { font-size: 13px; }
 html.embed .rs-note { padding: 6px 8px; font-size: 11px; line-height: 15px; }
 html.embed .rs-pct-bar { width: 130px; height: 6px; border-radius: 3px; }
 html.embed .rs-pct-bar > i { border-radius: 3px; }
+html.embed .rs-tracks { padding: 9px 12px; border-radius: 12px; gap: 6px; }
 html.embed .rs-tr { height: 20px; padding: 0 7px; font-size: 10px; }
 html.embed .rs-delta { font-size: 10px; }
 html.embed .rs-btn { font-size: 11px; }

@@ -375,16 +375,18 @@ else:
             bad.append("%s 不是合法 PNG" % f)
             continue
         w, h = sz
-        # 出图口径 = 「contain 到 CHAR_W x CHAR_H」→ 至少一边撑满、两边都不超。
-        # 这条能抓住「比例被改坏 / 尺寸被改坏」，又不需要写死每张的宽高。
-        if w > CHAR_W or h > CHAR_H or abs(max(w / float(CHAR_W), h / float(CHAR_H)) - 1) > 0.02:
-            bad.append("%s 是 %dx%d，应 contain 到 %dx%d 内且至少一边撑满"
+        # v1.9 起素材是「内容包围盒裁切」（scripts/clean_char_baked.py 后段）：
+        # 透明边被裁掉，角色 contain 显示时更大更贴参考图 —— 六张比例不再统一。
+        # 契约随之放宽：不超过原画布 CHAR_W x CHAR_H（fig 区 2 倍图），
+        # 长边 ≥ 200（防裁坏成迷你图）。比例由 CSS contain 自适应，无需写死。
+        if w > CHAR_W or h > CHAR_H or max(w, h) < 200:
+            bad.append("%s 是 %dx%d，应 ≤ %dx%d 且长边 ≥ 200"
                        % (f, w, h, CHAR_W, CHAR_H))
     if bad:
         problems.append("角色素材尺寸不对：%s" % "；".join(bad))
     elif chars:
-        notes.append("角色素材契约一致：%d 张 char-*.png 都 contain 在 %dx%d 内，"
-                     "对应封面牌 %dx%d（比例 1:%.2f）"
+        notes.append("角色素材契约一致：%d 张 char-*.png 均在 %dx%d 画布内（v1.9 包围盒裁切），"
+                     "封面牌 %dx%d（比例 1:%.2f）"
                      % (len(chars), CHAR_W, CHAR_H, cw_css, ch_css, ch_css / float(cw_css)))
     if len(chars) != 6:
         problems.append("char-*.png 应有 6 张，实际 %d 张" % len(chars))
