@@ -57,6 +57,15 @@ const routes = {
        * 漏掉这一行 → 前端以为在只读、实际走 ensure() → 「看一眼周榜」
        * 变成一次真评分：翻 45 页、一两分钟、烧 token。静默且昂贵。 */
       peek: qs.get('peek') === '1' || b.peek === true,
+      /* ⭐ hold / stop 同理必须转发（v1.3.1）：hold 漏了 → 周榜首拉变成自动
+       * 评分（和 peek 同一种静默烧 token）；stop 漏了 → 「提前结束」按钮
+       * 变成又一次 ensure 轮询，根本停不下来。 */
+      hold: qs.get('hold') === '1' || b.hold === true,
+      stop: qs.get('stop') === '1' || b.stop === true,
+      /* ⭐ v1.3.3 cancel 同理必须转发：漏了 → 前端的「取消本次评分」请求落到
+       * apiBoard 里没有 cancel 字段 → 走 ensure() 变成**又起一轮新任务**，
+       * 用户点了取消，结果反而重新启动了一轮完整评分（还停不下来）。 */
+      cancel: qs.get('cancel') === '1' || b.cancel === true,
       ai: b.ai || null
     });
   },

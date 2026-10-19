@@ -202,38 +202,57 @@ for rel in ("site/serve.mjs", "extension/api.mjs", "extension/background.js"):
     if re.search(r"peek", s):
         peek_sites.append(rel)
     else:
-        problems.append("%s 里没有 peek —— 展开榜期卡会静默触发一次真评分" % rel)
+        problems.append("%s 里没有 peek —— API 面就不完整了（hold 内部还要用它）" % rel)
+    # v1.3.1 hold/stop、v1.3.3 cancel 与 peek 同一种坑（三处漏一处 = 静默烧 token / 停不下来）：
+    #   hold 漏转发 → 周榜首拉变成自动评分；
+    #   stop 漏转发 → 「提前结束」按钮变成又一次 ensure，根本停不下来；
+    #   cancel 漏转发 → 「取消本次评分」变成又一次 ensure，撤销不成反而重启一轮
+    #                  （最糟的一种：用户明确说不要，却触发了完整的一次评分，还白烧 token）。
+    for flag in ("hold", "stop", "cancel"):
+        if not re.search(r"\b%s\b" % flag, s):
+            problems.append("%s 里没有 %s —— 周榜不自动评 / 提前结束会静默失效" % (rel, flag))
 
 if bj and os.path.exists(site_board):
     j = open(bj, encoding="utf-8").read()
     js2 = open(site_board, encoding="utf-8").read()
     if j != js2:
         problems.append("extension/board.js 与 site/board.js 不一致 —— 改前端只改 site/ 再重建")
-    # 榜期卡的三段结构在 **HTML** 里，JS 只按 id 取
+    # 榜期切换（v1.3.2 直切分段）的结构在 **HTML** 里，JS 只按 id 取
     if os.path.exists(board):
         bh = open(board, encoding="utf-8").read()
-        for need_id in ('id="rngCard"', 'id="rngRows"', 'id="rngSum"'):
+        for need_id in ('id="rngSeg"', 'id="rngCap"',
+                        'data-range="day"', 'data-range="week"'):
             if need_id not in bh:
-                problems.append("board.html 里没有 %s（榜期卡面板结构缺一块）" % need_id)
+                problems.append("board.html 里没有 %s（榜期切换分段按钮结构缺一块）" % need_id)
     for f, s2 in (("extension/board.js", j), ("site/board.js", js2)):
         if 'id="seg"' in s2 or 'class="seg' in s2:
-            problems.append("%s 还留着旧的分段控件 .seg（v0.7.0 已换成榜期卡 .rng）" % f)
-    if "peek=1" not in j:
-        problems.append("board.js 的 loadPeer() 没带 peek=1 —— 「看一眼周榜」会变成一次真评分")
-    # ⭐ 读写 key 必须一致：paintRangePop 只能按对面档 id 取。
-    #    只看**代码**，别匹配注释（注释里就写着这个反例，当判据会永远误报）。
-    #    ⚠️ 剥离块注释要用跨行模式；逐行 re.S 是无效的（块注释本来就跨行）。
-    code = re.sub(r"/\*.*?\*/", "", j, flags=re.S)
-    code = re.sub(r"//[^\n]*", "", code)
-    if re.search(r"peerCache\[\s*S\.range\s*\]", code):
-        problems.append("paintRangePop 读了 peerCache[S.range]（当前档），"
-                        "而 loadPeer 写的是 peerCache[peer.id]（对面档）→ 对面列永远是「尚未生成」")
-    if "peerBusy" not in code:
-        problems.append("在途标记还挂在 RANGES[].busy 上（换档会串味），应用独立的 peerBusy")
-    # 空榜 ≠ 未生成：两套文案必须在
-    for kw in ("尚未生成", "空榜"):
-        if kw not in j:
-            problems.append("差异文案缺「%s」—— 未生成与空榜必须区分（0 张会被误读成空榜）" % kw)
+            problems.append("%s 还留着旧的分段控件 .seg" % f)
+    # v1.3.1/1.3.3 前端契约：周榜不自动评（hold）+ 提前结束（stop）+ 撤销（cancel）
+    #
+    # ⚠️ 两条规矩：
+    #   ① **只认代码、不认注释** —— 匹配前先剥掉 /* */ 块注释。
+    #      否则谁在注释里写一句「请求走 api/board?…&cancel=1」就能让断言假绿，
+    #      而真正发请求的那个调用还没接上时全绿是真的假绿。
+    #      （v1.4 第一天就撞上：cancelBoard 的注释写全了，fetch 还没捞到。）
+    #   ② **认调用点、不认字面量** —— v1.4 起 stop/cancel 两个命令共用
+    #      cmdBoard(cmd)，`'&' + cmd + '=1'` 是拼出来的，源码里没有 `&stop=1`
+    #      这个字面量了。认字面量会误报，认调用点两种情况都罩得住。
+    j_code = re.sub(r"/\*.*?\*/", "", j, flags=re.S)
+    if "&hold=1" not in j_code:
+        problems.append("board.js 的 fetchBoard 没带 &hold=1 —— 周榜首拉会自动开评分")
+    for cmd, why in (("stop", "「提前结束」按钮停不下来"),
+                     ("cancel", "「取消本次评分」停不下来")):
+        # 两种写法都认：写死的字面量（v1.4 的 cmdBoard('&stop=1', …) 调用点）
+        # 或传命令名由 cmdBoard 自己拼 '&'+cmd+'=1' —— 只要参数真的能出现在 URL 上就算数。
+        _sent = ("&%s=1" % cmd) in j_code or re.search(r"cmdBoard\(\s*['\"]%s['\"]" % cmd, j_code)
+        if not _sent:
+            problems.append("board.js 没有把 %s 发到服务端（源码里既找不到 &%s=1 字面量、"
+                            "也没有 cmdBoard('%s') 调用点）—— %s" % (cmd, cmd, cmd, why))
+    # v1.3.2 换直切分段后，榜期卡那套（卡片/面板/loadPeer/peerCache）必须拔干净，
+    # 留着 = 死代码 + 误导后人（历史坑的断言随之退役）
+    for legacy in ("rngCard", "rngPop", "loadPeer", "peerCache", "toggleRangePop"):
+        if legacy in j:
+            problems.append("board.js 还留着旧榜期卡机制 %r —— v1.3.2 直切分段后这是死代码" % legacy)
 
 # embed 档位可达性：board.css 里的 html.embed 规则只有在 embed-boot.js 打了类之后才有意义
 bcss = os.path.join(EXT, "board.css")
@@ -244,7 +263,7 @@ if os.path.exists(bcss) and os.path.exists(eboot) and os.path.exists(board):
     b = open(board, encoding="utf-8").read()
     n_rng_embed = len(re.findall(r"html\.embed \.rng", css))
     if n_rng_embed == 0:
-        problems.append("board.css 没有 html.embed 的榜期卡档位 —— 浮层里会用站点版的 236×44 松散尺寸")
+        problems.append("board.css 没有 html.embed 的榜期切换档位 —— 浮层里会用站点版的松散尺寸")
     if "classList.add('embed')" not in boot and 'classList.add("embed")' not in boot:
         problems.append("embed-boot.js 不再给 <html> 打 embed 类 —— 浮层全部 html.embed 档位会静默失效")
     if "embed-boot.js" not in b:
@@ -252,10 +271,11 @@ if os.path.exists(bcss) and os.path.exists(eboot) and os.path.exists(board):
     if "embed.css" not in b:
         problems.append("board.html 不引 embed.css")
     if n_rng_embed and os.path.exists(os.path.join(EXT, "board.js")):
-        notes.append("榜期卡浮层档位齐全：board.css 有 %d 条 html.embed .rng 规则，"
+        notes.append("榜期切换浮层档位齐全：board.css 有 %d 条 html.embed .rng 规则，"
                      "embed-boot.js 打 embed 类，board.html 两个都引了" % n_rng_embed)
 if peek_sites:
-    notes.append("peek 只读链路三处齐全（%s）—— 展开榜期卡不会触发真评分" % "、".join(peek_sites))
+    notes.append("peek/hold/stop/cancel 命令链路三处齐全（%s）—— "
+                 "周榜不自动评、提前结束与撤销都不会被 ensure 兜底" % "、".join(peek_sites))
 
 # ---------------- 3c) 榜单卡牌形象 ----------------
 cards_dir = os.path.join(EXT, "cards")
@@ -453,81 +473,85 @@ if "mockScore" in bcore:
     else:
         notes.append("mock 发牌与真打分同一判定：mockScore 的 dealt 走 assignTrack")
 
-# ---------------- 5b) 切牌动画（v0.8.1）----------------
-# ⭐ 为什么要断言「opacity 不许挂过渡」：
-#   挂上 `opacity .32s linear` 后，**切牌全程的观感是错的**，而且
-#   静态检查、终态截图、接口全绿 —— 唯一能看出的是逐帧采样：
-#     位置267ms 到位，透明度 328ms 才满 → 中间 60ms「卡啪地一下停住、
-#     还半透明地缓一下才变实」；拖动时更糟（--peek 每次 pointermove 都变，
-#     透明度有 .32s 过渡永远追不上 → 橡皮筋感）。
-#   实测 skew（位置99% 与透明度 99% 的时间差）从 315ms 降到 0ms。
-# 这类「只影响观感、只在中途帧可见」的回归，只能靠断言钉住。
-# v0.9.0：首页大牌槽 .fx 与详情 .cx 共用同一组规则（选择器写作 ".cx, .fx {"），
-# 所以这里要兼容两种写法 —— 但**两组都必须满足**「transition 不含 opacity」。
+# ---------------- 5b) 切牌动画（v1.3 抽牌）----------------
+# ⭐ 机制：三张牌叠成「摞」—— cur 在顶（z:3），prev/next 缩在底下（--under .96）。
+#   切换 = .fly + data-dir：顶牌飞行（±56% 相对牌宽，两档自动适配）+ 淡出，
+#   方向底牌 --under→1 接位；拖拽跟手 = JS 逐帧写 --px/--pr/--under。
+# 为什么钉「拖拽中过渡全关」：v0.8.1 修过「opacity 挂过渡 → 橡皮筋」；
+#   v1.3 起 transform 也逐帧变（--px/--pr 跟手），任何挂着的过渡都会让牌
+#   追手指半拍。抽走时的 opacity 1→0 是一次性目标（不逐帧 retarget），
+#   挂过渡安全 —— 旧断言「opacity 禁过渡」已随胶片机制一起退役。
 _cx = re.search(r"\.cx(?:\s*,\s*\.fx)?\s*\{([^}]*)\}", bcss)
 if not _cx:
     problems.append("board.css 找不到 .cx 规则（切牌的三张卡）")
 else:
     _decl = _cx.group(1)
-    # ⚠️ 必须只扫 transition 声明，**不能直接搜 "opacity"**：
-    #    .cx 的注释里就写着「opacity 不挂」，一搜就误报。
-    _trans = re.findall(r"transition\s*:\s*([^;]+)", _decl)
-    _bad = [t for t in _trans if "opacity" in t]
-    if _bad:
-        problems.append("board.css 的 .cx 又给 opacity 挂了过渡（transition:%s）—— "
-                        "切牌会「先到位再变实」、拖动变橡皮筋。位移走过渡、"
-                        "透明度必须立即跟随" % _bad[0].strip()[:80])
-    else:
-        notes.append("切牌动画：.cx 只给 transform 挂过渡，opacity 立即跟随"
-                     "（无 skew、无橡皮筋）")
-if "--slidegap" not in bcss or ".slot.sliding" not in bcss:
-    problems.append("board.css 缺 --slidegap / .slot.sliding —— 切牌时两张牌之间"
-                    "会露出 16px 的缝，看起来像两张卡各自在飘")
+    if not re.search(r"transition\s*:[^;]*transform", _decl):
+        problems.append("board.css 的 .cx 没给 transform 挂过渡 —— "
+                        "抽牌/弹回会变成瞬跳")
+if not re.search(r"\.slot\.dragging \.cx\s*\{[^}]*transition\s*:\s*none", bcss):
+    problems.append("board.css 缺 .slot.dragging .cx { transition:none } —— "
+                    "拖拽跟手会挂着 .32s 过渡追手指半拍（橡皮筋）")
 else:
-    notes.append("切牌动画：--slidegap 在 .sliding 下收为 0（两牌贴紧错身而过），"
-                 "静止/拖动态保留 16px 呼吸位")
-# JS 侧：.sliding 必须在算 dist **之前**加，否则 contains() 读到 false、
-# 终点差16px（牌在落位时「差一截」再弹回）。这条静默、只能靠断言。
-_sl = bjs.find("function slideTo")
-if _sl < 0:
-    problems.append("board.js 找不到 slideTo")
+    notes.append("拖拽跟手：.dragging 下 .cx 过渡全关（v0.8.1 约束的延续）")
+# 两个方向的飞行终态都得在（缺一个 = 那个方向瞬跳）
+_fly_n = '.slot.fly[data-dir="next"] .cx[data-pos="cur"]' in bcss
+_fly_p = '.slot.fly[data-dir="prev"] .cx[data-pos="cur"]' in bcss
+if not (_fly_n and _fly_p):
+    problems.append("board.css 缺 .fly 的顶牌飞行规则（next:%s prev:%s）—— "
+                    "缺的那个方向抽牌会瞬跳" % (_fly_n, _fly_p))
 else:
-    _body = bjs[_sl:_sl + 900]
-    _i_add = _body.find("classList.add('peek', 'sliding')")
-    _i_dist = _body.find("var dist =")
-    if _i_add < 0 or _i_dist < 0:
-        problems.append("slideTo 里找不到 .sliding 或 dist 的计算 —— "
-                        "切牌距离与 CSS 的 --slidegap 可能对不上")
-    elif _i_add > _i_dist:
-        problems.append("slideTo 里先算 dist 后加 .sliding —— contains() 读到 false，"
-                        "终点差 16px（落位时牌会「差一截」再弹回）")
+    notes.append("抽牌：两个方向的飞行终态都在（%相对牌宽，站点/浮层自动适配）")
+# 方向底牌抬 z：两张底牌同轴同缩放，不抬 z 的话 DOM 靠后的 next 永远压着
+# prev ——「往回抽」时露脸/接位的会是错的那张。静态看不出来，只能靠断言。
+if ('.slot[data-dir="next"] .cx[data-pos="next"]' not in bcss
+        or '.slot[data-dir="prev"] .cx[data-pos="prev"]' not in bcss):
+    problems.append("board.css 缺方向底牌抬 z 的规则 —— 往回抽时接位的会是"
+                    "错的那张牌（next 永远压着 prev）")
+else:
+    notes.append("底牌 z 分层在位：行进方向那张先抬到 z:2 再长上来")
+# 底牌接位变量（缺了 = 抽走后牌台空一格再重建）
+if "--under" not in bcss:
+    problems.append("board.css 缺 --under —— 底牌不会放大接位，"
+                    "抽走瞬间牌台会空一格")
+# JS 侧：旧胶片机制必须拔干净（留着 = 死代码 + 误导后人）
+for _legacy in ("function slideTo", "function setDx"):
+    if _legacy in bjs:
+        problems.append("board.js 还留着旧胶片机制 %r —— v1.3 抽牌后这是死代码"
+                        % _legacy)
+_fl = bjs.find("function flyTo")
+if _fl < 0:
+    problems.append("board.js 找不到 flyTo（v1.3 抽牌的入口）")
+else:
+    _fblk = bjs[_fl:_fl + 700]
+    if "classList.add('fly')" not in _fblk:
+        problems.append("flyTo 没挂 .fly —— 顶牌不会飞，只有数据在换")
+    if "endPullState()" not in _fblk:
+        problems.append("flyTo 收尾没调 endPullState —— 拖拽中途抽走后，"
+                        "下一手牌会带着上一根手指的 --px/--pr 偏移起手")
     else:
-        notes.append("切牌动画：slideTo 先加 .sliding 再算 dist，终点与 --slidegap 一致")
-# 拖动过阈值那条路径也得走同一套距离
+        notes.append("抽牌：flyTo 挂 .fly 起播、endPullState 收尾清现场")
+# 拖拽过阈值必须与箭头同一条 flyTo（旧版对应「两路共用 slideTo 的距离」）
 _dg = bjs.find("Math.abs(dx) >= th")
 if _dg > 0:
-    _dblk = bjs[_dg:_dg + 700]
-    if "classList.add('sliding')" not in _dblk:
-        problems.append("拖动过阈值那条路没加 .sliding —— 拖动与点箭头的"
-                        "切牌动画会不一致（一处 396、一处 412）")
-    elif "cardW + 16" in _dblk:
-        problems.append("拖动过阈值仍写死 cardW + 16 —— 应在 .sliding 下用 cardW")
+    _dblk = bjs[_dg:_dg + 500]
+    if "flyTo" not in _dblk:
+        problems.append("拖动过阈值那条路没走 flyTo —— 拖拽抽牌与点箭头"
+                        "会是两套动画")
     else:
-        notes.append("拖动过阈值与点箭头两条路径共用 --slidegap=0 的距离")
-
-#⚠️ 切牌距离**必须现算** offsetWidth，不能写死 396/412。
-# 理由：浮层档位的 --card-w 是 300（不是 396），写死站点值会让浮层切牌冲过头。
-_sl2 = bjs.find("function slideTo")
-if _sl2 > 0:
-    _sblk = bjs[_sl2:_sl2 + 800]
-    if "offsetWidth" not in _sblk:
-        problems.append("slideTo 的 dist 不是现算的 offsetWidth —— 浮层档位"
-                        "（--card-w:300）会按站点值冲过头")
-    elif re.search(r"var\s+dist\s*=\s*\d", _sblk):
-        problems.append("slideTo 的 dist 写死了数字 —— 浮层档位（--card-w:300）"
-                        "会按站点值冲过头，必须现算 offsetWidth")
+        notes.append("拖拽过阈值与点箭头共用 flyTo（同一套飞行）")
+# 跟手变量与 CSS 的配对：JS 写 --px/--pr + 挂 .dragging，CSS 关过渡 ——
+# 缺一半就是「样式在、不跟手」或「跟手但挂着过渡追半拍」。
+_pm = bjs.find("bindSwipe")
+if _pm > 0:
+    _pblk = bjs[_pm:_pm + 3500]
+    if "setProperty('--px'" not in _pblk or "setProperty('--pr'" not in _pblk:
+        problems.append("bindSwipe 没写 --px/--pr —— 顶牌不会跟手平移/微旋")
+    if "classList.add('dragging')" not in _pblk:
+        problems.append("bindSwipe 没给 .slot 加 .dragging —— CSS 那条 "
+                        "transition:none 永远不生效（橡皮筋）")
     else:
-        notes.append("切牌距离现算 slotEl.offsetWidth —— 站点 396 / 浮层 300 共用同一条数学")
+        notes.append("拖拽跟手：--px/--pr 逐帧写 + .dragging 关过渡（与 CSS 配对）")
 
 # ---------------- 5c) 发牌入场的飞行内容（v0.8.2）----------------
 # ⭐ 为什么值得断言：飞的内容是 `.cover` 还是 `.bigcard` 的克隆，
@@ -603,6 +627,22 @@ elif t_js != t_core:
                     % (t_js, t_core))
 else:
     notes.append("赛道元数据两处一致：board.js 的 TRACKS 副本 == board-core.mjs 的 TRACKS（6 条）")
+
+# ---------------- 5d) 撤销必须是「静止态」（v1.3.3）----------------
+# 这两条分别盯住实现里最容易退化回去的两处，全都是**不报错**的静默 bug：
+#   ① cancelRestore 又改成 jobs.delete(range) → 日榜（会 ensure 自启的那档）
+#      下次刷新/切榜期回来会**自动再跑一轮 45 页**，而用户点撤销的意思是「别算了」；
+#   ② boardResponse 少了 cancelled 分支 → idle/cancelled 掉进 building 兜底 →
+#      前端「只在 ready/failed/none 时停轮询」永不落定：转圈永久转、按钮永久 disabled。
+if "state = 'cancelled'" not in bcore:
+    problems.append("board-core.mjs 的 cancelRestore 不再留 state:'cancelled' 空壳 —— "
+                    "日榜撤销后下一次 ensure() 会自动重跑一轮（违背撤销语义）")
+elif "status === 'cancelled'" not in bcore:
+    problems.append("boardResponse 没有 cancelled 分支 —— 撤销落定时会伪装成 building，"
+                    "前端轮询永不终止、重新评分按钮永久 disabled")
+else:
+    notes.append("撤销是静止态：空壳 state:'cancelled' 拦住自动重跑，"
+                 "boardResponse 有独立 cancelled 分支（不会伪装成 building）")
 
 # ---------------- 汇总 ----------------
 print("\n".join(notes))

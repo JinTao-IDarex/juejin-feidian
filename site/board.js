@@ -225,14 +225,37 @@
   var S = {
     range: q.get('range') === 'week' ? 'week' : 'day',
     data: null,
-    status: 'idle',      // idle | building | ready | failed
+    /* idle | building | ready | failed | none | loading | canceled
+     * ◆canceled = **撤销后的「没评过」**（只有日榜首评撤销会走到）。
+     *   与 none 的区别只在文案：日榜「没榜」只可能是被撤了或被失败打断，
+     *   得说清「这是你撤掉的，不是坏了」。 */
+    status: 'idle',
     progress: null,
     err: null,
     trackId: q.get('track') || null,
     idx: 0,
     fidx: 0,             // 首页当前选中的赛道下标（大牌 / 小卡条共用）
     busy: false,         // 正在播切牌/发牌动画
+    pollErr: 0,          // 连续轮询失败次数（有界重试，见 load 的 catch）
+
+    /* ---- v1.4 三段流程（决策 → 执行 → 交付）新增 ---- */
+    pending: false,      // 有 /api/board 请求在飞（首拉与轮询都算）—— 按钮禁用的唯一来源
+    canceling: false,    // ◆前端本地意图：点击那一帧置位，落定才清（驱动 busy 视觉 + 路由）
+    cancelPoll: 0,       // 撤销期间已轮询的拍数（T16b 兜底：> 6 拍没落定就按本地状态收场）
+    progSnap: null,      // ◆落定瞬间的最后一帧 S.progress（setStatus('ready') 会把它清成 null）
+    prevCounts: null,    // 旧榜各赛道张数（算 delta 用）
+    reqSeq: 0,           // 请求序号，回调里比对防竞态
+    resultPhase: null,   // 'done' | 'empty' | 'stopped'，结果卡子态
+    /* B1 的进程重启探测基线（scReset 新一轮时清零） */
+    lastRunId: null, lastScanned: 0, lastPages: 0, restartNotified: false,
   };
+
+  /* 结果卡自动关闭的计时器与暂停标记（只有「完成 · 有牌」会设） */
+  var rsTimer = null, rsPaused = false, rsFilled = false;
+  /* 撤销按钮的两段式（arm）倒计时 */
+  var armTimer = null;
+  /* toast 的定时器（连调时后者覆盖前者，不排队） */
+  var toastTimer = null;
 
   var fslotEl = $('#fslot'), stripEl = $('#strip'), ftableEl = $('#ftable');
   var slotEl = $('#slot'), trackEl = $('#track');
@@ -251,13 +274,112 @@
    * ⚠️ 别改成 `!motionQuery.matches`：那会绕过首页的档位选择，回到口径分裂。 */
   function motion() { return !document.documentElement.classList.contains('motion-lite'); }
 
+  /* ================= v1.4 · toast 驱动 =================
+   * ⚠️ 既有缺口（ux-spec §7-7）：board.js 里**从来没有** toast 的 JS 驱动，
+   *    .toast 只有 CSS 的 .on 类。这里补上：加 .on → 定时 → 去 .on。
+   * 连续调用时**后者覆盖前者**（不排队）—— 撤销路径只可能有一条 toast，
+   * 排队会让第二条迟到几秒，读起来像撒谎。
+   * .toast 的 z-index:200 > .sc-mask 的 59 ⇒ 撤销 toast 能压在弹窗收起动画之上。 */
+  function toast(msg, ms) {
+    var el = $('#toast');
+    if (!el) return;
+    if (toastTimer) { clearTimeout(toastTimer); toastTimer = null; }
+    el.textContent = msg;
+    el.classList.add('on');
+    toastTimer = setTimeout(function () {
+      el.classList.remove('on');
+      toastTimer = null;
+    }, ms || 2600);
+  }
+
+  /* ================= v1.4 · 按钮禁用：绑请求状态，不绑定时器 =================
+   *
+   * 现状是 `setTimeout(2500)` 解禁，三个问题（ux-spec §4.1）：
+   *   ① 与实际请求时长无关 —— 真链路 1~2 分钟，2.5s 后就解禁了 ⇒ 能重复触发；
+   *   ② 缓存命中只要 20ms，按钮却白锁 2.5s；
+   *   ③ **更严重**：building 期间按钮完全可点 —— 点了就走 scReset() 把发牌台清零。
+   * 改为绑 `S.pending`（请求在飞）+ `S.status`，解禁时机 = 请求返回后。
+   *
+   * ⚠️ syncButtons() **只写 disabled，绝不写文案**：轮询期间 S.pending 每 1.3s
+   *    抖一次 true/false，写文案会让按钮抖。 */
+  function syncButtons() {
+    var base = S.pending || S.status === 'idle' || S.status === 'loading' ||
+               S.status === 'building' || S.canceling;
+    var f = $('#btnFresh');
+    if (f) f.disabled = base;
+    /* #cfGo 与 #btnFresh 同判据（确认条只在非 building 时出现，所以实际生效的是
+     * S.pending / S.canceling） */
+    var go = $('#cfGo');
+    if (go) go.disabled = base;
+    /* #cfNo **永不 disabled** —— 取消出口必须永远可达（紧急出口不能锁） */
+    var sb = $('#sysBtn');
+    if (sb) sb.disabled = S.pending || S.status === 'building';
+    var stop = $('#scStop');
+    if (stop) stop.disabled = !!S.canceling || !!(S.progress && S.progress.stopping);
+    var cancel = $('#scCancel');
+    if (cancel) cancel.disabled = !!S.canceling;
+    /* .rs-btn 不用 disabled —— 用 400ms 的 pointer-events:none 防误触
+     * （disabled 会让元素失焦，而提前结束态我们刚把焦点放在它上面） */
+  }
+
+  /* 所有 /api/board 请求的**唯一入口** —— 统一置 S.pending + 发请求序号。 */
+  function req(fresh, hold) {
+    var seq = ++S.reqSeq;
+    S.pending = true; syncButtons();
+    return fetchBoard(fresh, hold).then(function (j) {
+      S.pending = false; syncButtons();
+      return { j: j, seq: seq };
+    }, function (e) {
+      S.pending = false; syncButtons();
+      throw e;
+    });
+  }
+  /* 撤销 / 提前结束这类「不进 req() 的请求」也要作废在飞的老请求：
+   * 否则 cancel 成功之后，一条还在飞的轮询回包会把状态改回 building（B3）。 */
+  function bumpSeq() { S.reqSeq++; }
+
+  function scModal() { return $('#scModal'); }
+  /* 弹窗外要 inert 的兄弟节点（#viewScoring 自己是 .bd-body 的子元素，
+   * 不能简单地 inert 整个 .bd-body —— 会把弹窗自己也 inert 掉）。 */
+  function setInert(on) {
+    var els = [$('.bd-hd'), $('#viewDeal'), $('#viewDetail'), $('#sys'), $('.bd-ft')];
+    for (var i = 0; i < els.length; i++) {
+      var el = els[i];
+      if (!el) continue;
+      if ('inert' in HTMLElement.prototype) el.inert = !!on;
+      else if (on) el.setAttribute('aria-hidden', 'true');
+      else el.removeAttribute('aria-hidden');
+    }
+  }
+  /* 旧榜各赛道张数快照（算 delta 用）。切榜期 / 新一轮时清。 */
+  function countsOf(d) {
+    if (!d || !d.boards) return null;
+    var m = {};
+    for (var i = 0; i < d.boards.length; i++) m[d.boards[i].id] = (d.boards[i].top || []).length;
+    return m;
+  }
+  /* 102000 → 「1′42″」。ms 缺失时调用方整块隐藏，不留空占位符。 */
+  function fmtDur(ms) {
+    var s = Math.max(0, Math.round(ms / 1000));
+    return Math.floor(s / 60) + '′' + pad2(s % 60) + '″';
+  }
+
   /* ---------------- 取数 ---------------- */
 
   function setStatus(st, opt) {
     S.status = st;
     if (opt && opt.progress !== undefined) S.progress = opt.progress;
     if (opt && opt.err !== undefined) S.err = opt.err;
+    /* ◆T22：确认条开着时状态被外部改成 building（另一标签页触发了本档评分）
+     * ⇒ 立即收起 + 按钮 disabled。不抢焦点（用户可能正在操作别处）。 */
+    if (st === 'building') cfClose(false);
     paintSys();
+    /* 榜期卡第二行跟着状态走：building 的进度、none 的「尚未评分」、
+     * failed 的「那次结果」都在这里刷 —— 以前只在 paint()（ready）刷，
+     * 周榜 none 态就一直卡在「正在取数…」。 */
+    paintRangeCard();
+    /* 按钮禁用与状态同源 —— 这里统一刷一次（不再是 setTimeout(2500)） */
+    syncButtons();
   }
 
   /* AI 配置的 localStorage 键刻意与 app.js 同一个（'juejin-boom:ai-cfg'）：
@@ -274,20 +396,238 @@
     } catch (e) { return null; }
   }
 
-  function fetchBoard(fresh) {
+  function fetchBoard(fresh, hold) {
     /* ?mock=1 = 用确定性假分数代替 AI（只做前端联调，不烧 token），
      * 服务端在 ?mock=1 / JB_BOARD_MOCK=1 时走假打分。
+     * hold=1 = 只读现状、绝不触发评分（周榜不自动评，见 load）。
      * 带 AI 配置时改走 POST、把配置放请求体 —— token 不该出现在 URL 里。 */
     var url = 'api/board?range=' + S.range + (fresh ? '&fresh=1' : '') +
+      (hold ? '&hold=1' : '') + (q.get('mock') === '1' ? '&mock=1' : '');
+    var ai = localAiCfg();
+    var init = { cache: 'no-store' };
+    if (ai) {
+      init.method = 'POST';
+      init.headers = { 'content-type': 'application/json' };
+      init.body = JSON.stringify({ ai: ai, hold: !!hold });
+    }
+    return fetch(url, init).then(function (r) { return r.json(); });
+  }
+
+  /* stop / cancel 两种「命令型请求」的公共取数：与 fetchBoard 同形（带 AI 配置走 POST），
+   * 只是命令名不同。键名与 body 字段刻意与 fetchBoard 那套一致，
+   * 服务端从 query 或 body 任一侧都能读到。 */
+  function cmdBoard(query, bodyFlag) {
+    /* ⚠️ query 必须是**写死的字面量**（&stop=1 / &cancel=1）——
+     *   scripts/check_extension.py 有一条断言直接在源码里找 `&stop=1`，
+     *   拼字符串会让它静默失效（「提前结束」按钮停不下来）。 */
+    var url = 'api/board?range=' + S.range + query +
       (q.get('mock') === '1' ? '&mock=1' : '');
     var ai = localAiCfg();
     var init = { cache: 'no-store' };
     if (ai) {
       init.method = 'POST';
       init.headers = { 'content-type': 'application/json' };
-      init.body = JSON.stringify({ ai: ai });
+      var b = { ai: ai };
+      b[bodyFlag] = true;
+      init.body = JSON.stringify(b);
     }
     return fetch(url, init).then(function (r) { return r.json(); });
+  }
+
+  /* 提前结束（v1.3.1）：打断抓取/打分，以已读数据组榜。
+   * 发完 stop 立刻按返回的快照刷一次 —— building → 「收尾中」继续轮询，
+   * ready → 直接落定（mock 模式几乎瞬时）。
+   * ◆v1.4：也置 S.pending 并 bumpSeq —— 连点 .sc-stop 会重复
+   *   clearTimeout + fetch + load（引擎侧幂等，前端不该重复跑）。 */
+  function stopBoard() {
+    if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
+    bumpSeq();
+    S.pending = true; syncButtons();
+    cmdBoard('&stop=1', 'stop').then(function (j) {
+      S.pending = false; syncButtons();
+      if (j && j.status === 'building') {
+        setStatus('building', { progress: j.progress });
+        pollTimer = setTimeout(function () { load(false, true); }, 600);
+        return;
+      }
+      if (j && (j.status === 'ready' || j.status === 'failed')) {
+        if (j.status === 'failed') { setStatus('failed', { err: j.error || '生成失败' }); return; }
+        finishReady(j);
+      }
+    }).catch(function () {
+      S.pending = false; syncButtons();
+      /* 停止失败就接着轮询原任务 */ load(false, true);
+    });
+  }
+
+  /* ◆v1.4 撤销整轮（「取消本次评分」）—— 与 stop 的差别是**不落盘**：
+   * 产物整轮作废、旧榜原地不动。
+   *
+   * ⚠️⚠️ **撤销是「协作式」的，不能"收包即关"**（引擎 §7-6 / ux §1.5）：
+   *   `cancel()` 只做三件事就返回（置 cancelReq、打 progress.cancelling、abort 那一手），
+   *   真正的收尾在 `cancelRestore()`，要等 run() 撞上下一道闸门（页间 / 空榜组榜前 /
+   *   打分后 / 落盘前），**1~3 秒**。⇒ **cancel 的回包永远是 `building`**（含
+   *   `progress.cancelling:true`），必须**继续轮询到落定**，收包即关会让弹窗
+   *   消失、然后任务还在后台跑完落盘。
+   *
+   * ◆三条回包**一行都不许写 `S.data`**（ux 铁律）：
+   *   ① 无旧 payload ⇒ `{status:'cancelled'}`（引擎给空壳 job，不是 delete）；
+   *   ② 有旧 payload ⇒ `{status:'ready', payload:旧榜, cancelled:true}`，
+   *      写了会把 generatedAt 被自己覆盖一遍 ⇒ 下一轮 delta 全算成 ±0；
+   *   ③ 晚了一步已落盘 ⇒ 新榜，但那是**结果卡的活**，交给 finishReady() 写。
+   *
+   * ⚠️ 引擎的**双 l**：响应里是 `status:'cancelled'` / `j.cancelled`，
+   *    前端 S.status 是 `canceled`（单 l，T13 定的）。别写串。 */
+  function cancelBoard() {
+    if (S.canceling) return;
+    if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
+    bumpSeq();                       // 作废在飞的轮询回包（B3）
+    S.canceling = true;              // 第①层：点击当帧即进 busy（不等轮询）
+    S.cancelPoll = 0;                // T16b 兜底用的轮询计数
+    S.pending = true;
+    syncButtons();
+    paintScoring();
+    paintRangeCard();                // .rng-cap 的撤销分支（灰、不加 is-building）
+    cmdBoard('&cancel=1', 'cancel').then(function (j) {
+      S.pending = false;
+      syncButtons();
+      /* 竞态（B3）：撤销在飞的时候 1.3s 轮询先拿到 ready、已经切了结果态
+       * ⇒ 这条回包作废（不弹 toast、不改状态）。 */
+      if (S.resultPhase) { clearCancelBusy(); paintScoring(); return; }
+      routeCancel(j);
+    }).catch(function () {
+      /* T16（网络层失败）：弹窗绝不能冻死在「正在撤销…」
+       * ⇒ S.canceling=false + **立即 paintScoring()**（否则 1.3s 里文案还在撒谎）
+       *   + toast + 恢复轮询。 */
+      S.pending = false;
+      clearCancelBusy();
+      paintScoring();
+      paintRangeCard();
+      toast('撤销没成功 · 这一轮还在跑');
+      load(false, true);
+    });
+  }
+
+  /* 撤销回包的落点路由。◆判据一律看 `j.cancelled`，**不看 status**：
+   * 两条路的 status 不一样（无旧 payload ⇒ 'cancelled'；有旧 payload ⇒ 'ready'），
+   * 只有 `cancelled:true` 是共同的 —— 只看 status 会把「有旧榜」误判成"跑完了"，
+   * 撤销成功后弹出结果卡。 */
+  function routeCancel(j) {
+    var st = j && j.status;
+    var landed = !!j && (st === 'cancelled' || j.cancelled === true || st === 'none');
+
+    if (landed) {
+      /* T12 / T13 / T14：撤销落定。**先停轮询**（无旧榜时日榜的下一次
+       * ensure(fresh=false) 会回快照、不会自动重跑，但停掉更省心）。 */
+      if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
+      clearCancelBusy();
+      /* 撤销成功后 runId 会退回 null ⇒ 清掉 B1 的探测基线，
+       * 别把「一侧是 null」当成「任务被换过」而弹重启 toast。 */
+      S.lastRunId = null; S.lastScanned = 0; S.lastPages = 0; S.restartNotified = false;
+      var hadOld = !!S.data;
+      dismissScoring(function () {
+        if (hadOld) {
+          /* T12 有旧榜：弹窗收起、**不出结果卡**、旧榜原地不动。
+           * ⚠️ 不写 S.data、不调 paint() —— 重绘会让扇形牌阵重播入场动画，
+           *    视觉上「榜动了一下」，与「原地不动」矛盾（这是撤销的验收标准）。 */
+          toast('已撤销 · 旧榜没动');
+          setStatus('ready', { progress: null, err: null });
+        } else if (S.range === 'day') {
+          /* T13 日榜无旧榜：**必须**显示「已撤销」，绝不能显示 ready 空态 ——
+           * 那等于说「评完了，0 张上榜」，是撒谎。 */
+          toast('已撤销 · 这次没出榜');
+          setStatus('canceled');
+        } else {
+          /* T14 周榜无旧榜：周榜「没评过」本来就是常态，回 none。 */
+          toast('已撤销 · 这次没出榜');
+          setStatus('none');
+        }
+        focusBtnFresh();
+      });
+      return;
+    }
+
+    if (st === 'ready') {
+      /* T15 晚了一步（已落盘）：不抛错，照常走结果卡 + 一条 toast。
+       * 只有这一支允许写 S.data —— 由 finishReady() 写（结果卡的活）。 */
+      clearCancelBusy();
+      toast('已经评完了，撤销不了');
+      finishReady(j);
+      return;
+    }
+
+    if (st === 'failed') {
+      clearCancelBusy();
+      setStatus('failed', { err: (j && j.error) || '生成失败' });
+      return;
+    }
+
+    /* st === 'building'（含 progress.cancelling:true）⇒ 协作式收尾中，继续轮询。
+     * ⚠️ 这里**不能**当成「撤销没生效」—— 那正是正常路径。 */
+    S.progress = (j && j.progress) || S.progress;
+    S.cancelPoll++;
+    /* ◆T16b 兜底（团队 P0）：引擎若缺 idle/cancelled 分支，撤销后会永远回
+     * `{status:'building', progress:null}` ⇒ 轮询永不终止 + 弹窗永久卡在
+     * 「正在撤销本次评分」+ #btnFresh 永久 disabled。
+     * 连续 6 拍（≈8s）没落定 ⇒ 按本地状态收场。 */
+    if (S.cancelPoll > 6) {
+      clearCancelBusy();
+      if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
+      var had = !!S.data;
+      dismissScoring(function () {
+        toast(had ? '已撤销 · 旧榜没动' : '已撤销 · 这次没出榜');
+        if (had) setStatus('ready', { progress: null, err: null });
+        else if (S.range === 'day') setStatus('canceled');
+        else setStatus('none');
+        focusBtnFresh();
+      });
+      return;
+    }
+    paintScoring();
+    paintRangeCard();
+    pollTimer = setTimeout(function () { load(false, true); }, 1300);
+  }
+
+  /* 撤销 busy 态的复位：清本地意图 + 摘 .is-canceling + 按钮退回默认（**不 arm**）。
+   * ⚠️ 三条落点（T12/T13/T14/T15/T16）都必须过这里，否则 .sc-cancel 会一直顶着
+   *    「正在撤销…」的 spinner 到下一次打开弹窗。 */
+  function clearCancelBusy() {
+    S.canceling = false;
+    disarmCancel();
+    var m = scModal();
+    if (m) m.classList.remove('is-canceling');
+    syncButtons();
+  }
+
+  /* 撤销按钮的两段式（click-to-arm）：6 字等宽 ⇒ arm 时不回流。
+   * 不做二次确认弹窗 —— 遮罩叠加 + Esc 双义 + 焦点陷阱（visual-spec §1.3）。 */
+  function armCancel() {
+    var b = $('#scCancel');
+    if (!b || b.disabled) return;
+    b.classList.add('is-arm');
+    b.textContent = '再点一次撤销';
+    if (armTimer) clearTimeout(armTimer);
+    armTimer = setTimeout(disarmCancel, 3500);
+  }
+  function disarmCancel() {
+    var b = $('#scCancel');
+    if (armTimer) { clearTimeout(armTimer); armTimer = null; }
+    if (!b || S.canceling) return;
+    b.classList.remove('is-arm', 'is-busy');
+    b.textContent = '取消本次评分';
+  }
+  function busyCancel() {
+    var b = $('#scCancel');
+    if (armTimer) { clearTimeout(armTimer); armTimer = null; }
+    if (!b) return;
+    b.classList.remove('is-arm');
+    b.classList.add('is-busy');
+    b.textContent = '正在撤销…';
+    /* ⚠️ 下一步 cancelBoard() 会把 #scCancel 置 disabled，而它此刻**持有焦点**
+     * ⇒ disabled 会让焦点掉回 body，键盘用户在这一轮里就再也没有落点了。
+     * 先把焦点收进弹窗容器（.sc-modal 有 tabindex="-1"），撤销结束后再决定去哪。 */
+    var m = scModal();
+    if (m) { try { m.focus(); } catch (e) {} }
   }
 
   var pollTimer = null;
@@ -299,26 +639,169 @@
      * 否则每 1.3s 清一次，六摞会反复归零。
      * （同一批沸点重新算时 pinId 是重复的，不清就会被去重吃掉。） */
     if (!isPoll) scReset();
-    setStatus('building', { progress: S.progress, err: null });
-    fetchBoard(fresh).then(function (j) {
+    /* ⭐ v1.3.1 周榜**绝不自动评**：非用户主动（fresh）的周榜请求一律 hold
+     *   只读现状 —— 没算过就拿到 status='none'，亮「开始评分」按钮；
+     *   日榜保持「进门自动评」。轮询也走 hold：就算 dev server 重启丢了任务，
+     *   也只会回落到「开始评分」屏，而不是偷偷替用户开一轮 45 页扫描。 */
+    var hold = !fresh && S.range === 'week';
+    /* ⚠️ 只有「首拉探测」（还不知道是 building 还是 none）才用 loading 过渡态；
+     *    轮询必须保持 building —— paintSys 是按状态切视图的，
+     *    loading↔building 每 1.3s 切一次 = 发牌视图整屏一闪一闪（实测反馈）。
+     *
+     * ◆v1.4 把判据从 `(hold && !isPoll)` 收紧成 `!isPoll`：
+     *    日榜首拉（hold=false）原来直接进 building ⇒ paintSys 会**先把发牌弹窗打开**，
+     *    缓存命中时那一拍就拿到 ready ⇒ 弹窗闪一下、并且 **finishReady 判定
+     *    「弹窗本来开着」⇒ 每次打开页面都弹一张结果卡**（T4 明确要求首拉 ready 不出卡）。
+     *    改成先 loading（弹窗不打开）⇒ 缓存命中 = 静默拿到榜单；真要重建 =
+     *    回包是 building，弹窗这时才开，用户感知完全一致。 */
+    setStatus(isPoll ? 'building' : 'loading', { progress: S.progress, err: null });
+    req(fresh, hold).then(function (r) {
+      var j = r.j;
+      /* 竞态闸门（B3）：有更新的请求发出去了（切榜期 / 撤销 / 提前结束 / 新一轮）
+       * ⇒ 这条回包作废。漏了它，撤销成功后一条在飞的轮询会把状态改回 building。
+       * ⚠️ 轮询自己也算在内：cancelBoard / stopBoard 会 bumpSeq 主动作废在飞的轮询。 */
+      if (r.seq !== S.reqSeq) return;
+      /* 撤销进行中 ⇒ 这一拍归撤销路由管（落点判定看 j.cancelled，不看 status）。
+       * 走普通分支会把「有旧榜的撤销回包」误判成"跑完了"而弹出结果卡。 */
+      if (S.canceling) { routeCancel(j); return; }
+      if (j && j.status === 'none') {
+        /* 周榜还没评过：不烧 token，把决定权交给按钮 */
+        setStatus('none');
+        return;
+      }
       if (j && j.status === 'building') {
         S.data = j.boards && j.boards.length ? j : S.data;
+        detectRestart(j.progress);
         setStatus('building', { progress: j.progress });
         /* 「评分中」要能看见进度，所以轮询 —— 一次全量抓取 + 打分要一两分钟，
          * 界面必须让人知道它在动，而不是死了。 */
         pollTimer = setTimeout(function () { load(false, true); }, 1300);
         return;
       }
-      if (j && j.status === 'failed' && !(j.boards && j.boards.length)) {
+      if (j && j.status === 'failed') {
+        /* ⚠️ 既有缺陷（B13 / ux-spec §7-4，本次一并修）：旧判据带
+         *    `&& !(j.boards && j.boards.length)` ⇒ 「重算失败但旧榜还在」会被
+         *    **静默吞掉**，界面假装成功（旧榜 + 正常规模行），用户不知道刚那轮挂了。
+         *    改：有旧榜时仍然 setStatus('failed')，但**保留 S.data**
+         *    （j 里带的正是旧 payload），再给一条 toast 说清。 */
+        var hasOld = !!(j.boards && j.boards.length);
+        if (hasOld) S.data = j;
         setStatus('failed', { err: j.error || '生成失败' });
+        if (hasOld) toast('这轮没算出来 · 下面还是上次的结果');
         return;
       }
-      S.data = j;
-      setStatus(j && j.stale ? 'ready' : 'ready', { progress: null, err: null });
-      paint();
+      if (j && j.status === 'ready') { finishReady(j); return; }
+      /* 未知形状：当失败处理。**绝不**假装成功 —— 用户会盯着一份其实是旧的数据，
+       * 以为刚刚那两分钟算出了结果。 */
+      setStatus('failed', { err: (j && j.error) || '接口返回异常' });
     }).catch(function (e) {
+      /* 撤销轮询掉线 ⇒ 按 T16 处理（不能让弹窗冻死在「正在撤销…」） */
+      if (S.canceling) {
+        clearCancelBusy();
+        paintScoring();
+        paintRangeCard();
+        toast('撤销没成功 · 这一轮还在跑');
+        load(false, true);
+        return;
+      }
+      /* 轮询掉线不该整页变失败 —— 下一拍可能就好了（dev server 重启那几秒尤其常见）。
+       * ⚠️ 但要**有界**：连续 3 拍都失败才落 failed，否则一次网络抖动就会
+       * 把跑到一半的发牌弹窗整个换成失败卡（那才是真的谎）。 */
+      if (isPoll) {
+        S.pollErr++;
+        if (S.pollErr <= 3) {
+          pollTimer = setTimeout(function () { load(false, true); }, 1300);
+          return;
+        }
+      }
       setStatus('failed', { err: String((e && e.message) || e) });
     });
+  }
+
+  /* ◆B1 进程重启探测：dev server 重启 / 扩展 SW 被回收 ⇒ 任务丢了，
+   * 日榜 ensure() 会起一个全新任务（从头再扫一遍）。
+   *   · 根治（引擎加 runId，§7-1）：比对 progress.runId，变了就是新的一轮；
+   *   · 兜底（runId 还没落地）：本帧 scanned < 上帧 × 0.5 且 pages 变小。
+   * ⚠️ 周榜静默不 toast —— 周榜 hold 本来就可能 none，不是异常。
+   * ⚠️ 一条轮次只报一次（S.restartNotified）。 */
+  function detectRestart(p) {
+    /* 撤销期间一律不探测：撤销落定前 progress 可能是 null（引擎缺 idle 分支那一帧），
+     * 走启发式会被误判成「进程重启」而弹一条假 toast。 */
+    if (S.range !== 'day' || S.canceling) return;
+    p = p || {};
+    var restarted = false;
+    if (p.runId && S.lastRunId && p.runId !== S.lastRunId) restarted = true;
+    else if (!p.runId && S.lastScanned > 0 &&
+             (p.scanned || 0) < S.lastScanned * 0.5 && (p.pages || 0) < S.lastPages) {
+      restarted = true;
+    }
+    if (restarted && !S.restartNotified) {
+      S.restartNotified = true;
+      toast('评分进程重启了，这一轮从头开始');
+    }
+    S.lastRunId = p.runId || null;
+    S.lastScanned = p.scanned || 0;
+    S.lastPages = p.pages || 0;
+  }
+
+  /* 落定（building → ready）。◆v1.4：结果卡在这一步切，三件事的顺序是硬约束：
+   *   ① 先快照 S.progSnap = S.progress —— setStatus('ready') 会把它清成 null，
+   *      而结果卡的百分比条要的就是「最后一帧」；
+   *   ② 再量 modal.offsetHeight 写进 style.height —— paintSys 一跑到 ready 就会
+   *      showScoring(false)（hidden 元素量出来是 0），必须抢在它之前；
+   *   ③ 只有「弹窗本来开着」（用户真的看着这一轮跑完）才出结果卡 ——
+   *      缓存命中的首拉（loading → ready 一拍到位）没有可汇报的东西。 */
+  function finishReady(j) {
+    var modal = scModal();
+    var v = $('#viewScoring');
+    var wasScoring = !!(v && !v.hidden);
+    /* ⚠️ 用 getComputedStyle().height，不用 offsetHeight：
+     *    offsetHeight 是**取整**的（实测 574.6 → 575），把它写回 style.height
+     *    会让弹窗比原来高 0.4px ⇒ 切换瞬间纵向抖 1px，「外框一像素不动」当场不成立。
+     *    computed 的 height 是带小数的**使用值**，原样写回就是零漂移。 */
+    var h = 0;
+    if (wasScoring && modal) h = parseFloat(getComputedStyle(modal).height) || 0;
+    S.data = (j && j.boards && j.boards.length) ? j : (S.data || j);
+    S.progSnap = S.progress || null;
+    if (wasScoring) {
+      S.resultPhase = resultPhaseOf();
+      if (h) modal.style.height = h + 'px';   // 冻结：结果态 hug 更矮，不冻就往上跳 90~185px
+    }
+    setStatus('ready', { progress: null, err: null });
+    paint();
+    if (S.resultPhase) showResult();
+  }
+
+  /* ◆「缺口」判定（ux-spec §2.5.1，照抄）—— 回答的是「这份榜**缺在哪**」。
+   *
+   * ⚠️ 结果态**不能只看 `S.data.stopped`**：stopped 只是引擎的一个布尔标记
+   *    （board-core 在抓取之后就固定了），它不告诉界面产物缺在哪。
+   *    只用它会撞出两格自相矛盾：
+   *      ① stopped=true 但 done >= candidates（stopReq 在最后一手之后才置起）
+   *         ⇒ 产物一点没少，却渲染成「榜不完整 + 进度条 100%」；
+   *      ② 刷新过 / 轮询错过最后一帧 ⇒ 没有 progSnap，却硬说「后面还有沸点没读到」。
+   * 判据用 `done >= candidates` 而不是 `done > 0`：后者在 done===0 时走 'score' 分支，
+   * 而 score 阶段的 progSnap 没有 pages ⇒ 「扫描在第 N 页中断」会渲染成 undefined。 */
+  function gapOf() {
+    if (!S.data || !S.data.stopped) return 'none';   // 没停过 = 完成
+    var p = S.progSnap;
+    if (!p) return 'unknown';                        // 没有最后一帧进度
+    if (p.phase === 'score' && p.candidates > 0) {
+      return (p.done >= p.candidates) ? 'none' : 'score';
+    }
+    if (p.phase === 'scan') return 'scan';
+    return 'unknown';                                // score 阶段但 candidates === 0，判不出来
+  }
+
+  /* 结果卡子态（team-lead v2 拍板，三态）：
+   *   'done'    有牌        → 绿勾 + 评分完成 + 3.2s 自动关
+   *   'empty'   0 张        → 绿勾 + 评分完成 + **常驻手动关**（不用琥珀：空榜是
+   *                          「完整但 0 张」，不是「不完整」；只有提前结束才用琥珀）
+   *   'stopped' 提前结束    → 琥珀 + 提前结束 · 榜不完整 + 常驻手动关
+   * ◆gap === 'none'（stopped 但产物完整）⇒ 归完成态，不许说「不完整」。 */
+  function resultPhaseOf() {
+    if (S.data && S.data.stopped && gapOf() !== 'none') return 'stopped';
+    return totalCards() === 0 ? 'empty' : 'done';
   }
 
   /* ---------------- 渲染：评分中发牌（v0.8.0） ----------------
@@ -339,9 +822,12 @@
   var SC_FAN_MAX = 6;
 
   /* 新一轮打分 = 推倒重来。⚠️ 只在「不是轮询续期」时调（见 load）：
-   * 同一批沸点重算时 pinId 会重复，去重表不清就会把新发的牌全吃掉。 */
+   * 同一批沸点重算时 pinId 会重复，去重表不清就会把新发的牌全吃掉。
+   * ◆v1.4：顺带清掉 B1 的进程重启探测基线 —— 「新一轮」就是新的基线。 */
   function scReset() {
     scSeen = {};
+    S.lastRunId = null; S.lastScanned = 0; S.lastPages = 0; S.restartNotified = false;
+    S.pollErr = 0;
   }
 
   /* 赛道色的 8% 淡底 —— 给「顶牌」和计数徽标用。
@@ -358,16 +844,38 @@
 
   function paintScoring() {
     var p = S.progress || {};
+    /* ⚠️◆撤销段必须是**第一句**，且是「先写三行文案再 return」，不能裸 return ——
+     * 这三行正是本函数自己写的，裸 return 会把撤销文案一起吞掉，弹窗只剩上一帧的
+     * 「正在落位 → xx 榜」（visual-spec v4 写错过，v5 已更正）。
+     * ★ 这样写还顺带免疫「引擎缺 idle 分支」那个 P0 的视觉副作用：撤销落定后回包是
+     *   `{status:'building', progress:null}`，照常重绘会渲染出「六摞计数全 0 +
+     *   正在读取沸点流…第 1 页」。提前 return ⇒ 这一帧根本不画。
+     * 六摞 / 牌堆 / 阶段条 / #scHallS 一律不碰 —— 数据还在，只是不再落盘。
+     *
+     * 判据 = `S.canceling ‖ p.cancelling`（v4 三层论的第①层与第②层）：
+     *   S.canceling 在**点击那一帧**就位，p.cancelling 是服务端已受理的确认
+     *   （刷新页面后只有后者还在）。 */
+    if (S.canceling || p.cancelling) {
+      var t0 = $('#scTitle'), h0 = $('#scHallT'), n0 = $('#scHallNow');
+      if (t0) t0.textContent = '正在撤销本次评分';   // 标题：第一语义锚点
+      if (h0) h0.textContent = '旧榜不会被改动';     // 副题：说**结果**
+      if (n0) { n0.textContent = '正在撤销 · 本轮作废'; n0.style.color = ''; }
+      var mm = scModal();
+      if (mm) mm.classList.add('is-canceling');     // 点击当帧即进 busy（不等轮询）
+      return;
+    }
     var dealt = p.dealt || [];
     var b = scBuckets();
     var lost = 0, n = 0;
     /* 最后一张落进哪一摞（给发牌台的「正在落位」提示用） */
     var lastTop = null;
+    /* ⚠️ 六摞必须按**全量 dealt 历史**重建（progress.dealt 引擎侧已累积）。
+     *   曾经在这里按 scSeen 跳过旧牌 —— 结果每次轮询重绘时摞里只剩
+     *   「最新一手」，之前发出去的牌凭空消失，发牌动画完全看不出累积。
+     *   scSeen 现在只干一件事：标记「这张牌是不是这屏第一次出现」，
+     *   首次出现的挂 .is-new（入场动画只播给它），重绘的旧牌静态落位。 */
     for (var i = 0; i < dealt.length; i++) {
       var d = dealt[i];
-      /* 去重：轮询会重复推同一批 dealt（累积后的完整历史） */
-      if (scSeen[d.pinId]) { n++; continue; }
-      scSeen[d.pinId] = 1;
       n++;
       if (d.ranked && d.trackId && b[d.trackId]) b[d.trackId].push(d);
       else if (!d.ranked) lost++;
@@ -431,7 +939,10 @@
       for (var m = 0; m < list.length; m++) {
         var x = list[m];
         var last = (m === list.length - 1);
-        h += '<div class="sc-card' + (last ? ' is-top' : '') + '"' +
+        /* is-new = 这屏第一次出现的牌（入场动画只挂它，见 CSS）；
+         * 轮询重绘的旧牌不带 → 静态落位，不再整摞重播动画。 */
+        var fresh0 = !scSeen[x.pinId];
+        h += '<div class="sc-card' + (last ? ' is-top' : '') + (fresh0 ? ' is-new' : '') + '"' +
           ' style="--i:' + Math.min(m, SC_FAN_MAX) + '" title="' + esc(x.title || '') + '">' +
           '<div class="sc-top">' +
             '<b class="sc-rank">' + pad2(m + 1) + '</b>' +
@@ -446,70 +957,496 @@
       /* 记下「最后落到哪一摞的」——发牌台上那行提示要用。 */
       if (m) lastTop = { t: t, n: list.length };
     }
+    /* 全量重绘完再把这批牌记入 scSeen —— 下一次轮询它们就不带 .is-new 了 */
+    for (var si = 0; si < dealt.length; si++) scSeen[dealt[si].pinId] = 1;
 
-    /* 发牌台：待发 = 候选总数 − 已打分；手牌 = 还剩几张没发（上限一手 8 张） */
+    /* ⭐ v1.3.3 飞行向量：新牌的入场动画起点 = 左侧牌堆中心 → 这张牌的落位。
+     *   按实测矩形算（弹窗刚打开时元素还没尺寸，rect 为 0 就跳过这次向量，
+     *   下一轮轮询补上）。is-new 一批可能有多张，全都从堆顶飞向各自堆位。 */
+    var deckEl = $('#scHand');
+    var news = $('#scDeck').querySelectorAll('.sc-card.is-new');
+    if (deckEl && news.length && news.length <= 8) {
+      var dr = deckEl.getBoundingClientRect();
+      if (dr.width) {
+        var dcx = dr.left + dr.width / 2, dcy = dr.top + dr.height / 2;
+        for (var fj = 0; fj < news.length; fj++) {
+          var fr = news[fj].getBoundingClientRect();
+          if (!fr.width) continue;
+          news[fj].style.setProperty('--flydx', Math.round(dcx - (fr.left + fr.width / 2)) + 'px');
+          news[fj].style.setProperty('--flydy', Math.round(dcy - (fr.top + fr.height / 2)) + 'px');
+        }
+      }
+    }
+
+    /* 弹窗头 + 左侧牌堆：待发 = 候选总数 − 已打分；扫描期 = 已读页数 */
     var total = p.candidates || 0, scored = p.done || 0;
     var left = Math.max(0, total - scored);
     var hallT = $('#scHallT'), hallS = $('#scHallS'), hallNow = $('#scHallNow'), hand = $('#scHand');
-    /* ⭐ 「正在落位」必须**带赛道名 + 赛道色**：这一屏的全部意义就是
-     *    「什么类型进了哪个堆」。只报数字的话，用户还是不知道这一手发去了哪。 */
+    var scTitle = $('#scTitle');
+    if (scTitle) {
+      scTitle.textContent = p.stopping ? '正在收尾' : (scoring ? 'AI 正在分赛道' : '正在读取数据');
+    }
+    /* ⭐ v1.3.1 进度三问全在这两行：「读了多少」= hallS 的已扫 N 条；
+     *    「正在分析什么」= p.now（引擎在每一手**开打之前**报上来的标题清单）；
+     *    「处理了多少」= scDone 的 done/total。 */
     if (hallNow) {
-      if (lastTop) {
+      if (p.stopping) {
+        hallNow.textContent = '已请求结束 —— 正在用已读数据收尾…';
+        hallNow.style.color = '';
+      } else if (p.now && p.now.length && scoring) {
+        hallNow.textContent = '正在分析：「' + p.now[0] + '」等 ' + p.now.length + ' 条';
+        hallNow.style.color = '';
+      } else if (lastTop) {
         hallNow.textContent = '正在落位 → ' + lastTop.t.name + ' 第 ' + lastTop.n + ' 张（' + lastTop.t.def + '）';
         hallNow.style.color = lastTop.t.color;
       } else if (scoring) {
         hallNow.textContent = 'AI 正在给这一手分赛道…';
         hallNow.style.color = '';
       } else {
-        hallNow.textContent = '等 AI 发第一手';
+        hallNow.textContent = '正在读取沸点流…';
         hallNow.style.color = '';
       }
     }
     if (hallT) {
-      hallT.textContent = scoring
-        ? (left > 0 ? ('第 ' + (scored + 1) + ' 条待发') : '这一手发完了')
-        : ('正在翻沸点流…第 ' + (p.pages || 1) + ' 页');
+      hallT.textContent = p.stopping
+        ? '正在收尾（不再抓新数据）'
+        : scoring
+          ? (left > 0 ? ('第 ' + (scored + 1) + ' 条待发') : '这一手发完了')
+          : ('正在翻沸点流…第 ' + (p.pages || 1) + ' 页');
     }
     if (hallS) {
       hallS.textContent = scoring
         ? ('已有 ' + (n - lost) + ' 条归榜 · ' + lost + ' 条不够 6 分不上榜')
         : ('已扫 ' + (p.scanned || 0) + ' 条 · 抓完才开始打分');
     }
+    /* 左堆厚度：分析期 = 待发的牌（每发一手薄一层，发完空堆）；
+     * 扫描期 = 已读的页数（越扫越厚）。堆顶那张亮蓝边 = 下一手从这里飞出去。 */
     if (hand) {
-      /* 手牌 = 还没发出来的那些，尾批会少于 8 张（4/4 那手），
-       * 全发完就是 0 张 —— 和「发牌台清空」视觉一致。 */
-      var show = scoring ? Math.min(8, left) : 0;
+      var thick = scoring ? Math.ceil(left / 5) : (p.pages || 0);
+      var show = Math.min(6, thick);
       var hh = '';
-      for (var q = 0; q < show; q++) {
-        hh += '<i class="' + (q === 0 ? 'is-going' : '') + '" style="--i:' + q + '"></i>';
+      for (var q = show - 1; q >= 0; q--) {
+        hh += '<i class="' + (scoring && q === 0 ? 'is-going' : '') + '" style="--i:' + q + '"></i>';
       }
       hand.innerHTML = hh;
+      var fmCount = $('#fmCount');
+      if (fmCount) fmCount.textContent = scoring ? ('待发 ' + left) : ('已读 ' + (p.scanned || 0) + ' 条');
     }
   }
 
-  /* 切到发牌视图 / 切回。⚠️ 与 viewDeal / viewDetail 是三选一，
-   * 所以每次进「评分中」都要把另两个藏起来 —— 否则三层会叠在一起。 */
+  /* 切到发牌弹窗 / 收起。⚠️ v1.3.3 起是**弹窗**（遮罩自己压暗页面）：
+   * 后面的 viewDeal / viewDetail 不用藏 —— 有旧榜时它们留在遮罩下当背景，
+   * 首评时后面是空壳也无妨。
+   *
+   * ◆v1.4 补两件既有缺陷：
+   *   ① **焦点**：原来 showScoring() 完全不做焦点管理，弹窗开了焦点还在
+   *      #btnFresh 上（而且在弹窗**外面**）⇒ 键盘用户 Tab 会跑出弹窗。
+   *      现在：开 = 焦点进 .sc-modal（tabindex="-1"）；关 = 回 #btnFresh。
+   *      ⚠️ 只在「从隐藏变可见」时抢焦点 —— 轮询每 1.3s 都会调一次 showScoring(true)，
+   *      每次都 focus 会把用户正在操作的元素抢走。
+   *   ② **焦点陷阱**：弹窗外的内容加 inert（.bd-hd / #viewDeal / #viewDetail /
+   *      #sys / .bd-ft）。本轮 0 张时 .sys 空榜卡与结果卡同时存在，
+   *      不 inert 的话读屏会在结果卡之外再读一张「暂无上榜」。 */
   function showScoring(on) {
+    var v = $('#viewScoring');
+    if (!v) return;
     if (on) {
-      viewDeal.hidden = true;
-      if (viewDetail) viewDetail.hidden = true;
-      $('#viewScoring').hidden = false;
+      var wasHidden = v.hidden;
+      v.hidden = false;
       paintScoring();
+      if (wasHidden) {
+        setInert(true);
+        var m = scModal();
+        if (m) m.focus();
+      }
     } else {
-      $('#viewScoring').hidden = true;
+      v.hidden = true;
+      setInert(false);
+      var m2 = scModal();
+      if (m2) m2.style.height = '';      // 冻结高度的兜底清理
     }
+  }
+
+  /* 带收起动画地关掉弹窗（撤销成功 / 结果卡关闭都走这里）。
+   * 减动效档直接 hidden —— **时长不变**（减动效只减动效，不改信息停留时间）。 */
+  function dismissScoring(after) {
+    var v = $('#viewScoring'), modal = scModal();
+    if (!v || v.hidden) { if (after) after(); return; }
+    if (!modal || !motion()) { showScoring(false); if (after) after(); return; }
+    modal.classList.add('is-out');
+    var done = false;
+    var fin = function () {
+      if (done) return;
+      done = true;
+      modal.classList.remove('is-out');
+      showScoring(false);
+      if (after) after();
+    };
+    /* ⚠️ animationend 会**冒泡**：六摞牌的 scDeal / spinner 的 cfSpin 结束也会触发它。
+     * 只认来自 modal 自己那一帧动画的。 */
+    var onEnd = function (e) { if (e.target === modal) fin(); };
+    modal.addEventListener('animationend', onEnd, { once: true });
+    /* 兜底：animationend 不触发（元素被提前隐藏 / 动画被打断）时也要收干净 */
+    setTimeout(fin, 420);
+  }
+
+  /* ================= ③ 结果卡 =================
+   * 同一个 .sc-modal 里的内容切换（不另开一张卡 —— 又一次弹出动画 + 新遮罩层级，
+   * 用户会读成「又来一个弹窗」）。高度已由 finishReady() 冻结，这里只填内容。 */
+  var RS_ICO_OK = '<svg width="18" height="18" viewBox="0 0 18 18" fill="none">' +
+    '<path d="M3.6 9.4l3.4 3.4L14.4 5" stroke="currentColor" stroke-width="2.2" ' +
+    'stroke-linecap="round" stroke-linejoin="round"/></svg>';
+  var RS_ICO_WARN = '<svg width="18" height="18" viewBox="0 0 18 18" fill="none">' +
+    '<path d="M9 3.4v7.4" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>' +
+    '<circle cx="9" cy="14.1" r="1.2" fill="currentColor"/></svg>';
+
+  function showResult() {
+    var modal = scModal(), res = $('#scResult');
+    if (!modal || !res) return;
+    modal.classList.add('is-result');
+    res.hidden = false;
+    /* 出现 400ms 内按钮不可点：用户刚点过「提前结束」，手指还在那个位置 ——
+     * 按钮落在原位会被连点穿透，直接把结果卡关掉。 */
+    res.classList.add('is-fresh');
+    setTimeout(function () { res.classList.remove('is-fresh'); }, 400);
+    /* ⭐ live region 的可靠性依赖「区域先存在且可见 → 再注入内容」：
+     * 顺序反了读屏可能整块不播（ux-spec §3.3）。所以内容在**下一帧**写。
+     * ⚠️ rAF 在后台标签页不触发 ⇒ 兜一个 300ms 的 timeout，
+     *    否则切回标签页会看到一张空的结果卡（且永远不会自动关）。 */
+    rsFilled = false;
+    var fill = function () {
+      if (rsFilled) return;
+      rsFilled = true;
+      fillResult();
+      rsPaused = false;
+      armAutoClose();
+    };
+    requestAnimationFrame(fill);
+    setTimeout(fill, 300);
+  }
+
+  function fillResult() {
+    var res = $('#scResult');
+    if (!res || !S.data) return;
+    var phase = S.resultPhase || 'done';
+    var stopped = phase === 'stopped';
+    var snap = S.progSnap;
+
+    var ico = $('#rsIco');
+    if (ico) {
+      ico.innerHTML = stopped ? RS_ICO_WARN : RS_ICO_OK;
+      ico.classList.toggle('is-stopped', stopped);
+    }
+    /* 0 张**仍走完成态**（绿勾 + 「评分完成」）—— 「不够 6 分不上榜」是中性事实，
+     * 不是失败；用琥珀会把「数据事实」读成「异常」。
+     * 三格共用的一套 `.rs-ico`：只有 stopped 挂 `is-stopped`（琥珀），
+     * empty 与 done 都是绿勾。 */
+    var title = $('#rsTitle');
+    if (title) title.textContent = stopped ? '提前结束 · 榜不完整' : '评分完成';
+
+    /* 用时：ms 缺失 ⇒ 整块隐藏，不留空占位符（B16） */
+    var time = $('#rsTime');
+    if (time) {
+      var ms = S.data.ms;
+      if (typeof ms === 'number' && ms > 0) {
+        time.hidden = false;
+        time.textContent = '用时 ' + fmtDur(ms);
+        time.setAttribute('aria-label', '用时 ' + Math.floor(ms / 60000) + ' 分 ' +
+          Math.round((ms % 60000) / 1000) + ' 秒');
+      } else {
+        time.hidden = true;
+        time.textContent = '';
+        time.removeAttribute('aria-label');
+      }
+    }
+
+    /* 规模一行：扫描 → 候选 → 上榜。
+     * ⚠️ candidates === 0（还没筛）时**省掉「候选」** —— 写出来会读成
+     * 「没有候选」，而实际是「还没筛」。 */
+    var scanned = S.data.scanned || 0;
+    var cands = S.data.candidates;
+    var total = totalCards();
+    var scale = $('#rsScale');
+    if (scale) {
+      var txt = '扫描 <b class="num">' + scanned + '</b> 条';
+      if (cands) txt += ' → 候选 <b class="num">' + cands + '</b> 条';
+      txt += ' → 上榜 <b class="num">' + total + '</b> 张';
+      scale.innerHTML = txt;
+      scale.setAttribute('aria-label', '扫描 ' + scanned + ' 条，' +
+        (cands ? '筛出候选 ' + cands + ' 条，' : '') + '上榜 ' + total + ' 张');
+    }
+
+    /* 琥珀横幅：**只有提前结束**显示。三版分叉的是「**缺在哪**」，不是「断在哪」——
+     * 扫描截断与打分截断的**后果完全不同**（前者「后面还有内容没进来」、
+     * 后者「内容都在，只是有一部分没被打分」），「后面还有沸点没读到」放在
+     * score 那格是**假话**。
+     * ⚠️ 三版都 ≤24 字 ⇒ 单行不折行 ⇒ 三格卡片高度一致（视觉规范 §5.2 排版约束）。 */
+    var gap = gapOf();
+    var note = $('#rsNote');
+    if (note) {
+      note.hidden = !stopped;
+      note.textContent = !stopped ? ''
+        : gap === 'scan' ? '提前结束 —— 这份榜只覆盖前半程，后面还有沸点没读到'
+        : gap === 'score' ? '提前结束 —— 沸点都读完了，AI 只打分到一半就停了'
+        : '提前结束 —— 这份榜不完整，已读到的那部分才参与排名';
+    }
+
+    /* 中断进度：跟着 `gap` 走（B15），三种形态：
+     *   ① gap='score'（有分母）→ bar + txt；
+     *   ② gap='scan'（没分母）→ **`.is-txtonly` 只留 txt、不画条**（画了是假信息）；
+     *   ③ gap='unknown'（无 progSnap）→ **整块隐藏**，不显示 0%、不留占位符。 */
+    var pct = $('#rsPct'), pctTxt = $('#rsPctTxt'), pctIn = $('#rsPctIn');
+    if (pct && pctTxt && pctIn) {
+      if (gap === 'score' && snap) {
+        var done = snap.done || 0;
+        var per = Math.max(0, Math.min(100, Math.round(done / snap.candidates * 100)));
+        pct.hidden = false;
+        pct.classList.remove('is-txtonly');
+        pctIn.style.setProperty('--cf-pct', per + '%');
+        pctTxt.textContent = 'AI 只打完 ' + done + '/' + snap.candidates + ' 条 · ' + per + '%';
+        pctTxt.setAttribute('aria-label',
+          'AI 只打完 ' + snap.candidates + ' 条里的 ' + done + ' 条，完成 ' + per + '%');
+      } else if (gap === 'scan' && snap) {
+        pct.hidden = false;
+        pct.classList.add('is-txtonly');
+        pctTxt.textContent = '扫描在第 ' + (snap.pages || 1) + ' 页中断 · 已扫 ' +
+          (snap.scanned || 0) + ' 条';
+        pctTxt.setAttribute('aria-label',
+          '扫描在第 ' + (snap.pages || 1) + ' 页中断，已扫 ' + (snap.scanned || 0) + ' 条');
+      } else {
+        pct.hidden = true;
+        pct.classList.remove('is-txtonly');
+        pctTxt.textContent = '';
+        pctTxt.removeAttribute('aria-label');
+      }
+    }
+
+    /* 六赛道 chip：顺序**固定按 TRACKS**，不按张数排序 ——
+     * 排序会让 chip 位置在每次重评后跳动，用户找不到上次看过的那个。 */
+    var host = $('#rsTracks');
+    if (host) {
+      var prev = S.prevCounts;
+      var emptyAll = total === 0;
+      var h = '';
+      for (var i = 0; i < TRACKS.length; i++) {
+        var t = TRACKS[i];
+        var b = null, bs = (S.data && S.data.boards) || [];
+        for (var k = 0; k < bs.length; k++) if (bs[k].id === t.id) { b = bs[k]; break; }
+        var n = b ? (b.top || []).length : 0;
+        var d = '', aria = t.name + ' ' + n + ' 张';
+        if (prev && prev[t.id] !== undefined) {
+          var old = prev[t.id];
+          var diff = n - old;
+          /* ⚠️ 本轮 0 张 + 上次 > 0 ⇒ **不显示增减符号**：「−5」会被读成退步，
+           * 而实际上只是这一轮没人过线；「0 → 0」是持平，照常给 ±0。 */
+          if (!(emptyAll && diff < 0)) {
+            if (diff > 0) { d = '+' + diff; aria += '，比上次多 ' + diff + ' 张'; }
+            else if (diff < 0) { d = '−' + Math.abs(diff); aria += '，比上次少 ' + Math.abs(diff) + ' 张'; }
+            else if (old === 0 && n > 0) { d = '新'; aria += '，上次是空的'; }
+            else { d = '±0'; aria += '，与上次相同'; }
+          }
+        }
+        h += '<span class="rs-tr" style="--sc-color:' + t.color + ';--sc-tint:' + tintOf(t.color) +
+          '" aria-label="' + esc(aria) + '">' + esc(t.name) + ' <b class="num">' + n + '</b>' +
+          (d ? '<b class="rs-delta">' + d + '</b>' : '') + '</span>';
+      }
+      host.innerHTML = h;
+    }
+
+    /* 按钮：有牌 → 「查看榜单」（下面真有榜）；0 张 / 提前结束 → 「知道了」
+     * （下面没榜可看，「查看榜单」是句假话）。 */
+    var btn = $('#rsBtn');
+    if (btn) btn.textContent = phase === 'done' ? '查看榜单' : '知道了';
+
+    /* 焦点：完成 · 有牌 ⇒ **不主动 focus 到按钮**（focusin 会暂停自动关闭 ⇒
+     * 等于永不自动关）；另两个子态是常驻手动，按钮是唯一出口，键盘必须一键可达。 */
+    if (phase !== 'done' && btn) {
+      try { btn.focus(); } catch (e) { /* 弹窗刚出现时可能还不可聚焦 */ }
+    }
+  }
+
+  /* 自动关闭：**只有「完成 · 有牌」** 才设 3.2s。
+   * 「今天确实没东西上榜」与「这份榜不完整」都是需要确认的信息，
+   * 自动消失 = 把这件事隐瞒掉（ux-spec §1.6）。 */
+  function armAutoClose() {
+    clearAutoClose();
+    if (S.resultPhase !== 'done') return;
+    rsTimer = setTimeout(function () { closeResult(true); }, rsAutoMs());
+  }
+  function clearAutoClose() {
+    if (rsTimer) { clearTimeout(rsTimer); rsTimer = null; }
+  }
+  /* 暂停：mouseenter / focusin / 任意 keydown。
+   * mouseleave ⇒ **重新计满 3.2s**（不是续上剩余）；focusin 之后**不恢复**
+   * —— 键盘 / 读屏用户一旦开始交互，就交给他手动关。 */
+  function pauseAuto(permanent) {
+    clearAutoClose();
+    if (permanent) rsPaused = true;
+  }
+  function resumeAuto() {
+    if (S.resultPhase === 'done' && !rsPaused) armAutoClose();
+  }
+  /* 3.2s 单一来源：CSS 的 --rs-auto（visual-spec §5.4 要求别两处写） */
+  function rsAutoMs() {
+    var v = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--rs-auto'));
+    return v > 0 ? v : 3200;
+  }
+
+  /* 关闭结果卡（3.2s 到 / 点按钮 / Esc / 切榜期四条路径共用） */
+  function closeResult(fromUser) {
+    clearAutoClose();
+    var modal = scModal();
+    if (!modal) return;
+    if (!S.resultPhase) { finishCloseResult(fromUser); return; }
+    if (motion()) {
+      modal.classList.add('is-out');
+      var done = false;
+      var fin = function () {
+        if (done) return;
+        done = true;
+        modal.classList.remove('is-out');
+        finishCloseResult(fromUser);
+      };
+      /* ⚠️ animationend 会冒泡（六摞牌的 scDeal 就是）—— 只认 modal 自己那一帧 */
+      var onEnd = function (e) { if (e.target === modal) fin(); };
+      modal.addEventListener('animationend', onEnd, { once: true });
+      setTimeout(fin, 420);
+    } else {
+      finishCloseResult(fromUser);
+    }
+  }
+  /* ⚠️ 焦点必须在 resetResult() **之后**给 —— 那时候 showScoring(false) 已经把
+   *    .bd-hd 的 inert 摘掉了；提前 focus 会被 inert 静默吞掉（实测焦点掉到 body）。 */
+  function finishCloseResult(fromUser) {
+    resetResult();
+    if (fromUser) focusBtnFresh();
+  }
+
+  /* 结果卡的现场复位：清 .is-result、清冻结高度、清内容、关弹窗、解 inert。
+   * ⚠️ 不调 paint() —— finishReady() 里已经画过一次（在遮罩底下），
+   *    再画一遍会让扇形牌阵重播入场动画，而且 URL 带 ?track= 时会直接跳进详情。 */
+  function resetResult() {
+    var modal = scModal(), res = $('#scResult');
+    S.resultPhase = null;
+    S.progSnap = null;
+    if (res) {
+      res.hidden = true;
+      res.classList.remove('is-fresh');
+      var host = $('#rsTracks');
+      if (host) host.innerHTML = '';
+      var ico = $('#rsIco');
+      if (ico) { ico.innerHTML = ''; ico.classList.remove('is-stopped'); }
+      var pctIn = $('#rsPctIn');
+      if (pctIn) pctIn.style.removeProperty('--cf-pct');
+    }
+    if (modal) { modal.classList.remove('is-result'); modal.style.height = ''; }
+    showScoring(false);
+  }
+
+  function focusBtnFresh() {
+    var b = $('#btnFresh');
+    if (b && !b.disabled) { try { b.focus(); } catch (e) {} }
+  }
+
+  /* ================= ① Header 内联确认条（决策段） =================
+   *
+   * ⭐ 一句话记忆：**确认条 = 「用一个新结果覆盖一个已有结果」的确认。
+   *   没有旧结果就没有确认条。**（确认的对象是「旧结果」，不是「耗时」。）
+   *
+   * 四个入口只有 E1（Header「重新评分」）会拦，且只在 S.data !== null 时拦：
+   *   · ready 有牌 / ready 0 张（S.data 非 null）→ 拦；
+   *   · failed 且有旧榜 → 拦（.cf-meta 用 S.data.generatedAt = 上次成功那轮）；
+   *   · none / canceled / failed 无旧榜（S.data === null）→ **直通**（没有可覆盖的结果）；
+   *   · idle / loading / building → 不展开 + 按钮 disabled。
+   * E2（.sys 三张卡的按钮）**一律不拦** —— 那张卡本身就是完整的代价说明 + 明确动词，
+   * 再叠一次确认是重复征税。E3（切榜期）/ E4（boot）也不拦。 */
+  function cfEligible() {
+    return !!S.data && ['idle', 'loading', 'building'].indexOf(S.status) < 0 && !S.canceling;
+  }
+
+  /* .cf-meta = 「上次 MM-DD HH:mm · 用时 X′YY″」。
+   * 三级降级（B16）：payload 无 ms ⇒ 省略「用时」（不留空占位符）；
+   * S.data 无 generatedAt ⇒ 「上次结果还在下面」。 */
+  function cfMetaText() {
+    if (!S.data || !S.data.generatedAt) return '上次结果还在下面';
+    var s = '上次 ' + fmtMD(new Date(S.data.generatedAt));
+    if (typeof S.data.ms === 'number' && S.data.ms > 0) s += ' · 用时 ' + fmtDur(S.data.ms);
+    return s;
+  }
+
+  /* ⚠️ 量宽顺序是硬约束（B17）：**写文案 → 量 cfIn.offsetWidth → 最后 add('is-open')**。
+   * 反了会量到 --cf-w 上一版的值，动画从错误起点开始。
+   * （visibility:hidden 不移除布局，收起态照样量得到正确宽度。） */
+  function cfOpen() {
+    if (!cfEligible()) return false;
+    var slot = $('#cfSlot'), bar = $('#bdCf'), inn = $('#cfIn');
+    if (!slot || !bar || !inn) return false;
+    var txt = $('#cfTxt'), meta = $('#cfMeta');
+    if (txt) txt.textContent = '重新抓取并打分 · 约 1~2 分钟';
+    if (meta) meta.textContent = cfMetaText();
+    var w = inn.offsetWidth;
+    if (w) {
+      /* 左右内距两档不同（站点 22 / 浮层 18）—— 实测而不是写死 */
+      var cs = getComputedStyle(bar);
+      var pad = (parseFloat(cs.paddingLeft) || 0) + (parseFloat(cs.paddingRight) || 0);
+      bar.style.setProperty('--cf-w', Math.ceil(w + pad) + 'px');
+    }
+    slot.classList.add('is-open');
+    /* ◆焦点落在**容器本身**（tabindex="-1"），不直接 focus 主按钮：
+     * 这是「先读代价再决定」的控件 —— 焦点落在「开始重评」上会让顺手回车直接开跑，
+     * 正是加这条确认条要避免的事。（也顺手接住了 visibility:hidden 导致的失焦回落 body。）
+     * Tab 仍能走到 .cf-go / .cf-no。
+     *
+     * ⚠️ `preventScroll: true` 是实测补的（不是可选的洁癖）：
+     *   .board 的 min-content 宽是 1440 —— 窗口窄于它时整块横向溢出
+     *   （实测 1180 视口下 boardW 仍是 1440、横向可滚 260px）。
+     *   而 .bd-cf 是 `position:absolute; right:100%`，钉在右锚定的 .cf-slot 左缘 ——
+     *   也就是贴着溢出区的右端。裸 focus() 会触发浏览器的「滚进可视区」：
+     *   横向 scrollLeft 直接被顶到最大值 260 ⇒ 整块版面瞬间左移 260px，
+     *   .rng 从 x=1229 跳到 969，「零位移」当场作废。
+     *   确认条永远长在用户刚点过的那个按钮旁边（本来就在视野里），
+     *   这一次自动滚动**不可能带来任何可见性收益**，只可能带来跳动 ⇒ 关掉。 */
+    try { bar.focus({ preventScroll: true }); } catch (e) {}
+    return true;
+  }
+
+  /* 收起。⚠️ 只在「点取消」与「Esc」两条路径把焦点还给 #btnFresh ——
+   * 点外部收起**不抢焦点**（用户点哪，焦点就该在哪）。 */
+  function cfClose(returnFocus) {
+    var slot = $('#cfSlot');
+    if (!slot || !slot.classList.contains('is-open')) return;
+    slot.classList.remove('is-open');
+    if (returnFocus) focusBtnFresh();
+  }
+
+  /* 新一轮打分（确认条确认 / 直通两条路都走这里）：
+   * load(true) 之前快照旧榜张数（结果卡的 delta 要用）。
+   * ⚠️ S.prevCounts 只在「这一轮会覆盖一个已有结果」时才有值 ——
+   *    首评（S.data === null）时为 null，结果卡就**不显示任何 delta**。 */
+  function startFresh() {
+    if (S.pending || S.status === 'idle' || S.status === 'loading' ||
+        S.status === 'building' || S.canceling) return;
+    S.prevCounts = countsOf(S.data);
+    S.progSnap = null;
+    S.resultPhase = null;
+    load(true);
   }
 
   /* ---------------- 渲染：系统状态 ---------------- */
 
-  var RING = '<svg width="34" height="34" viewBox="0 0 34 34" aria-hidden="true">' +
-    '<circle cx="17" cy="17" r="14" fill="none" stroke="#EDEFF2" stroke-width="3"/>' +
-    '<circle cx="17" cy="17" r="14" fill="none" stroke="#1A1D21" stroke-width="3"' +
-    ' stroke-linecap="round" stroke-dasharray="88" stroke-dashoffset="30" transform="rotate(-90 17 17)">' +
-    '<animateTransform attributeName="transform" type="rotate" from="0 17 17" to="360 17 17"' +
-    ' dur="1s" repeatCount="indefinite"/></circle></svg>';
   var ICO_EMPTY = '<svg width="34" height="34" viewBox="0 0 34 34"><rect x="7" y="4" width="17" height="24" rx="3" fill="#fff" stroke="#D6DBE0" stroke-width="1.5" transform="rotate(-6 15.5 16)"/><rect x="11" y="6" width="17" height="24" rx="3" fill="#fff" stroke="#C9CDD4" stroke-width="1.5"/><path d="M16 15h7M16 19.5h4.5" stroke="#DFE3E8" stroke-width="1.5" stroke-linecap="round"/></svg>';
   var ICO_FAIL = '<svg width="34" height="34" viewBox="0 0 34 34"><circle cx="17" cy="17" r="13" fill="none" stroke="#E8734A" stroke-width="1.8"/><path d="M17 10v8.5" stroke="#E8734A" stroke-width="1.8" stroke-linecap="round"/><circle cx="17" cy="23" r="1.2" fill="#E8734A"/></svg>';
+  /* ◆ICO_CANCEL（v4/v5 定稿，日榜首评被撤销的落点）：
+   *   牌 rect 17×24 rx=3 —— 与 ICO_EMPTY 前面那张**逐字段一致**（一眼同族），
+   *   靠**逆时针回退弧箭头**区分来路、靠**中性灰**区分性质。
+   * ⚠️ 三个"不许"：不是斜杠划掉（划掉 = 对对象的否定：作废/报废/删除，而这一格
+   *    被撤销的是「这一轮评分」，旧榜恰恰是唯一没被动过的东西）；不用 --fail 橙红
+   *    （撤销 ≠ 失败）；不用 --warn 琥珀（琥珀 = 产物不完整，撤销是完整回到起点）。 */
+  var ICO_CANCEL = '<svg width="34" height="34" viewBox="0 0 34 34">' +
+    '<rect x="11" y="6" width="17" height="24" rx="3" fill="#fff" stroke="#C9CDD4" stroke-width="1.5"/>' +
+    '<path d="M7.5 20.5a9.6 9.6 0 0 1 9.3-9.4" fill="none" stroke="#8A9099" stroke-width="1.8" stroke-linecap="round"/>' +
+    '<path d="M17.2 8.6l-.7 2.7-2.7-.6" fill="none" stroke="#8A9099" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>' +
+    '</svg>';
 
   function totalCards() {
     if (!S.data || !S.data.boards) return 0;
@@ -520,34 +1457,37 @@
     var st = S.status;
     var show = false, ico = '', title = '', sub = '', bar = false, btn = '';
 
-    /* ⭐ v0.8.0：「评分中」不再弹居中卡片，改成**整个发牌视图**
-     * （六摞随 AI 返回逐张长大）。所以这里：
-     *   - 无旧榜单 → showScoring(true)，.sys 整个不显示
-     *   - 有旧榜单（stale 重算）→ 旧六摞留在下面压暗，当背景参照
-     */
-    if (st === 'building' && !S.data) {
+    /* ⭐ v1.3.3：「评分中」一律走发牌**弹窗**（无论有没有旧榜）——
+     * 弹窗遮罩自己压暗页面，旧榜在遮罩下当背景。.sys 只管
+     * failed / none（周榜未评）/ 空榜 / ◆撤销 四种静止状态。
+     *
+     * ⚠️ v1.4：结果态（S.resultPhase 已置）**不要收弹窗** ——
+     * 切结果卡的第一步就是 setStatus('ready')，这里一收就把弹窗 hidden 了，
+     * 后面量不到 offsetHeight、结果卡也没地方挂。 */
+    if (st === 'building') {
       showScoring(true);
-    } else {
+    } else if (!S.resultPhase) {
       showScoring(false);
     }
 
-    if (st === 'building' && S.data) {
-      /* 有旧榜可看 → 仍用居中卡片压一层（旧榜在后面，不清空） */
-      show = true; ico = RING; title = '正在重新评分';
-      var pp = S.progress || {};
-      sub = pp.phase === 'score'
-        ? ('已扫 ' + (pp.scanned || 0) + ' 条 · 重新打分 ' + (pp.done || 0) + '/' + (pp.candidates || 0))
-        : ('正在翻沸点流…已扫描 ' + ((pp.scanned || 0)) + ' 条');
-      bar = true;
-      $('#sysBarIn') && ($('#sysBarIn').style.width =
-        pp.candidates ? Math.round((pp.done || 0) / pp.candidates * 100) + '%' : '4%');
-    } else if (st === 'building' && !S.data) {
-      /* 已交给发牌视图，这里只保留变量（保持分支可读，实际不显示） */
-      show = false;
+    if (st === 'none') {
+      /* v1.3.1 周榜没评过（hold 返回 none）：绝不自动开跑，
+       * 把「翻 45 页 / 一两分钟 / 烧 token」的决定权交给按钮。 */
+      show = true; ico = ICO_EMPTY; title = '周榜还没评过分';
+      sub = '第一次要翻约 45 页、一两分钟。你说了算 —— 点「开始评分」才开跑，中途可随时提前结束（以已读数据为准）。';
+      btn = '开始评分';
     } else if (st === 'failed') {
       show = true; ico = ICO_FAIL; title = '这次没算出来';
-      sub = (S.err || '接口异常') + '。已经算好的榜单不会丢，可以稍后在下方重新评分。';
+      /* ◆「在下方」是 v0.7 时代 footer 上那个重新评分按钮的残留，
+       *   那个按钮已经不在了 ⇒ 改为「还在页面上」。 */
+      sub = (S.err || '接口异常') + '。已经算好的榜单没丢，还在页面上 —— 可以稍后重新评分。';
       btn = '重试';
+    } else if (st === 'canceled') {
+      /* ◆撤销后的「没评过」。与 none 的区别必须说清：这是你撤掉的，不是坏了，
+       * 也不是「评了 0 张」。零语义色：图标中性灰、文字 --ink3、不加任何类。 */
+      show = true; ico = ICO_CANCEL; title = '已撤销 · 这次没出榜';
+      sub = '刚那轮评分已经撤掉，什么都没落盘。这是「还没评过」，不是「评了 0 张」—— 想好了随时再来。';
+      btn = '重新评分';
     } else if (st === 'ready' && totalCards() === 0) {
       show = true; ico = ICO_EMPTY; title = (S.range === 'week' ? '本周' : '今日') + '暂无上榜';
       sub = '候选不够，或内容都不达标 —— 榜单宁可空着，也不硬凑第一名。换个范围试试。';
@@ -562,10 +1502,10 @@
     var b = $('#sysBtn');
     b.hidden = !btn;
     b.textContent = btn;
-    b.onclick = function () { load(true); };
-    /* 「评分中」时把两个视图压暗，让人聚焦在进度上；有旧榜单则留在后面 */
-    viewDeal.style.opacity = (st === 'building' && S.data) ? '.28' : '';
-    viewDetail.style.opacity = (st === 'building' && S.data) ? '.28' : '';
+    /* E2：.sys 三张卡（开始评分 / 重试 / 重新评分）**一律不叠确认条** ——
+     * 那张卡本身就是完整的代价说明 + 明确动词，再拦一次是重复征税。
+     * 但 delta 快照照做（failed 有旧榜时重试，结果卡要给得出增减）。 */
+    b.onclick = function () { startFresh(); };
   }
 
   /* ---------------- 渲染：六摞牌 ---------------- */
@@ -585,6 +1525,10 @@
    * 空榜（合法状态，spec 6.4）：名次显 0、分数显 —、入口显「暂无上榜」，
    * 不另做占位图，靠 .stack.empty 降不透明度提示。 */
   /* ⭐ v1.0 版式（按用户给的参考图重排）：顶「名次 + 分数」→ 中「角色」→ 下「赛道名 + 定义」→ 底「入口」。
+   *   v1.2（用户新参考图·圆蛋吉祥物版）只换质感不换栈序：角色 = 从新参考图里
+   *   抠出来的六只蛋（extract_egg_mascots.py，v0.6.0「版式归版式、素材归素材」仍成立）；
+   *   赛道名 = 马善政毛笔体逐字跳动（见下面 <i> 那行）、定义 = 龙藏手写 + 波浪线、
+   *   入口 = 浅灰胶囊（这三样都在 board.css，字体由 board.html 的 Google Fonts 引入）。
    *   与 v0.6.0 的差别只有两处，但都是参考图的重点：
    *     ① 赛道名从**角色上方**移到**角色下方**并放大（参考图里它是视觉重心，压在角色脚上）；
    *     ② 多一层背景碎片（decoSVG），角色不再是「白底上一个孤零零的形象」。
@@ -604,7 +1548,13 @@
           (empty ? '—' : best.score.toFixed(1)) + '</b>' +
       '</div>' +
       '<div class="cover-fig" style="background-image:url(cards/' + CARD_CHAR[b.id] + '.png)"></div>' +
-      '<div class="cover-name">' + esc(b.name) + '</div>' +
+      /* v1.2：赛道名逐字包 <i>（CSS 按 nth-child 给每字不同的微旋/错位）——
+       * 参考图的马克笔大字就是「每个字各有各的角度」。空格不包，保持词距。 */
+      '<div class="cover-name">' +
+        String(b.name).split('').map(function (ch) {
+          return ch === ' ' ? ' ' : '<i>' + esc(ch) + '</i>';
+        }).join('') +
+      '</div>' +
       /* ⚠️ 空榜时定义行与入口**不能都写「暂无上榜」** —— 两行同文案挨在一起，
        *    第一版出图后像渲染重复。定义行保留「暂无上榜」这个数据事实，
        *    入口退回「查看赛道 →」，与正常态的「点击进入 →」同构。 */
@@ -722,7 +1672,6 @@
         bigCardHTML(b, b.top[i]) + '</div>');
     });
     slotEl.innerHTML = parts.join('');
-    slotEl.classList.remove('peek');
   }
 
   function paintTrack() {
@@ -731,9 +1680,12 @@
     var n = b.top.length;
     var html = '';
     for (var i = 0; i < n; i++) {
+      /* 卡面上标名次序号（与大牌左上角的 rank 同源）—— 缩略卡本来就没信息量，
+       * 光看长短猜不出第几张；标上序号后小卡 = 「可点的大牌索引」。 */
       html += '<button class="thumb' + (i === S.idx ? ' on' : '') + '" data-i="' + i + '" ' +
         'style="' + (i === S.idx ? 'color:' + b.color : '') + '" ' +
-        'aria-label="第 ' + (i + 1) + ' 张"' + (i === S.idx ? ' aria-current="true"' : '') + '></button>';
+        'aria-label="第 ' + (i + 1) + ' 张"' + (i === S.idx ? ' aria-current="true"' : '') + '>' +
+        (b.top[i].rank || i + 1) + '</button>';
     }
     trackEl.innerHTML = html;
     /* 条数少时（轨道放得下）居中留白，不做拉伸填充 */
@@ -847,7 +1799,7 @@
     viewDetail.hidden = false;
     viewDetail.style.opacity = '0';
     paintDetail();
-    var big = slotEl.querySelector('.bigcard');
+    var big = slotEl.querySelector('.cx[data-pos="cur"] .bigcard');
     if (big) big.style.opacity = '0';
 
     var cover = fslotEl.querySelector('.fx[data-pos="cur"] .cover');
@@ -904,7 +1856,7 @@
     viewDeal.style.opacity = '0';
     var to = cover.getBoundingClientRect();
 
-    var big = slotEl.querySelector('.bigcard');
+    var big = slotEl.querySelector('.cx[data-pos="cur"] .bigcard');
     if (big) { big.style.transition = 'opacity 120ms linear'; big.style.opacity = '0'; }
 
     /* ⚠️ 与 openTrack 配对：飞**大牌的克隆**（v0.8.2 起不变）。
@@ -943,54 +1895,51 @@
 
   function cardRect() { return slotEl.getBoundingClientRect(); }
 
-  /* --dx 写在 .slot 上（无单位像素数），三张卡按它一起位移。
-   * snap=true 表示「瞬时归零」：先关掉过渡写一次值并强制 reflow，再放开过渡，
-   * 否则归零那一下会倒着播一遍动画。 */
-  function setDx(v, snap) {
-    if (snap) {
-      slotEl.classList.add('instant');
-      slotEl.style.setProperty('--dx', v);
-      void slotEl.offsetWidth;
-      slotEl.classList.remove('instant');
-      return;
-    }
-    slotEl.style.setProperty('--dx', v);
+  /* ---------------- 抽牌协议（v1.3，机制见 board.css .cx 那块） ----------------
+   * 顶牌跟手 = JS 逐帧写 --px/--pr/--under（挂在 .slot 上，.cx 继承）；
+   * 抽走 = 挂 .fly + data-dir（飞行终态写在 CSS 里，±56% 相对牌宽，
+   * 站点 396 / 浮层 300 自动适配，不再有 dist 换算）。
+   * 下面这几个清理函数是「拖拽中途」的现场复位：重建/直跳前不清干净，
+   * 新一手的牌会带着上一根手指的偏移起手。 */
+  function clearPull() {
+    slotEl.style.removeProperty('--px');
+    slotEl.style.removeProperty('--py');
+    slotEl.style.removeProperty('--pr');
+    slotEl.style.removeProperty('--ps');
+    slotEl.style.removeProperty('--under');
   }
 
-  /* 三种换法共用这一条：d=+1 下一张，d=-1 上一张。 */
+  function endPullState() {
+    slotEl.classList.remove('fly', 'dragging', 'snapping');
+    slotEl.removeAttribute('data-dir');
+    clearPull();
+  }
+
+  /* 抽走第 ni 张：顶牌飞出+淡出，方向底牌放大接位；dur 后落数据重建。
+   * 从静止（箭头/键盘）或手指当前位置（拖拽过阈值）起播都成立 ——
+   * 过渡终态写在 CSS 状态类上，起点就是当前 computed transform，
+   * transition 自动从当前位置接到终态，不需要也不应该重置 --px。 */
+  function flyTo(ni, d, dur) {
+    if (!motion()) { S.idx = ni; endPullState(); paintDetail(); return; }
+    S.busy = true;
+    slotEl.setAttribute('data-dir', d > 0 ? 'next' : 'prev');
+    slotEl.classList.add('fly');
+    setTimeout(function () {
+      S.idx = ni;
+      endPullState();
+      paintDetail();
+      S.busy = false;
+    }, dur);
+  }
+
+  /* 三种换法共用这一条：d=+1 下一张（牌往左抽），d=-1 上一张（往右抽）。 */
   function step(d) {
     var b = board();
     if (!b || S.busy) return;
     var n = b.top.length;
     var ni = S.idx + d;
     if (ni < 0 || ni >= n) return;
-    slideTo(ni, d, DUR);
-  }
-
-  /* 把牌台推到第 ni 张：目标方向的牌已经在槽里了，只要推 --dx 走完那段距离。
-   * 走到头再落数据（换 idx、重排三张卡），所以交接过程牌台一直是满的。
-   * ⚠️ 距离必须与 CSS 的 --slidegap 联动：切牌期间 --slidegap:0（两牌贴紧），
-   *    终点就是整整一张牌宽（396）；拖动那条路gap 还是 16，终点是 412。
-   *    写死 412 会在 .sliding 下冲过头16px —— 落位时牌「越过」中心再弹回来。*/
-  function slideTo(ni, d, dur) {
-    if (!motion()) { S.idx = ni; paintDetail(); return; }
-    S.busy = true;
-    slotEl.style.setProperty('--peek', '1');
-    /* ⚠️ 顺序：**先加 .sliding 再算 dist**。
-     * 写反的话 contains('sliding') 读到 false，dist 恒为 slotW+16，
-     * 而 CSS 的 --slidegap 已经是 0 → 终点少16px，牌在落位时「差一截」。 */
-    slotEl.classList.add('peek', 'sliding');
-    var dist = slotEl.offsetWidth;
-    setDx(0);
-    void slotEl.offsetWidth;
-    setDx(-d * dist);
-    setTimeout(function () {
-      S.idx = ni;
-      setDx(0, true);
-      slotEl.classList.remove('peek', 'sliding');
-      paintDetail();
-      S.busy = false;
-    }, dur);
+    flyTo(ni, d, DUR);
   }
 
   function bindArrows() {
@@ -1064,35 +2013,86 @@
       if (!(i >= 0) || i === S.idx) return;
       /* 点缩略卡是「跳过去」不是「翻过去」：直接落位，不播切牌动画 */
       S.idx = i;
-      setDx(0, true);
-      slotEl.classList.remove('peek');
+      endPullState();
       paintDetail();
     });
   }
 
   /* ---------------- 键盘 ← → / Esc ---------------- */
 
+  /* ⚠️ v1.4 重写成**六级优先级链**（ux-spec §3.1）：
+   *   1 规则弹窗（唯一真模态） > 2 结果卡（关闭） > 3 执行态（把出口递到手边）
+   *   > 4 确认条（收起） > 5 详情（关闭） > 6 首页（无 Esc 语义）
+   *
+   * ★ 顺带修两个既有 bug：
+   *   ① **弹窗开着时 ← / → 会穿透到首页分支执行 fstep()**（在遮罩底下静悄悄切了赛道）
+   *      —— 原来这里只判断 #ruleMask 与 viewDetail，根本没有 viewScoring 分支；
+   *   ② 弹窗开着时按 Esc 同样会落到首页分支（首页没有 Esc 语义，但 ← → 有）。
+   *
+   * 为什么执行态的 Esc **不做取消也不做关闭**：
+   *   · 取消是破坏性操作（撤销整轮、白等 1~2 分钟），Esc 是全键盘最容易误触的键；
+   *   · 这个弹窗没有「关闭」语义 —— 它是进度指示器，关掉它任务还在跑，
+   *     用户会以为撤销了；
+   *   所以 Esc 只**聚焦 .sc-cancel**（不 arm、不触发）：给出即时反馈（焦点环 +
+   *   读屏念出「取消本次评分 按钮」），同时不做任何破坏性的事。幂等：重复按无副作用。 */
   document.addEventListener('keydown', function (e) {
     var tag = (e.target && e.target.tagName || '').toUpperCase();
     if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || e.target.isContentEditable) return;
+
+    /* 1 · 规则弹窗（既有，优先级最高） */
     if (!$('#ruleMask').hidden) {
       if (e.key === 'Escape') closeRule();
       return;
     }
+
+    /* 2 / 3 · 评分弹窗开着：← → 一律吞掉，Esc 按子态分流 */
+    var scView = $('#viewScoring');
+    if (scView && !scView.hidden) {
+      if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') { e.preventDefault(); return; }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        if (S.resultPhase) { pauseAuto(true); closeResult(true); return; }
+        var c = $('#scCancel');
+        if (c && !c.disabled) { try { c.focus(); } catch (_) {} }
+        return;
+      }
+      /* 结果态：任意 keydown 都永久暂停自动关闭（读屏用户在读 ⇒ 别把它关了） */
+      if (S.resultPhase) pauseAuto(true);
+      return;
+    }
+
+    /* 4 · 确认条开着 ⇒ Esc 收起 + 焦点回按钮 */
+    var slot = $('#cfSlot');
+    if (slot && slot.classList.contains('is-open')) {
+      if (e.key === 'Escape') { e.preventDefault(); cfClose(true); }
+      return;
+    }
+
+    /* 5 · 详情 */
     if (!viewDetail.hidden) {
       if (e.key === 'ArrowLeft') { e.preventDefault(); step(-1); }
       else if (e.key === 'ArrowRight') { e.preventDefault(); step(1); }
       else if (e.key === 'Escape') { e.preventDefault(); closeDetail(); }
       return;
     }
-    /* 首页：← → 切赛道（与详情翻同一套键位直觉） */
+    /* 6 · 首页：← → 切赛道（与详情翻同一套键位直觉），无 Esc 语义 */
     if (viewDeal.hidden) return;
     if (e.key === 'ArrowLeft') { e.preventDefault(); fstep(-1); }
     else if (e.key === 'ArrowRight') { e.preventDefault(); fstep(1); }
   });
 
-  /* ---------------- 左右滑动（跟手） ---------------- */
+  /* ◆B18 扩展浮层的 iframe 被销毁时清轮询（防泄漏）。
+   * ⚠️ **不自动 cancel** —— 任务留在服务端跑完，下次进来接着看。
+   * 这是「撤销要显式」的反面，符合直觉。 */
+  window.addEventListener('beforeunload', function () {
+    if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
+    clearAutoClose();
+  });
 
+  /* ---------------- 左右滑动（跟手抽牌，v1.3） ----------------
+   * 拖拽中顶牌跟着手指走（--px 平移 + --pr 微旋，符号与飞行终态同号衔接），
+   * 底牌按进度 --under 长大；松手过阈值 = 从手指位置直接抽走（flyTo），
+   * 不过阈值 = 弹回摞上（160ms）。箭头在 .table.dragging 下淡出让位不变。 */
   function bindSwipe() {
     var down = null;
     var cardW = 0;
@@ -1103,20 +2103,25 @@
       down = { x: e.clientX, dx: 0 };
       cardW = slotEl.offsetWidth;
       tableEl.classList.add('dragging');   // 拖动时两个箭头淡出让位
-      slotEl.classList.add('peek');
+      slotEl.classList.add('dragging');    // 顶牌跟手：过渡全关（见 CSS）
       try { tableEl.setPointerCapture(e.pointerId); } catch (_) {}
     });
 
     tableEl.addEventListener('pointermove', function (e) {
       if (!down) return;
       var dx = e.clientX - down.x;
-      /* 已经在第一张还往右拖（或末张往左拖）→ 阻尼，给出「拖不动」的手感 */
+      /* 首张往右拖 / 末张往左拖 → 阻尼：那边没有牌可抽，「拖不动」的手感 */
       var b = board(), n = b ? b.top.length : 0;
       if ((S.idx === 0 && dx > 0) || (S.idx >= n - 1 && dx < 0)) dx *= 0.32;
       down.dx = dx;
-      setDx(dx);
-      /* 对侧牌边按位移比例淡入，不要一上来就整张露出来 */
-      slotEl.style.setProperty('--peek', Math.min(1, Math.abs(dx) / Math.max(1, cardW * 0.5)).toFixed(2));
+      /* 顶牌跟手：平移 + 微旋（≈0.045°/px，200px 处 ≈9°，与 .fly 终态 ±8° 同号） */
+      slotEl.style.setProperty('--px', dx.toFixed(1) + 'px');
+      slotEl.style.setProperty('--pr', (dx * 0.045).toFixed(2) + 'deg');
+      /* 底牌按拖动进度长上来：到吸附阈值（25% 牌宽）时正好长满接位 */
+      var prog = Math.min(1, Math.abs(dx) / Math.max(1, cardW * 0.25));
+      slotEl.style.setProperty('--under', (0.96 + 0.04 * prog).toFixed(3));
+      /* 方向底牌抬 z：往回抽时别让 next 压着 prev 露错脸（见 CSS data-dir 规则） */
+      slotEl.setAttribute('data-dir', dx < 0 ? 'next' : 'prev');
     });
 
     function end() {
@@ -1124,7 +2129,9 @@
       var dx = down.dx;
       down = null;
       tableEl.classList.remove('dragging');
-      slotEl.style.setProperty('--peek', '1');
+      /* 松手先放开过渡（.dragging 一摘 CSS 过渡生效），再定终态：
+       * 过阈值走 flyTo —— 顶牌从手指当前位置接着飞，不会先弹回再飞。 */
+      slotEl.classList.remove('dragging');
 
       var b = board(), n = b ? b.top.length : 0;
       var d = dx < 0 ? 1 : -1;
@@ -1132,34 +2139,20 @@
       var th = cardW * 0.25;               // 吸附阈值 = 牌宽 25%
 
       if (Math.abs(dx) >= th && ni >= 0 && ni < n) {
-        /* 过阈值：接着走完 320ms（当前已经在 dx 上，直接推到终点即可）。
-         * ⚠️ 拖动起手时 gap 还是 16px（要露牌边），所以**先切到 sliding**
-         *    （gap→0）再算终点 —— 终点是 cardW 而非 cardW+16，
-         *    跟 slideTo() 用同一套距离，两条路径动画才对得上。 */
-        S.busy = true;
-        slotEl.classList.add('sliding');
-        setDx(-d * cardW);
-        setTimeout(function () {
-          S.idx = ni;
-          setDx(0, true);
-          slotEl.classList.remove('peek', 'sliding');
-          paintDetail();
-          S.busy = false;
-        }, DUR);
+        flyTo(ni, d, DUR);
         return;
       }
 
-      /* 没过阈值 → 弹回原位（160ms）。--snapdur 让这一段比正式切牌更短。 */
+      /* 没过阈值 → 弹回摞上（160ms，--snapdur 让这一段比抽牌短）。
+       * 变量就地清掉 → transform 回落到默认值（0 / 0 / .96），过渡接管弹回。 */
       slotEl.style.setProperty('--snapdur', DUR_SNAP + 'ms');
       slotEl.classList.add('snapping');
-      requestAnimationFrame(function () {
-        setDx(0);
-        setTimeout(function () {
-          slotEl.classList.remove('snapping');
-          slotEl.classList.remove('peek');
-          slotEl.style.removeProperty('--snapdur');
-        }, DUR_SNAP);
-      });
+      slotEl.removeAttribute('data-dir');
+      clearPull();
+      setTimeout(function () {
+        slotEl.classList.remove('snapping');
+        slotEl.style.removeProperty('--snapdur');
+      }, DUR_SNAP);
     }
     tableEl.addEventListener('pointerup', end);
     tableEl.addEventListener('pointercancel', end);
@@ -1177,7 +2170,12 @@
     }).join('');
     $('#ruleMask').hidden = false;
   }
-  function closeRule() { $('#ruleMask').hidden = true; }
+  /* ◆焦点回到打开它的那个按钮（ux-spec §3.2：现状没做，Esc 关完焦点掉回 body） */
+  function closeRule() {
+    $('#ruleMask').hidden = true;
+    var b = $('#btnRule');
+    if (b) { try { b.focus(); } catch (e) {} }
+  }
 
   /* ---------------- 等比缩放（--k） ----------------
    * 与 app.js 的 fitStage 同一套口径与同一个断点 760；
@@ -1213,31 +2211,17 @@
     paintRangeCard();
   }
 
-  /* ---------------- 榜期卡（v2，见 spec §6.7）----------------
-   * 它替掉原来那个 `.seg` iOS 分段控件。**要解决的不是好看，是信息量为零**：
-   *   · 日榜 = 今天 0 点起；周榜 = 7 天前这一刻（**不是自然周**，见 board-core.mjs:92）
-   *   · 实测 117 vs 730 条扫描 —— 差 6 倍，但界面上一个字都没提
-   *   · 分布也完全不同（嘴硬榜 2 vs 0 张），点进去才看出「暂无上榜」，像出了 bug
-   * 所以卡上摊开三层：时间窗 / 规模 / 状态；展开后再给一张同赛道两榜对照表。 */
+  /* ---------------- 榜期切换（v1.3.2：直切分段按钮，见 spec §6.7）----------------
+   * v0.7.0 的榜期卡（时间窗+规模+状态三层、展开两榜对照面板）换成一个
+   * 二段开关：点一下就切。面板整个下线 —— 周榜不自动评（v1.3.1 hold）之后，
+   * 「切过去看看」零成本（没算过就亮开始屏），切换前对照的诉求消失。
+   * 状态那行没丢：rngCap 接过原卡片第二行的全部职责
+   * （扫描/评分进度、尚未评分、提前结束、失败、演示标记）。 */
   var RANGES = [
-    { id: 'day', tag: '日榜', win: '今天 00:00 → 现在' },
-    { id: 'week', tag: '周榜', win: '7 天前 → 现在' },
+    { id: 'day', tag: '日榜' },
+    { id: 'week', tag: '周榜' },
   ];
-  /* 两档各自的规模摘要。展开面板要拿它们并排对照，
-   * 所以在切档时顺手把「对面那档」也读一次（只读缓存，不触发评分）。
-   * ⚠️ key 一律用**档位 id**。曾经这里读 `peerCache[S.range]` 而下面存
-   *    `peerCache[peer.id]` → 读写两个 key → 对面列永远 `—`，且**不抛异常**。 */
-  var peerCache = {};   // { day|week: 对面档的响应体 或 null(没缓存) }
-  var peerBusy = {};    // 在途标记，**别挂在 RANGES 对象上**（换档会串味）
 
-  function rngCur() {
-    for (var i = 0; i < RANGES.length; i++) if (RANGES[i].id === S.range) return RANGES[i];
-    return RANGES[0];
-  }
-  function rngPeer() {
-    for (var i = 0; i < RANGES.length; i++) if (RANGES[i].id !== S.range) return RANGES[i];
-    return RANGES[1];
-  }
   function rngStats(d) {
     if (!d || !d.boards) return null;
     var n = 0;
@@ -1245,190 +2229,166 @@
     return { scanned: d.scanned || 0, cards: n, tracks: d.boards.length };
   }
 
-  /* 收起态那张卡。⛰ 三种状态要能一眼分辨：就绪 / 评分中 / 失败。 */
+  /* 分段选中态 + 状态行（⛰ 评分中 / 失败 / 尚未评分 / 就绪 四态一眼可辨）。
+   * 滑块位置写在 #rngSeg 的 data-on 上（CSS transform 滑动），文字色随 .on 切换。 */
   function paintRangeCard() {
-    var cur = rngCur();
-    $('#rngTag').textContent = cur.tag;
-    $('#rngL1').textContent = cur.win;
+    var seg = $('#rngSeg');
+    seg.setAttribute('data-on', S.range);
+    var btns = seg.querySelectorAll('.rng-seg-btn');
+    for (var i = 0; i < btns.length; i++) {
+      var on = btns[i].getAttribute('data-range') === S.range;
+      btns[i].classList.toggle('on', on);
+      btns[i].setAttribute('aria-selected', on ? 'true' : 'false');
+    }
 
-    var card = $('#rngCard');
-    card.classList.remove('is-building', 'is-failed');
-
-    var l2 = $('#rngL2'), ico = $('#rngIco');
+    var cap = $('#rngCap');
+    cap.classList.remove('is-building', 'is-failed');
     if (S.status === 'failed') {
-      card.classList.add('is-failed');
+      cap.classList.add('is-failed');
       var d0 = S.data && new Date(S.data.generatedAt || Date.now());
-      l2.textContent = d0 ? (fmtMD(d0) + ' 那次结果') : '暂无数据';
-      ico.textContent = '!';
+      cap.textContent = d0 ? (fmtMD(d0) + ' 那次结果') : '暂无数据';
       return;
     }
     if (S.status === 'building') {
-      card.classList.add('is-building');
       var p = S.progress || {};
-      if (p.phase === 'scan') {
-        l2.textContent = '正在扫描 · ' + (p.scanned || 0) + ' 条';
-      } else if (p.phase === 'score') {
-        l2.textContent = '正在评分 ' + (p.done || 0) + '/' + (p.candidates || 0) + ' 条';
-      } else {
-        l2.textContent = '正在取数…';
+      /* ◆撤销期间（v5 补）：`.sc-mask` 是 rgba(23,26,31,.44) **半透明**，Header 在遮罩下
+       * 透得出来，`.rng-cap` 这行用户看得到 —— 沿用上一次的 building 文案
+       * （停在「正在评分 24/48 条」蓝色）就是一句假话。
+       * ⚠️ **不加 `is-building`**：`--go` 蓝在本项目 = 「评分进行中」，而撤销期间
+       *    评分已经不在进行了，挂上会把「正在撤销」读成「正在算」。 */
+      if (S.canceling || p.cancelling) {
+        cap.textContent = '正在撤销本次评分…';
+        return;
       }
-      ico.textContent = '';
+      cap.classList.add('is-building');
+      if (p.stopping) {
+        cap.textContent = '已请求结束 · 正在收尾…';
+      } else if (p.phase === 'scan') {
+        cap.textContent = '正在扫描 · ' + (p.scanned || 0) + ' 条';
+      } else if (p.phase === 'score') {
+        cap.textContent = '正在评分 ' + (p.done || 0) + '/' + (p.candidates || 0) + ' 条';
+      } else {
+        cap.textContent = '正在取数…';
+      }
+      return;
+    }
+    /* v1.3.1 周榜没评过：把「还没算」这个事实写清楚，别让人以为是坏了 */
+    if (S.status === 'none') {
+      cap.textContent = '尚未评分 · 点「开始评分」';
+      return;
+    }
+    /* ◆撤销后的日榜：必须显示「已撤销」，不能退回普通的规模行 ——
+     * 那等于说「有一份榜」。灰色（默认色），不加 is-failed。
+     * （周榜撤销回 none，不加这行 —— 周榜「没评过」是常态，撤销痕迹由 toast 承担。） */
+    if (S.status === 'canceled') {
+      cap.textContent = '已撤销 · 尚未评分';
       return;
     }
 
     var st = rngStats(S.data);
-    if (!st) { l2.textContent = '正在取数…'; ico.textContent = '⇄'; return; }
-    l2.textContent = '已扫 ' + st.scanned + ' 条 · 共 ' + st.cards + ' 张';
-    if (S.data.mock) l2.textContent += ' · 演示';
-    ico.textContent = '⇄';
+    if (!st) { cap.textContent = '正在取数…'; return; }
+    cap.textContent = '已扫 ' + st.scanned + ' 条 · 共 ' + st.cards + ' 张';
+    /* ◆「· 提前结束」后缀必须用**与结果卡同一个 `gapOf()` 判据**（ux-spec §2.5.1）：
+     * 只用 `S.data.stopped` 会出现「结果卡说评分完成、榜期卡说提前结束」的自相矛盾
+     * （stopped=true 但 done >= candidates ⇒ 产物完整，两边都该说「完成」）。
+     * ◆ 判据只保留 `!== 'none'`（team-lead v3 裁决，推翻其更早那条）：
+     *   gapOf() 在这里的唯一用途是排除「产物完整但 stopped 标记残留」那格。
+     *   而 gap='unknown' 恰恰**最该加后缀** —— payload 上 stopped:true 是真事实，
+     *   只是缺在哪不知道，更需要警示；把它排除等于把信息丢了。
+     *   ⇒ 'none' 不加（产物没少，不许说"不完整"）；'score'/'scan'/'unknown' 都加。 */
+    if (S.data.stopped && gapOf() !== 'none') cap.textContent += ' · 提前结束';
+    if (S.data.mock) cap.textContent += ' · 演示';
   }
   function fmtMD(d) {
     return pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()) + ' ' +
            pad2(d.getHours()) + ':' + pad2(d.getMinutes());
   }
 
-  /* 展开面板：同赛道 · 两榜并排。
-   * ⭐ 这是本次改版最实质的一处 —— 旧设计只让用户「选看哪一档」，
-   *    新设计让他在**切换前**就看清两档差在哪。 */
-  function paintRangePop() {
-    var a = S.data;                      // 当前档
-    var peer = rngPeer();
-    /* ⚠️ key 必须统一按「档位 id」取，且是 **对面那档**（peer.id），不是当前档。
-     *   踩过一次：这里写 peerCache[S.range] 而 loadPeer() 存 peerCache[peer.id]
-     *   → 读写两个不同 key → 对面列永远 undefined，且不抛异常。 */
-    var p = peerCache[peer.id];
-    var ids = [], i;
-    if (a && a.boards) for (i = 0; i < a.boards.length; i++) ids.push(a.boards[i].id);
-    if (p && p.boards) for (i = 0; i < p.boards.length; i++) {
-      if (ids.indexOf(p.boards[i].id) < 0) ids.push(p.boards[i].id);
-    }
-    function find(d, id) {
-      if (!d || !d.boards) return null;
-      for (var j = 0; j < d.boards.length; j++) if (d.boards[j].id === id) return d.boards[j];
-      return null;
-    }
-
-    var h = '';
-    for (i = 0; i < ids.length; i++) {
-      var ba = find(a, ids[i]), bb = find(p, ids[i]);
-      var na = ba ? (ba.top || []).length : null;
-      var nb = bb ? (bb.top || []).length : null;
-      var name = (ba || bb || {}).name || ids[i];
-
-      /* 差异文案。⚠️ 嘴硬榜「日 2 / 周 0」这种必须显式点出来：
-       *   它是**数据事实**（分布天然偏斜，spec §11.6），不是加载失败。 */
-      var x, cls = '';
-      if (na === null || nb === null) {
-        x = '尚未生成'; cls = ' is-pending';
-      } else if (nb === 0 && na > 0) {
-        x = peer.tag + '空榜'; cls = ' is-empty';
-      } else if (na === 0 && nb > 0) {
-        x = '本档空榜'; cls = ' is-empty';
-      } else if (nb > na) {
-        x = peer.tag + '多 ' + (nb - na) + ' 张'; cls = ' is-more';
-      } else if (na > nb) {
-        x = '本档多 ' + (na - nb) + ' 张'; cls = ' is-more';
-      } else {
-        x = '持平';
-      }
-      /* 行 = 切到那一档的入口（点了直接换档）。
-       * `peerside` 标出点下去会看到的是哪一档，避免「点行却没反应」的困惑。 */
-      h += '<div class="rng-row' + cls + '" role="button" tabindex="0"' +
-           ' data-range="' + (cls.indexOf('is-pending') >= 0 ? '' : peer.id) + '"' +
-           ' title="' + (cls.indexOf('is-pending') >= 0 ? '该档尚未生成' : '切到' + peer.tag) + '">' +
-           '<span class="rng-row-n">' + esc(name) + '</span>' +
-           '<span class="rng-row-d">' + (na === null ? '—' : na) + '</span>' +
-           '<span class="rng-row-w">' + (nb === null ? '—' : nb) + '</span>' +
-           '<span class="rng-row-x">' + esc(x) + '</span></div>';
-    }
-    $('#rngRows').innerHTML = h || '<div class="rng-row"><span class="rng-row-x">正在取数…</span></div>';
-
-    var sa = rngStats(a), sb = rngStats(p);
-    var sum = '<span class="rng-row-n">合计</span>' +
-      '<span class="rng-row-d">' + (sa ? sa.cards : '—') + '</span>' +
-      '<span class="rng-row-w">' + (sb ? sb.cards : '—') + '</span>' +
-      '<span class="rng-row-x">扫描 ' +
-      (sa ? sa.scanned : '—') + ' → ' + (sb ? sb.scanned : '—') + ' 条</span>';
-    $('#rngSum').innerHTML = sum;
-  }
-
-  function toggleRangePop(force) {
-    var pop = $('#rngPop'), card = $('#rngCard');
-    var open = force === undefined ? pop.hidden : force;
-    pop.hidden = !open;
-    card.setAttribute('aria-expanded', open ? 'true' : 'false');
-    if (open) { paintRangePop(); loadPeer(); }
-  }
-
-  /* 只读对面那档的缓存，**绝不触发评分** —— 否则「看一眼周榜」就要烧 100 秒 + token。
-   * ⚠️ 必须走 `peek=1`（后端短路成纯读盘）。走普通 /api/board 会触发 ensure()
-   *    → 翻 45 页 + 一两分钟，那是对「瞥一眼」的严重惩罚。
-   * 没缓存 → status 'none' → 面板显示「尚未生成」，**不能当成 0 张**。 */
-  function loadPeer() {
-    var peer = rngPeer();
-    if (peerCache[peer.id] !== undefined || peerBusy[peer.id]) return;
-    peerBusy[peer.id] = true;
-    var url = 'api/board?range=' + peer.id + '&peek=1' +
-              (q.get('mock') === '1' ? '&mock=1' : '');
-    var ai = localAiCfg();
-    var init = { cache: 'no-store' };
-    if (ai) {
-      init.method = 'POST';
-      init.headers = { 'content-type': 'application/json' };
-      init.body = JSON.stringify({ ai: ai, peek: true });
-    }
-    fetch(url, init).then(function (r) { return r.json(); }).then(function (j) {
-      peerBusy[peer.id] = false;
-      peerCache[peer.id] = (j && j.status === 'ready' && j.boards && j.boards.length) ? j : null;
-      if (!$('#rngPop').hidden) paintRangePop();
-    }).catch(function () {
-      peerBusy[peer.id] = false; peerCache[peer.id] = null;
-      if (!$('#rngPop').hidden) paintRangePop();
-    });
-  }
-
   function switchRange(r) {
-    if (r === S.range) { toggleRangePop(false); return; }
+    if (r === S.range) return;
     S.range = r;
     S.trackId = null; S.idx = 0; S.fidx = 0; S.data = null;
+    /* ◆T27：切榜期要清掉 delta / 进度快照 / 结果态 ——
+     * 不清的话「日榜的旧榜张数」会被拿去给周榜算 delta（B14 串味）。 */
+    S.prevCounts = null; S.progSnap = null;
+    /* ◆B4：结果卡还开着时切榜期（键盘 Tab 出去的情况）⇒
+     * 先清自动关闭 timer + 关结果卡 + 清冻结高度，再切档。 */
+    clearAutoClose();
+    if (S.resultPhase) resetResult();
+    cfClose(false);
     q.set('range', r); q.delete('track');
     history.replaceState(null, '', location.pathname + '?' + q.toString());
-    toggleRangePop(false);
     paintRangeCard();
+    syncButtons();
     viewDeal.hidden = false; viewDetail.hidden = true;
     load(false);
   }
 
   function bind() {
-    /* 日榜 / 周榜 —— 点榜期卡开合，点面板里的行切换 */
-    $('#rngCard').addEventListener('click', function () { toggleRangePop(); });
-    $('#rngRows').addEventListener('click', function (e) {
-      var r = e.target.closest('[data-range]');
-      if (!r || !r.getAttribute('data-range')) return;
-      switchRange(r.getAttribute('data-range'));
-    });
-    /* 行是 role=button，所以 Enter / Space 也要能触发 */
-    $('#rngRows').addEventListener('keydown', function (e) {
-      if (e.key !== 'Enter' && e.key !== ' ') return;
-      var r = e.target.closest('[data-range]');
-      if (!r || !r.getAttribute('data-range')) return;
-      e.preventDefault();
-      switchRange(r.getAttribute('data-range'));
-    });
-    document.addEventListener('click', function (e) {
-      if ($('#rngPop').hidden) return;
-      if (e.target.closest('#rng')) return;
-      toggleRangePop(false);
-    });
-    document.addEventListener('keydown', function (e) {
-      if (e.key === 'Escape' && !$('#rngPop').hidden) { toggleRangePop(false); $('#rngCard').focus(); }
+    /* 日榜 / 周榜直切（v1.3.2）：点哪段切哪档。
+     * 周榜切过去没算过就亮「开始评分」（load 的 hold 逻辑），不会自动开跑。 */
+    $('#rngSeg').addEventListener('click', function (e) {
+      var b = e.target.closest('.rng-seg-btn');
+      if (!b) return;
+      switchRange(b.getAttribute('data-range'));
     });
 
+    /* v1.4「重新评分」：先判断要不要展开确认条（有旧榜 ⇒ 拦），否则直通。
+     * ⚠️ 删掉了原来的 setTimeout(2500) 解禁 —— 与实际请求时长无关，
+     *    真链路 1~2 分钟时 2.5s 后就解禁了（能重复触发，点了会把发牌台清零）；
+     *    缓存命中只要 20ms 却白锁 2.5s。现在禁用由 syncButtons() 绑 S.pending + S.status。 */
     $('#btnFresh').addEventListener('click', function () {
-      var b = this;
-      b.disabled = true;
-      load(true);
-      setTimeout(function () { b.disabled = false; }, 2500);
+      if (this.disabled) return;
+      if (cfOpen()) return;   // 有旧榜 ⇒ 展开确认条（决策段）
+      startFresh();           // 无旧榜 ⇒ 直接跑
+    });
+    $('#cfGo').addEventListener('click', function () {
+      if (this.disabled) return;
+      cfClose(false);
+      startFresh();
+    });
+    $('#cfNo').addEventListener('click', function () { cfClose(true); });
+
+    /* 发牌台上的「提前结束」：打断抓取/打分，以已读数据组榜（v1.3.1）。
+     * 重算中（有旧榜压着）那颗在 .sys 卡片上，走同一个 stopBoard。 */
+    $('#scStop').addEventListener('click', function () { stopBoard(); });
+
+    /* 「取消本次评分」：两段式点击（首点 arm，3.5s 内再点才真撤销）。 */
+    $('#scCancel').addEventListener('click', function () {
+      if (S.canceling || this.disabled) return;
+      if (this.classList.contains('is-arm')) { busyCancel(); cancelBoard(); }
+      else armCancel();
+    });
+    /* 焦点离开 ⇒ 退回默认态（arm 只是「手悬在那里」，移开就该撤销那个意图） */
+    $('#scCancel').addEventListener('blur', function () { if (!S.canceling) disarmCancel(); });
+
+    /* 结果卡的关闭按钮 */
+    $('#rsBtn').addEventListener('click', function () { closeResult(true); });
+    /* 自动关闭的暂停 / 重启：
+     *   mouseenter ⇒ 暂停（慢读的人）；mouseleave ⇒ **重新计满 3.2s**；
+     *   focusin  ⇒ 永久暂停（键盘 / 读屏用户一旦进来，就交给他手动关）。
+     * ⭐ 完成态有牌不主动 focus 到按钮，所以鼠标用户根本不产生 focusin ⇒ 正常自动关。 */
+    var rsEl = $('#scResult');
+    if (rsEl) {
+      rsEl.addEventListener('mouseenter', function () { pauseAuto(false); });
+      rsEl.addEventListener('mouseleave', function () { resumeAuto(); });
+      rsEl.addEventListener('focusin', function () { pauseAuto(true); });
+    }
+
+    /* 文档级点击委托，两件互不相关的事（都是「取消一个临时意图」，幂等）：
+     *   ① 确认条开着时点 .cf-slot 之外 ⇒ 收起（**不抢焦点**）；
+     *   ② 撤销按钮处于 arm 态时点了别处 ⇒ 退回默认态。
+     * ⚠️ 点「日榜 / 周榜」时，这个委托与 #rngSeg 的委托**都会触发**，
+     *    两者都是幂等（收起 + 切档），顺序无关 —— 不要为了「只执行一个」加互斥标志，
+     *    加了反而会漏掉其中一个（ux-spec §1.2）。 */
+    document.addEventListener('click', function (e) {
+      var slot = $('#cfSlot');
+      if (slot && slot.classList.contains('is-open') &&
+          !(e.target.closest && e.target.closest('.cf-slot'))) {
+        cfClose(false);
+      }
+      var cb = $('#scCancel');
+      if (cb && cb.classList.contains('is-arm') && e.target !== cb) disarmCancel();
     });
 
     /* 首页牌台：**只有点中中心牌本身**才进详情；
@@ -1482,6 +2442,8 @@
     fitStage();
     paintRangeCard();
     bind();
+    /* idle 期间「重新评分」就该是禁用的（首拉在飞之前点了是第二个并发请求） */
+    syncButtons();
     /* 首屏先摆出大牌的空壳（避免「正在评分」时下面一片空白） */
     if (!S.data) {
       fslotEl.innerHTML = '';

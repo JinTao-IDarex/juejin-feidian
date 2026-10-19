@@ -145,8 +145,12 @@ export function pickCandidates(pins, n = CANDIDATE_N) {
 
 /* ---------------- 翻页抓取 ---------------- */
 
-/* 翻完整段再按 ctime 过滤。onPage 让「已扫描 x 条」这个进度能实时报出去。 */
-export async function fetchRange({ range, fetchPage, now, onPage, delayMs = 250 }) {
+/* 翻完整段再按 ctime 过滤。onPage 让「已扫描 x 条」这个进度能实时报出去。
+ * ⭐ v1.3.1 `shouldStop`：**提前结束**用的协作式打断 —— 每页之间查一次，
+ *   用户点「提前结束」就不再翻下一页，已扫到的条目照常交给打分阶段
+ *   （「以当前读取的数据为准」）。页内正在飞的那一个请求让它飞完，
+ *   不做硬中断：漏半页的代价远小于实现复杂度。 */
+export async function fetchRange({ range, fetchPage, now, onPage, delayMs = 250, shouldStop }) {
   const spec = RANGE_SPEC[range] || RANGE_SPEC.day;
   const start = rangeStart(range, now);
   const seen = new Set();
@@ -155,6 +159,7 @@ export async function fetchRange({ range, fetchPage, now, onPage, delayMs = 250 
   let pages = 0;
 
   for (let i = 0; i < spec.maxPages; i++) {
+    if (shouldStop && shouldStop()) break;
     const r = await fetchPage(cursor, 20, spec.sortType);
     const list = (r && r.pins) || [];
     pages++;
@@ -206,14 +211,19 @@ function scorePrompt(n) {
     '只输出 JSON 数组本身，不要代码块标记、不要解释、不要任何额外文字。';
 }
 
-/* 单次上游调用：请求形状由 providers 按协议拼，这里只给原料。 */
-async function callModel(ai, { system, user, maxTokens, temperature, timeoutMs }) {
+/* 单次上游调用：请求形状由 providers 按协议拼，这里只给原料。
+ * v1.3.1 多了一个可选 `signal`（提前结束用）：与超时信号合并 ——
+ * AbortSignal.any 是 20+ 才有，老环境自动退化成「只有超时能断」，
+ * 提前结束就等这一手飞完（页间/块间检查仍然即时生效）。 */
+async function callModel(ai, { system, user, maxTokens, temperature, timeoutMs, signal }) {
   const q = providers.buildRequest(ai, { system, user, maxTokens, temperature });
+  const timeoutSig = AbortSignal.timeout(timeoutMs);
+  const sig = (signal && AbortSignal.any) ? AbortSignal.any([timeoutSig, signal]) : timeoutSig;
   const upstream = await fetch(q.url, {
     method: q.method,
     headers: q.headers,
     body: JSON.stringify(q.body),
-    signal: AbortSignal.timeout(timeoutMs),
+    signal: sig,
   });
   const data = await upstream.json().catch(() => ({}));
   if (!upstream.ok) throw new Error(providers.parseError(ai, upstream.status, data));
@@ -263,15 +273,25 @@ const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
  *   为什么要等整轮打完才有：`assignTrack` 要等 6 个赛道的分都齐了才知道归属，
  *   而 AI 是分块给的 —— 所以最快只能「一块回来就发一批」，
  *   正好对上一手 8 张的节奏。 */
-export async function scoreCandidates({ candidates, ai, onProgress, mock }) {
-  if (mock) return mockScore(candidates, onProgress);
+export async function scoreCandidates({ candidates, ai, onProgress, mock, shouldStop, signal }) {
+  if (mock) return mockScore(candidates, onProgress, shouldStop);
   const rows = [];
+  let stopped = false;
   for (let off = 0; off < candidates.length; off += CHUNK) {
+    if (shouldStop && shouldStop()) { stopped = true; break; }
     const chunk = candidates.slice(off, off + CHUNK);
     const listText = chunk.map((p, i) =>
       (i + 1) + '. ' + (p.topic && p.topic !== '沸点' ? '【' + p.topic + '】' : '') +
       String(p.content || '').replace(/\s+/g, ' ').slice(0, 220)
     ).join('\n');
+
+    /* v1.3.1 「正在分析」上报：**块开始时**把这一手的标题清单报出去，
+     * UI 才能显示「AI 正在看什么」（回来后被 done/dealt 覆盖，间隙由
+     * 前端拿上一手的落位提示补位）。 */
+    if (onProgress) {
+      onProgress({ done: off, total: candidates.length,
+        now: chunk.map((p) => String(p.content || '').replace(/\s+/g, ' ').slice(0, 18)) });
+    }
 
     let parsed = null;
     let lastErr = null;
@@ -285,14 +305,18 @@ export async function scoreCandidates({ candidates, ai, onProgress, mock }) {
           maxTokens: Math.min(4000, 320 * chunk.length + 200),
           temperature: 0.4,
           timeoutMs: Math.min(120_000, 15_000 + chunk.length * 8_000),
+          signal,
         });
         parsed = parseScoreChunk(raw, chunk.length);
         if (!parsed) throw new Error('AI 未按要求返回 JSON 数组');
       } catch (e) {
+        /* 提前结束把这一手打断了：不重试、直接按「已打完的算」收工 */
+        if (signal && signal.aborted) { stopped = true; break; }
         lastErr = e;
         await sleep(attempt === 0 ? 1200 : 0);
       }
     }
+    if (stopped) break;
     if (!parsed) throw new Error('打分失败：' + ((lastErr && lastErr.message) || '未知错误'));
 
     parsed.forEach((r, k) => {
@@ -319,6 +343,9 @@ export async function scoreCandidates({ candidates, ai, onProgress, mock }) {
       onProgress({ done: Math.min(off + CHUNK, candidates.length), total: candidates.length, dealt });
     }
   }
+  /* 提前结束时把标记挂在返回数组上（assembleBoards 只认数组形状，多一个
+   * 属性不影响它；调用方拿它写 meta.stopped）。 */
+  rows.stopped = stopped;
   return rows;
 }
 
@@ -326,7 +353,7 @@ export async function scoreCandidates({ candidates, ai, onProgress, mock }) {
  * 用 id 的哈希做种子，同一条沸点每次得到同一组分数，所以前端能稳定复现；
  * 判词从模板里挑，只为把版式撑起来。payload 会带 mock:true，界面也会标明。
  * ⭐ v0.8.0：分块回报（与真打分同一条 onProgress 形状），否则本地联调看不到发牌动画。 */
-async function mockScore(candidates, onProgress) {
+async function mockScore(candidates, onProgress, shouldStop) {
   const MOCK_CHUNK_MS = 620;   // 一手牌的间隔，让演示模式也看得出「在发牌」
   const VERDICTS = {
     venom: ['这句话的杀伤力，属于把天聊死的艺术', '骂得有理有据，被骂的人还得点头', '刀法精准，连标点都在嘲讽'],
@@ -341,7 +368,9 @@ async function mockScore(candidates, onProgress) {
   /* 逐条算分但**分块回报** —— 与真打分保持同一条 onProgress 形状
      （{done,total,dealt}），前端只有一套渲染路径。 */
   const rows = [];
+  let stopped = false;
   for (let off = 0; off < candidates.length; off += CHUNK) {
+  if (shouldStop && shouldStop()) { stopped = true; break; }
   const chunk = candidates.slice(off, off + CHUNK);
   const dealt = [];
   chunk.forEach((p, k) => {
@@ -378,12 +407,17 @@ async function mockScore(candidates, onProgress) {
       score: Math.round(a.score * 10) / 10, ranked: a.ranked,
       title: String(p.content || '').replace(/\s+/g, ' ').slice(0, 24), verdict: v.slice(0, 16) });
   });
-  /* 演示模式也让出帧，动画才看得出来在发（真打分是网络等待，天然有间隔） */
+  /* 演示模式也让出帧，动画才看得出来在发（真打分是网络等待，天然有间隔）。
+   * 块开始时同样报 `now`（正在分析的一手）—— 与真打分同一条形状。 */
   if (onProgress) {
+    onProgress({ done: off, total: candidates.length,
+      now: chunk.map((p) => String(p.content || '').replace(/\s+/g, ' ').slice(0, 18)) });
+    await sleep(Math.round(MOCK_CHUNK_MS / 3));
     onProgress({ done: Math.min(off + CHUNK, candidates.length), total: candidates.length, dealt });
     await sleep(MOCK_CHUNK_MS);
   }
   }
+  rows.stopped = stopped;
   return rows;
 }
 
@@ -461,11 +495,84 @@ export function assembleBoards(rows, { perTrack = PER_TRACK, generatedAt, meta }
  * 这样 HTTP 请求不会挂 3 分钟（会超时、会让人以为页面死了）。
  */
 export function createBoardEngine({ fetchPage, resolveAi, loadCache, saveCache, now, mock }) {
-  const jobs = new Map(); // range -> { state, progress, payload, error, at, promise }
+  const jobs = new Map(); // range -> { state, runId, t0, progress, payload, error, at, promise, stopReq, cancelReq, aborter }
+
+  /* 本轮任务的标识（v1.3.3）。
+   *
+   * 为什么需要：dev server 重启 / 扩展 SW 被回收之后，内存里的 jobs Map 整个没了，
+   * 但前端还在按 1.3s 轮询。下一个请求要么是从磁盘缓存重建（看起来像 ready），
+   * 要么因为 fresh=1 重新起一轮 —— 都是「服务端换了一轮」。
+   * 前端手里的旧 runId 兑不上新人 ⇒ 就能判断出「这不是我发起的那一轮」，
+   * 提示用户而不是把一轮全新扫描的进度当成自己那次的，静默接受。
+   *
+   * 时间戳 + 5 位随机后缀：同一毫秒内同时起日榜/周榜（切换榜期会立刻两手并发）
+   * 也不至于撞号。 */
+  const nextRunId = () => String(now()) + '-' + Math.random().toString(36).slice(2, 7);
+
+  /* ---- 撤销（v1.3.3）的收尾：把 job 恢复成「这轮评过分根本没发生过」 ----
+   *
+   * 为什么抽成函数：四个闸门（扫描后 / 空榜组榜前 / 打分后 / 落盘前）做的是同一件事，
+   * 抄四遍必然漂移，而漂移的表现是「点了撤销却还能看到半份新榜」—— 很难查。
+   *
+   * 两条结局按「撤销前这一档有没有旧 payload」分叉：
+   *   · 有旧 payload（过期静默重建 / 上一轮失败留的底）→ 恢复成 ready + 那份旧榜，
+   *     stale 归位成 false：它进来时就看着这份榜，对它来说这不是「过期副本」。
+   *     ⚠️ runId 也退回 null —— 旧 payload 不是本轮产物，挂本轮的号会让前端误以为
+   *        撤销后的 ready 是「我发起的那一轮跑完了」。
+   *   · 没有旧 payload（点「重新评分」走的就是这一支：ensure(fresh=1) 不读缓存，
+   *     job.payload 天生是 null）→ **留一个 state:'cancelled' 的空壳**，不能删。
+   *
+   *     ⚠️ 为什么**不能**用 jobs.delete(range)（v1.3.3 第一版就是这么写的）：
+   *        删掉之后这一档就变成了「从没算过」，而日榜是**会 ensure() 自启**的 ——
+   *        刷新页面 / 切榜期回来 / boot 的下一个请求就会重新拉一轮 45 页扫描。
+   *        用户点撤销的意图是「别算了」，反手自动再开一轮是最坏结果，且违背撤销语义。
+   *        空壳的作用就是给 ensure() 一道闸：非 fresh 的请求撞上它直接回快照、绝不起跑，
+   *        必须等用户明确再点一次「重新评分」（fresh=1）。
+   *        前端也**本来就要有 canceled 态**（交互规范 T13：日榜首评撤销 → 已撤销卡），
+   *        它不是多出来的分支，只是现在才有了数据源。
+   *
+   * ⚠️ 这里**绝不能**调 saveCache，也**绝不能**去删磁盘缓存：磁盘上存的是**上一轮**
+   *    的产物（可能还是上周的），本轮半途算出来的东西一个字节都不许落，
+   *    上一轮的产物也不能因为这次撤销被删 —— 留着，让它按 TTL 自己过期。 */
+  function cancelRestore(range, job) {
+    /* cancelled 标记独立于 state 存在：
+     * 有旧 payload 那一条路恢复出来的是 **ready**，从 payload / runId 上都看不出
+     * 「这是撤销回来的旧榜」还是「刚跑完的新榜」。前端刷新页面后自己的本地标记会丢，
+     * 那时会把旧榜的 ready 误读成「刚跑完」而弹一次结果卡 ——
+     * 把它挂在这里，随快照一起下发，frontend 不用自持状态也能分辨。 */
+    job.cancelled = true;
+    const prevPayload = job.payload;
+    const prevAt = job.at;
+    if (prevPayload) {
+      job.state = 'ready';
+      job.payload = prevPayload;
+      job.at = prevAt || 0;
+      job.stale = false;
+      job.progress = null;
+      job.error = null;
+      job.runId = null;
+      job.stopReq = false;
+      job.cancelReq = false;
+      job.aborter = null;
+      return;
+    }
+    job.state = 'cancelled';
+    job.payload = null;
+    job.progress = null;
+    job.error = null;
+    job.runId = null;
+    job.at = 0;
+    job.stale = false;
+    job.stopReq = false;
+    job.cancelReq = false;
+    job.aborter = null;
+  }
 
   function snapshot(range) {
     const j = jobs.get(range);
-    if (!j) return { status: 'idle' };
+    /* idle 也补齐同形状的键：调用方（boardResponse）不用到处判空，
+     * 前端读 `runId: null` 也比「这个字段压根不存在」好判断。 */
+    if (!j) return { status: 'idle', progress: null, payload: null, error: null, stale: false, at: 0, runId: null };
     return {
       status: j.state,
       progress: j.progress || null,
@@ -473,6 +580,14 @@ export function createBoardEngine({ fetchPage, resolveAi, loadCache, saveCache, 
       error: j.error || null,
       stale: !!j.stale,
       at: j.at || 0,
+      /* v1.3.3：这一档是不是**撤销过**的。与 state 分开是因为「有旧榜的那条路」
+       * 会恢复成 ready —— 光看 state 分不出「撤销回来的旧榜」和「刚跑完的新榜」，
+       * 而前端刷新页面后自己的本地标记会丢，得由这里兜住。 */
+      cancelled: !!j.cancelled,
+      /* runId 随快照一路下发（boardResponse 会把它带上），
+       * 前端轮询比对的依据就是它。没有正在跑的任务（周榜没算过 / 已撤销）时为 null ——
+       * ⚠️ 前端比对前必须先判空，否则「两侧都没有」会被误判成「换了」。 */
+      runId: j.runId || null,
     };
   }
 
@@ -483,6 +598,13 @@ export function createBoardEngine({ fetchPage, resolveAi, loadCache, saveCache, 
     const cur = jobs.get(range);
     if (cur && cur.state === 'building') return snapshot(range);
     if (cur && cur.state === 'ready' && !fresh) return snapshot(range);
+    /* ⚠️ 撤销过的档位：**非用户主动就绝不自动起跑**。
+     * 这道闸是 `cancelRestore()` 留那个 state:'cancelled' 空壳的唯一理由 ——
+     * 少了它，「点了撤销」在下次刷新 / 切榜期回来 / boot 时会变成「又跑一轮 45 页扫描」，
+     * 直接违背撤销的语义（用户说的是「别算了」）。
+     * 判据是 `!fresh`：fresh=1 来自「重新评分 / 开始评分」按钮，那是用户明确要跑，
+     * 照常放行（并且会用一个全新的 job 顶掉这个空壳）。 */
+    if (cur && cur.state === 'cancelled' && !fresh) return snapshot(range);
 
     if (!fresh) {
       let hit = null;
@@ -514,28 +636,69 @@ export function createBoardEngine({ fetchPage, resolveAi, loadCache, saveCache, 
   }
 
   async function run(range, useMock, job, aiBody) {
+    /* v1.3.3 这两样必须在函数的**同步段**里先落好：
+     * ensure() 是在 `job.promise = run(...)` 之后立刻 `return snapshot(range)` 的，
+     * 而 run() 会一直同步执行到 fetchRange 里的第一个 await ——
+     * 所以此刻写进 job.progress 的 runId，前端在这一次 HTTP 响应里就能拿到。
+     * 放到第一个 await 之后 = 轮询的第一帧没有 runId = 前端认不出任务。 */
+    job.t0 = now();          // 本轮耗时（ms）的起点，组榜时会写进 meta.ms
+    job.runId = nextRunId();
+    /* 新一轮的开始要清掉「此档撤销过」的痕迹：空壳 job 被 fresh=1 重新启用时，
+     * 或是同一份 job 对象被别的地方复用时，都不能把上一次的 cancelled 带进新结果。
+     * ⚠️ 必须在同步段（与 runId/t0 同理）。 */
+    job.cancelled = false;
+    if (job.progress) job.progress.runId = job.runId;   // 起手那一帧补上 runId
     try {
-      /* 1) 抓取 */
+      /* 提前结束（stopReq）与撤销（cancelReq）是**两个独立标记**，但共用同一套
+       * 协作式打断：只看 stopReq 的话，撤销请求既打不断翻页/分块，
+       * 又会被当成「用户要提前收尾」继续往下组榜。 */
+      const interrupted = () => !!job.stopReq || !!job.cancelReq;
+      /* 1) 抓取（v1.3.1：shouldStop = 提前结束 —— 用户点了停就不再翻页，
+       *   已扫到的照常交给打分，「以当前读取的数据为准」；v1.3.3 撤销同样走这里） */
       const pins = await fetchRange({
         range,
         fetchPage,
         now: now(),
-        onPage: (p) => { job.progress = { phase: 'scan', scanned: p.scanned, pages: p.pages }; },
+        shouldStop: interrupted,
+        onPage: (p) => { job.progress = { phase: 'scan', runId: job.runId, scanned: p.scanned, pages: p.pages,
+                                          stopping: !!job.stopReq, cancelling: !!job.cancelReq }; },
       });
+      /* 撤销闸门 ①：扫描阶段。翻页已经在上面被打断，这里是最早能收尾的地方 ——
+       * 撤销**不往下组榜**，所以必须在此就返回，不能等到最后一道闸。 */
+      if (job.cancelReq) { cancelRestore(range, job); return; }
+      const stopped = !!job.stopReq;   // 中断产物：扫描被截断（或停止请求落在扫描后、打分中）
       const candidates = pickCandidates(pins);
+      /* 撤销闸门 ②：空榜分支的组榜门槛 —— 这一道是我自己加的，原文的「三个检查点」
+       * 里没有它，但没有它就不成立：`if (!candidates.length)` 排在组榜之前，
+       * 它会**先一步改写 job.payload**（换成一份 `empty: true` 的空榜）。
+       * ⚠️ 为什么必须拦：撤销之后让人看见「六摞全空」是最糟的一种半份新榜 ——
+       *   它比「扫了一半的残缺榜」更像一次成功，**谎言更彻底**：用户会以为
+       *   「今天确实没人上榜」，而不是「我撤销了」。而且这一支不落盘，
+       *   磁盘上还是旧榜，只有内存里被换掉了，连重开页面都对不上账。
+       *   所以必须在 payload 被碰到之前收尾。 */
+      if (job.cancelReq) { cancelRestore(range, job); return; }
       if (!candidates.length) {
         job.state = 'ready';
-        job.payload = assembleBoards([], { generatedAt: now(), meta: { scanned: pins.length, empty: true } });
+        job.payload = assembleBoards([], { generatedAt: now(),
+          /* ms：本轮从起到组榜的真实耗时（v1.3.3）。meta 会被摊平进 payload 顶层，
+           * 前端直接读 payload.ms 就能说「这次评了 78.4 秒」。 */
+          meta: { scanned: pins.length, empty: true, stopped: stopped || undefined, ms: now() - job.t0 } });
         job.stale = false;
         job.progress = null;
         return;
       }
 
       /* 2) 打分 */
-      job.progress = { phase: 'score', scanned: pins.length, candidates: candidates.length, done: 0 };
+      job.progress = { phase: 'score', runId: job.runId, scanned: pins.length,
+                       candidates: candidates.length, done: 0,
+                       stopping: !!job.stopReq, cancelling: !!job.cancelReq };
       /* aiBody：调用方（站点=请求体 / 扩展=页面 localStorage 里的配置）交上来的「怎么调」。
        * 站点没传时靠 serve.mjs 自己那套服务端配置，两边同一份 providers.resolve。 */
       const ai = await resolveAi(aiBody || {});
+      /* 提前结束要能打断正在飞的那一手 AI 请求（不只等它超时）：每个 job 一个
+       * AbortController，stop() 时 abort —— fetchRange 那层不用它，页间检查就够。 */
+      const aborter = new AbortController();
+      job.aborter = aborter;
       /* ⭐ v0.8.0「评分中发牌」：`dealtLog` 累积每一批的分配结果。
        * 为什么要**累积**而不是只留最新一批：前端是 1.3s 轮询，
        * 而 AI 一批要十几秒 —— 不累积的话轮询只能看到最后一批（8 张），
@@ -543,59 +706,136 @@ export function createBoardEngine({ fetchPage, resolveAi, loadCache, saveCache, 
       const dealtLog = [];
       const rows = await scoreCandidates({
         candidates, ai, mock: useMock,
+        shouldStop: interrupted,
+        signal: aborter.signal,
         onProgress: (p) => {
           if (p.dealt && p.dealt.length) dealtLog.push(...p.dealt);
-          job.progress = { phase: 'score', scanned: pins.length,
-                           candidates: candidates.length, done: p.done, dealt: dealtLog.slice() };
+          job.progress = { phase: 'score', runId: job.runId, scanned: pins.length,
+                           candidates: candidates.length, done: p.done, dealt: dealtLog.slice(),
+                           now: p.now || null, stopping: !!job.stopReq, cancelling: !!job.cancelReq };
         },
       });
+      /* 撤销闸门 ③：打分之后。这一支最要紧 —— 打分是整个流程里最长的一段
+       * （48 条 / 6 手 / 一两分钟），撤销请求绝大多数会落在这一段的某一手之间，
+       * 靠 cancel() 里那一记 abort 把正在飞的那手掐掉，然后就在这里收尾。 */
+      if (job.cancelReq) { cancelRestore(range, job); return; }
 
-      /* 3) 组榜 + 落盘 */
+      /* 撤销闸门 ④（最后一道闸）：组榜 + 落盘**之前**。
+       * 拦在这儿是因为一旦越过它就是 saveCache —— 磁盘上的旧榜会被这半轮产物覆盖，
+       * 而「覆盖缓存文件」在 memory-only 的扩展里看得出来、在站点上却要重开页面才看得出。
+       * 提前结束的产物**就是**这轮的结果（用户说了算）：照常落盘复用，
+       * 只在 payload 上标 stopped，让界面能说清「这份榜单是提前结束时按已读数据组的」。 */
+      if (job.cancelReq) { cancelRestore(range, job); return; }
       const payload = assembleBoards(rows, {
         generatedAt: now(),
-        meta: { scanned: pins.length, mock: useMock, range },
+        meta: { scanned: pins.length, mock: useMock, range,
+                stopped: (stopped || rows.stopped) || undefined,
+                /* ms 同空榜分支：meta 会被摊平到 payload 顶层，前端读 payload.ms 即可 */
+                ms: now() - job.t0 },
       });
       job.state = 'ready';
       job.payload = payload;
       job.stale = false;
       job.progress = null;
       job.at = now();
+      job.aborter = null;
       try { await saveCache(range, payload, job.at); } catch { /* 落盘失败不影响本次展示 */ }
     } catch (e) {
+      /* ⚠️ 撤销**不走**这条路径：上面四个闸门都显式「恢复状态 + return」，
+       * 靠 throw 落进这里会留下 state:'failed' 和 job.error ——
+       * 用户明明点了撤销，界面却弹出「生成失败：BodyStreamBuffer was aborted」，
+       * 而且 payload 会被保留着当「旧榜」显示。
+       * 下面这半句是**兜底**：万一最后一道闸之后还有东西能把 AbortError 抛出来，
+       * 也按撤销处理，绝不替用户把主动撤销记成失败。 */
+      if (job.cancelReq) { cancelRestore(range, job); return; }
       /* 失败不清旧结果：payload 留着，前端标「旧」（spec 第七节 系统状态）。 */
       job.state = 'failed';
       job.error = String((e && e.message) || e);
       job.progress = null;
+      job.aborter = null;
     }
+  }
+
+  /* `peekImpl(range)` —— **纯只读**读内存/磁盘缓存，**绝不**起任务。
+   *
+   * 为什么需要它：榜期卡展开时要把「对面那一档」的规模也摆出来做对照
+   * （spec §6.7）。但对面那档通常还没算过 —— 走 ensure() 会**直接触发
+   * 一次真评分**：翻 45 页 + 一两分钟 AI + 烧 token。用户只是「看一眼
+   * 周榜有多少张」，却等了一分钟还花了钱，这绝对不行。
+   *
+   * 所以这里是「有就返回、没有就 null」，绝不兜底去跑。
+   * ⚠️ 前端拿到 null 要显示「尚未生成」，**不能**当成 0（0 会被误读成空榜）。
+   * （写成具名函数而不是对象方法：hold() 要在闭包里直接调它。） */
+  async function peekImpl(range) {
+    const cur = jobs.get(range);
+    /* ⚠️ state:'cancelled' 的空壳刻意**不影响**这里：它 payload 为空，会自然落到
+     * 下面的读盘分支 —— 磁盘上有上一轮的产物就照旧回那份（「旧榜原地不动」，
+     * 撤销不删磁盘），没有就回 null ⇒ 调用方给 status:'none'（周榜「还没评过分」）。
+     * 也就是说 peek / hold 永远不会自己吐出 'cancelled' 这个状态，
+     * 前端拿到的只有 none 或真实缓存，不存在第三种。 */
+    if (cur && cur.payload) {
+      return { status: cur.state === 'failed' ? 'failed' : 'ready',
+               payload: cur.payload, stale: !!cur.stale, at: cur.at || 0 };
+    }
+    try {
+      const hit = await loadCache(range);
+      if (hit && hit.payload) {
+        return { status: 'ready', payload: hit.payload, stale: false, at: hit.at || 0 };
+      }
+    } catch { /* 读盘失败就当没有 */ }
+    return null;
   }
 
   return {
     ensure,
     snapshot,
-    /* `peek(range)` —— **纯只读**读内存/磁盘缓存，**绝不**起任务。
-     *
-     * 为什么需要它：榜期卡展开时要把「对面那一档」的规模也摆出来做对照
-     * （spec §6.7）。但对面那档通常还没算过 —— 走 ensure() 会**直接触发
-     * 一次真评分**：翻 45 页 + 一两分钟 AI + 烧 token。用户只是「看一眼
-     * 周榜有多少张」，却等了一分钟还花了钱，这绝对不行。
-     *
-     * 所以这里是「有就返回、没有就 null」，绝不兜底去跑。
-     * ⚠️ 前端拿到 null 要显示「尚未生成」，**不能**当成 0（0 会被误读成空榜）。
-     */
-    async peek(range) {
-      const cur = jobs.get(range);
-      if (cur && cur.payload) {
-        return { status: cur.state === 'failed' ? 'failed' : 'ready',
-                 payload: cur.payload, stale: !!cur.stale, at: cur.at || 0 };
-      }
-      try {
-        const hit = await loadCache(range);
-        if (hit && hit.payload) {
-          return { status: 'ready', payload: hit.payload, stale: false, at: hit.at || 0 };
-        }
-      } catch { /* 读盘失败就当没有 */ }
-      return null;
+    /* v1.3.1 提前结束：置 stopReq 即可 —— 抓取停在页间、打分停在块间，
+     * 正在飞的那一手 AI 请求顺手 abort（signal 已挂到 callModel）。
+     * 之后这一轮照常走完「打分（剩下的不再打）→ 组榜 → 落盘」，
+     * 前端轮询自然会看到 ready。对非 building 状态调用是无害空操作。 */
+    stop(range) {
+      const j = jobs.get(range);
+      if (!j || j.state !== 'building') return false;
+      j.stopReq = true;
+      if (j.progress) j.progress = Object.assign({}, j.progress, { stopping: true });
+      if (j.aborter) { try { j.aborter.abort(); } catch { /* 已飞完就算了 */ } }
+      return true;
     },
+    /* v1.3.3 撤销：置 cancelReq 即可 —— 打断的三个协作点（页间 / 块间 / 正在飞的
+     * 那一手 AI）与 stop 共用同一套，区别只在 run() 撞上 cancelReq 时**整轮作废**：
+     *   不组榜、不落盘、不让旧 payload 被任何半成品覆盖，
+     *   job 恢复到「这轮没发生过」（有旧榜就回到那份旧榜，没有就当这一档从没算过）。
+     *
+     * ⚠️ 与 stop 的关系：两个标记**互不影响**，stopping 期间**仍然允许撤销** ——
+     *    提前结束的产物此刻还没落盘，此时反悔想彻底作废完全来得及；
+     *    反过来也一样，撤销之后再点提前结束就是空操作（job 已经不是 building 了）。
+     *    （state:'cancelled' 的空壳吃 stop 同样是空操作 —— 那一轮早就不存在了。）
+     *
+     * ⚠️ abort 必须复用 job.aborter：signal 才是能掐掉「正在飞的那一手」的唯一把手，
+     *    只置标记的话那一手会照常打完并返回，白烧那一手的 token（8 条 × 六赛道）。
+     *
+     * 对非 building 状态调用是幂等空操作（什么都不做，返回 false），
+     * 调用方照常拿 snapshot() 包 boardResponse 回给前端。 */
+    cancel(range) {
+      const j = jobs.get(range);
+      if (!j || j.state !== 'building') return false;
+      j.cancelReq = true;
+      if (j.progress) j.progress = Object.assign({}, j.progress, { cancelling: true });
+      if (j.aborter) { try { j.aborter.abort(); } catch { /* 已飞完就算了 */ } }
+      return true;
+    },
+    /* v1.3.1 周榜不自动：**只读现状、绝不 ensure** ——
+     * building 就回快照（让前端接着轮询），否则等价 peek（缓存/none）。
+     * 与 peek 的分工：peek 是「对面那档的对照数据」（UI 要 boards），
+     * hold 是「这一档现在什么状态」（UI 要 building 进度或 none 门槛）。
+     * ⚠️ state:'cancelled' 的空壳**刻意**落进 peek 那一支：周榜撤销后要回到
+     *    「还没评过分」的入口卡（磁盘上有旧榜就照旧显示那份 —— 撤销不删磁盘产物）。 */
+    async hold(range) {
+      const cur = jobs.get(range);
+      if (cur && cur.state === 'building') return snapshot(range);
+      return peekImpl(range);
+    },
+    peek: peekImpl,
     /* 供 ?wait=1 / 脚本自测：把当前这一轮 await 完 */
     wait(range) {
       const j = jobs.get(range);
@@ -607,16 +847,39 @@ export function createBoardEngine({ fetchPage, resolveAi, loadCache, saveCache, 
 /* ---------------- 响应形状（spec 第四节） ---------------- */
 
 export function boardResponse(range, snap) {
+  /* v1.3.3 runId 一路带到协议层：前端轮询比对的依据就是它。
+   * 注意它**不进 payload** —— payload 是要落盘的，把「某一轮任务的编号」
+   * 写进缓存文件毫无意义，还会让下一轮读出来误以为是自己的。
+   * ⚠️ 没有任务时为 null，前端比对前要判空。 */
+  const runId = snap.runId || null;
   if (snap.status === 'ready' || (snap.status === 'failed' && snap.payload)) {
     return Object.assign({}, snap.payload, {
       range,
       stale: !!(snap.stale || snap.status === 'failed'),
       status: snap.status === 'failed' ? 'failed' : 'ready',
       error: snap.error || null,
+      runId,
+      /* 撤销过的那一档，恢复出的 ready（旧榜）也要带上标记 ——
+       * 否则前端分不出「撤销回来的旧榜」与「刚跑完的新榜」，
+       * 刷新页面丢了自己的本地标记后就会误弹一次结果卡。 */
+      cancelled: !!snap.cancelled,
     });
   }
   if (snap.status === 'failed') {
-    return { range, status: 'failed', error: snap.error || '生成失败', boards: [] };
+    return { range, status: 'failed', error: snap.error || '生成失败', boards: [], runId };
   }
-  return { range, status: 'building', progress: snap.progress || null, boards: [] };
+  /* v1.3.3 撤销（没有旧榜的那条路）：没有半点产物可给，但**必须是个静止态** ——
+   * 落到 building 兜底会让前端「只在 ready/failed/none 时停轮询」的逻辑永不终止：
+   * 转圈永久转、"重新评分"按钮永久 disabled、弹窗卡在「正在撤销…」。 */
+  if (snap.status === 'cancelled') {
+    return { range, status: 'cancelled', boards: [], runId: null, cancelled: true };
+  }
+  /* idle = 这一档在内存里连个 job 都没有（从来没起过任务的周榜等）。
+   * 以前它会掉进下面的 building 兜底 —— 同一个坑（轮询永不落定），一并补掉。 */
+  if (snap.status === 'idle') {
+    return { range, status: 'none', boards: [], runId: null };
+  }
+  /* building：进度帧里自己也带了一份 runId（job.progress.runId），
+   * 顶层再给一份是为了让前端有一处固定位置可读，不必先判 progress 在不在。 */
+  return { range, status: 'building', progress: snap.progress || null, boards: [], runId };
 }

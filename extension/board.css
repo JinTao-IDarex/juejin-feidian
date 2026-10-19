@@ -96,6 +96,39 @@
   --line2: #E0E3E8;
   --page-bg: #F4F5F7;
 
+  /* —— 语义色命名层（v1.4）：只是给**已在用的色**起名，不新增色系 ——
+   * --go   #1E80FF 进行中（既有：.sc-step.is-now / .rng-cap.is-building）
+   * --ok   #12A173 完成    （既有：.sc-step.is-done .sc-dot）
+   * --warn #F5A524 不完整  （既有：离谱榜赛道色；本页**只用在不完整状态**）
+   * --fail #E8734A 失败    （既有：ICO_FAIL / .rng-cap.is-failed）
+   * ⚠️ --warn 绝不能用在赛道名 / 六赛道 chip 上 —— 那会读成「离谱榜」，
+   *    见 visual-spec §1.7。chip 一律各赛道自己的 --sc-color。 */
+  --go: #1E80FF;
+  --ok: #12A173;
+  --warn: #F5A524;
+  --fail: #E8734A;
+
+  /* ① Header 内联确认条 */
+  --cf-h: 34px;        /* = .bd-refresh 高，与 .rng-seg 同排同高 */
+  --cf-r: 10px;        /* = .bd-refresh 圆角 */
+  --cf-fs: 12px;       /* = .bd-refresh 字号 */
+  --cf-meta-fs: 11px;  /* = .rng-cap 字号 */
+  --cf-btn-h: 28px;    /* 条内按钮：比条矮 6，上下各露 3px 白 */
+  --cf-btn-r: 8px;     /* ≈ 高 × .29，与 .bd-rule(24/7) 同比例 */
+  --cf-w-max: 560px;   /* 展开宽度硬上限（防文案变长撞 .bd-hd-l） */
+  --cf-dur: 200ms;
+
+  /* ② 弹窗出口 */
+  --exit-h: 30px;      /* = .sc-stop 高 */
+  --exit-gap: 8px;
+
+  /* ③ 结果卡 */
+  --rs-ico: 40px;
+  --rs-btn-h: var(--d-btn);  /* 36px，详情大牌按钮那一档 */
+  --rs-gap: 12px;
+  --rs-dur: 260ms;
+  --rs-auto: 3200ms;         /* 完成态自动关闭（board.js 读同一个变量，别两处写） */
+
   --ease: cubic-bezier(.22, 1, .36, 1);
 }
 
@@ -145,6 +178,7 @@ html.embed .board {
   --thumb-ch: 28px;
   --thumb-w: 16px;
   --thumb-h: 22px;
+  --thumb-fs: 9px;   /* 浮层小卡更窄，序号字号跟小一档（.on 那张按 calc +1px） */
   --kb: 14px;
 
   /* 发牌视图自己的宽度 —— **不复用 --cover-w**，见上面注释。
@@ -159,6 +193,19 @@ html.embed .board {
   --chip-w: 30px;
   --chip-h: 42px;
   --strip-h: 58px;
+
+  /* v1.4 三个部件 —— 浮层档（Header 56 / 弹窗 640）整体收一档 */
+  --cf-h: 30px;
+  --cf-r: 9px;
+  --cf-fs: 11px;
+  --cf-meta-fs: 10px;
+  --cf-btn-h: 24px;
+  --cf-btn-r: 7px;
+  --cf-w-max: 500px;
+  --exit-h: 26px;      /* 与 html.embed .sc-stop 的 26 对齐 */
+  --exit-gap: 6px;
+  --rs-ico: 34px;      /* --d-btn 浮层已是 32，--rs-btn-h 自动跟 */
+  --rs-gap: 10px;
 }
 /* 榜单是一整页（不是浮在掘金上的卡片），浮层里也该有实底 */
 html.embed body { background: #F4F5F7; }
@@ -219,142 +266,70 @@ html.embed .bd-hd h1 { font-size: 22px; }
 html.embed .bd-hd-l { display: flex; align-items: baseline; gap: 10px; }
 html.embed .bd-hd-l p { margin: 0; font-size: 11px; }
 
-.bd-hd-r { display: flex; align-items: center; gap: 10px; }
+/* 顶对齐：右侧 = 榜期开关（上）+ 状态行（下）两行块，重新评分按钮要与
+ * 开关那一行同水平线 —— 整体居中的话按钮会沉到两行的中缝（实测偏低）。 */
+.bd-hd-r { display: flex; align-items: flex-start; gap: 10px; }
 
-/* ================= 榜期卡（v2，2026-10-05）=================
- * ⭐ 它替掉的是原来那个 `.seg` iOS 分段控件。改它的理由不是好看，是原来那个
- *    **信息量为零**：日榜=今天0点起、周榜=7天前这一刻（不是自然周，board-core.mjs:92），
- *    实测 117 vs 730 条扫描、6 倍差距；分布也完全不同（嘴硬榜 2 vs 0 张）。
- *    光写「日榜/周榜」四个字把这三件事全藏起来了，用户点进去才发现「暂无上榜」，
- *    像出了 bug。所以这张卡把 **时间窗 / 规模 / 状态** 三层摊开。
- * 规格见 spec §6.7。 */
-.rng { position: relative; flex: 0 0 auto; }
-
-.rng-card {
-  display: flex; align-items: center; gap: 12px;
-  width: 236px; height: 44px; padding: 6px 10px 6px 6px;
-  background: #fff; border: 1.5px solid var(--ink); border-radius: 12px;
-  box-shadow: 0 2px 6px rgba(28,31,36,.14);
-  transition: box-shadow .18s, border-color .18s;
-}
-.rng-card:hover { box-shadow: 0 3px 10px rgba(28,31,36,.20); }
-.rng-card:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
-.rng-card[aria-expanded="true"] { box-shadow: 0 3px 12px rgba(28,31,36,.22); }
-
-/* 左：榜期徽标。**降为身份标识**——原来是整个控件的主角，现在缩成一个小方块。 */
-.rng-tag {
-  flex: 0 0 auto; width: 62px; height: 32px;
-  display: flex; align-items: center; justify-content: center;
-  background: #F4F5F7; border-radius: 8px;
-  font-size: 13px; font-weight: 900; color: var(--ink);
+/* ================= 榜期切换（v1.3.2：日/周直切分段按钮）=================
+ * 历史：v0.7.0 用「榜期卡 + 展开对照面板」替掉过 `.seg` 分段控件（信息量理由，
+ * 见 spec §6.7 的历史记录）；v1.3.2 又换回直切的二段开关 —— 周榜不自动评
+ * （v1.3.1 hold）之后「切过去看看」零成本（没算过就亮开始屏），
+ * 「切换前先对照」的诉求消失，一键直达赢回操作步数。
+ * 状态没丢：按钮下方的 .rng-cap 接过原卡片第二行的全部职责
+ * （扫描/评分进度、尚未评分、提前结束、失败、演示标记）。 */
+.rng {
+  position: relative; flex: 0 0 auto;
+  display: flex; flex-direction: column; align-items: flex-end; gap: 6px;
 }
 
-/* 右：两行信息。第一行=时间窗（新增），第二行=规模（原来是页脚那句灰字）。 */
-.rng-txt {
-  flex: 1 1 auto; min-width: 0; text-align: left;
-  display: flex; flex-direction: column; gap: 1px;
+/* 二段开关（合体胶囊）：整体一块，与「重新评分」.bd-refresh 同高（34）/ 同圆角
+ * （10）/ 同字号（12）/ 同款投影 —— 排成一排是一套控件。选中指示 = 内部滑块
+ * （.rng-thumb，绝对定位 + transform 滑动），文字色随 .on 切换，底色不动。 */
+.rng-seg {
+  position: relative; display: inline-flex; gap: 0;
+  height: 34px; padding: 3px;
+  background: var(--ink); border-radius: 10px;
+  box-shadow: 0 2px 6px rgba(0,0,0,.18);
 }
-.rng-l1 {
-  font-size: 12px; font-weight: 700; line-height: 16px; color: var(--ink);
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+/* 滑块：宽度 = 半个胶囊减去内衬（calc((100% - 6px) / 2)），left 随选中段切换，
+ * transition 走 transform —— 用 transform: translateX(0/100%) 滑，不用 left 动画
+ * （left 会逐帧重排）。位置由 JS 按 data-range 写，与按钮文字精确对齐。 */
+.rng-thumb {
+  position: absolute; top: 3px; bottom: 3px; left: 3px;
+  width: calc(50% - 3px);
+  background: #fff; border-radius: 7px;
+  box-shadow: 0 1px 3px rgba(0,0,0,.28);
+  transform: translateX(0);
+  transition: transform .22s var(--ease);
 }
-.rng-l2 {
-  font-size: 11px; line-height: 15px; color: var(--ink3);
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+.rng-seg[data-on="week"] .rng-thumb { transform: translateX(100%); }
+/* 减动效口径与全页一致：走 board.js resolveMotion 落的 html.motion-lite
+ * （用户在首页选了 lite / system+系统减动效 才禁），不直接挂媒体查询 ——
+ * 否则系统开了 reduce 但页面档位是 full 时，全页都有动画就这里没有，口径分裂。 */
+html.motion-lite .rng-thumb { transition: none; }
+.rng-seg-btn {
+  position: relative; z-index: 1;
+  display: inline-flex; align-items: center; justify-content: center;
+  height: 28px; padding: 0 16px; border: 0; cursor: pointer;
+  background: transparent; color: rgba(255,255,255,.72);
+  font-size: 12px; font-weight: 500; line-height: 1;
+  transition: color .18s;
 }
+.rng-seg-btn:hover { color: #fff; }
+.rng-seg-btn:focus-visible { outline: 2px solid #fff; outline-offset: -3px; border-radius: 7px; }
+.rng-seg-btn.on { color: var(--ink); font-weight: 700; }
 
-.rng-ico {
-  flex: 0 0 auto; width: 18px; height: 18px;
-  display: flex; align-items: center; justify-content: center;
-  color: var(--ink2); font-size: 13px; line-height: 1;
-}
+/* 状态行：评分中蓝 / 失败橙 / 就绪灰。一眼可辨，替代旧卡片的三色边框 */
+.rng-cap { margin: 0; font-size: 11px; line-height: 13px; color: var(--ink3); }
+.rng-cap.is-building { color: #1E80FF; }
+.rng-cap.is-failed { color: #FF5A3C; }
 
-/* 三种状态：评分中（蓝）/ 失败（橙）/ 旧数据。
- * ⚠️ 这条是「切换代价可见」的关键 —— 原来切过去头部一点变化都没有，
- *    而周榜首次要翻 45 页、约 100 秒。 */
-.rng-card.is-building { border-color: #1E80FF; }
-.rng-card.is-building .rng-tag { background: #1E80FF; color: #fff; }
-.rng-card.is-building .rng-l1 { color: #1E80FF; }
-.rng-card.is-building .rng-ico {
-  border: 2px solid #1E80FF; border-radius: 50%;
-  border-top-color: transparent; font-size: 0;
-  animation: rngSpin .8s linear infinite;
-}
-@keyframes rngSpin { to { transform: rotate(360deg); } }
-@media (prefers-reduced-motion: reduce) { .rng-card.is-building .rng-ico { animation: none; } }
-
-.rng-card.is-failed { border-color: #E0E3E8; }
-.rng-card.is-failed .rng-tag { color: var(--ink3); }
-.rng-card.is-failed .rng-l1 { color: #FF5A3C; }
-.rng-card.is-failed .rng-ico { color: #FF5A3C; font-weight: 900; }
-
-/* ---- 展开态下拉 ---- */
-.rng-pop {
-  position: absolute; top: 52px; right: 0; z-index: 40;
-  width: 460px; padding: 6px;
-  background: #fff; border: 1px solid var(--line2); border-radius: 14px;
-  box-shadow: 0 8px 24px rgba(0,0,0,.18);
-}
-
-/* 四列网格：赛道 / 日榜 / 周榜 / 差异 —— 头和行必须共用同一套列宽 */
-.rng-pop-hd, .rng-row, .rng-pop-sum {
-  display: grid; grid-template-columns: 96px 66px 66px 1fr;
-  gap: 10px; align-items: center;
-}
-.rng-pop-hd { padding: 8px 8px 8px 12px; }
-.rng-pop-hd span {
-  font-size: 11px; color: var(--ink3);
-}
-.rng-pop-hd span:nth-child(2), .rng-pop-hd span:nth-child(3) { text-align: center; }
-
-.rng-rows { display: flex; flex-direction: column; gap: 2px; }
-.rng-row { padding: 7px 8px 7px 12px; border-radius: 8px; cursor: pointer; }
-.rng-row:hover { background: #F4F5F7; }
-.rng-row:focus-visible { outline: 2px solid var(--ink); outline-offset: -1px; }
-.rng-row.is-pending { cursor: default; opacity: .55; }
-.rng-row.is-pending:hover { background: none; }
-.rng-row-n { font-size: 13px; font-weight: 600; color: var(--ink); }
-.rng-row-d, .rng-row-w {
-  text-align: center; font-family: Inter, sans-serif;
-  font-size: 14px; font-weight: 900; color: var(--ink);
-}
-.rng-row-x { font-size: 12px; color: var(--ink3); }
-
-/* ⚠️ 空榜那行用暖底 + 橙色数字：这是**数据事实**（分布天然偏斜，spec §11.6），
- *    不是加载失败。旧设计里点进去只看到「暂无上榜」，用户会以为是 bug。 */
-.rng-row.is-empty { background: #FFF9F5; }
-.rng-row.is-empty:hover { background: #FFF3E8; }
-.rng-row.is-empty .rng-row-w { color: #FF5A3C; }
-.rng-row.is-empty .rng-row-x { color: #FF5A3C; font-weight: 700; }
-.rng-row.is-more .rng-row-x { color: #12A173; font-weight: 600; }
-
-.rng-pop-sum {
-  margin-top: 2px; padding: 10px 8px 10px 12px;
-  background: #F4F5F7; border-radius: 8px;
-}
-.rng-pop-sum .rng-row-n { font-size: 12px; font-weight: 700; }
-.rng-pop-sum .rng-row-x { font-size: 11px; }
-
-.rng-pop-tip {
-  margin: 4px 0 0; padding: 9px 12px 5px;
-  font-size: 11px; line-height: 16px; color: var(--ink3);
-}
-
-/* ---- 浮层档位（722 / Header 只有 56）----
- * 卡要压扁到 30：徽标 22、两行文字降到 11/13。
- * 展开面板**不受 Header 高度限制**（它 absolute 定位），但宽度要跟着缩，
- * 否则 460 宽会顶到浮层右缘。 */
-html.embed .rng-card { width: 210px; height: 34px; padding: 4px 8px 4px 4px; gap: 9px; }
-html.embed .rng-tag { width: 54px; height: 26px; font-size: 12px; }
-html.embed .rng-l1 { font-size: 11px; line-height: 14px; }
-html.embed .rng-l2 { font-size: 10px; line-height: 13px; }
-html.embed .rng-ico { width: 16px; height: 16px; font-size: 12px; }
-html.embed .rng-pop { top: 40px; width: 400px; }
-html.embed .rng-pop-hd, html.embed .rng-row, html.embed .rng-pop-sum {
-  grid-template-columns: 84px 58px 58px 1fr;
-}
-html.embed .rng-row-n { font-size: 12px; }
-html.embed .rng-row-d, html.embed .rng-row-w { font-size: 13px; }
+/* ---- 浮层档位（722 / Header 只有 56）：与 html.embed .bd-refresh 同步压扁 ---- */
+html.embed .rng { gap: 4px; }
+html.embed .rng-seg { height: 30px; padding: 2.5px; }
+html.embed .rng-thumb { top: 2.5px; bottom: 2.5px; left: 2.5px; width: calc(50% - 2.5px); border-radius: 6px; }
+html.embed .rng-seg-btn { height: 25px; padding: 0 12px; font-size: 11px; }
+html.embed .rng-cap { font-size: 10px; line-height: 12px; }
 
 .bd-refresh {
   display: inline-flex; align-items: center; gap: 6px;
@@ -376,14 +351,84 @@ html.embed .bd-refresh { height: 30px; padding: 0 11px; font-size: 11px; }
   gap: var(--gap16);
 }
 
-/* ================= 视图 3 · 评分中发牌（v0.8.0） =================
+/* ================= 视图 3 · 评分中发牌（v1.3.3：弹窗双栏） =================
  *
- * ⭐ 这一屏替代了原来的 .sys 居中弹窗（那张 520px 卡片放不下六摞牌）。
- * 设计稿锚点：Ardot 页面「评分中发牌 v0.8」14:15（站点）/ 14:151（浮层 722）。
- *
- * 纵向预算见下面 .sc-hall 那段注释（站点 673/1000、浮层 520/722）。
- * ⚠️ 改动六摞或发牌台高度时必须重算 —— .bd-body 是 flex 且 min-height:0，
- *    超了会被压扁而不是滚动（用户看不到任何提示）。 */
+ * v0.8.0 是整页视图（阶段条 + 六摞横排 + 发牌台）。v1.3.3 按用户交互口径
+ * 收进**弹窗**：点「重新评分」（或日榜自动评分）浮出一个进度对话框 ——
+ *   读取阶段：左侧牌堆随扫描页数长厚（一摞已读的牌）；
+ *   分析阶段：左堆 = 待发的牌，右侧 = 六个分类堆（3×2），
+ *              AI 每回一手，牌就从左堆**飞**进右侧对应的分类堆
+ *              （scDeal 的 --flydx/--flydy 起点向量，JS 按实测矩形算）。
+ * 后面的页面不动（遮罩压暗），任务结束弹窗自己收起。 */
+
+/* 遮罩 + 对话框。#viewScoring 只剩「开/关」职责，两个子元素各自 fixed。 */
+.sc-mask {
+  position: fixed; inset: 0; z-index: 59;
+  background: rgba(23, 26, 31, .44);
+  /* 压暗之外再隔一层毛玻璃：后面的牌阵虚掉，视线全落在分析舱上 */
+  backdrop-filter: blur(5px) saturate(.92);
+  -webkit-backdrop-filter: blur(5px) saturate(.92);
+}
+.sc-modal {
+  position: fixed; z-index: 60; left: 50%; top: 50%;
+  transform: translate(-50%, -50%);
+  width: min(1060px, 94vw); max-height: min(720px, 92vh);
+  display: flex; flex-direction: column; gap: 10px;
+  padding: 16px 16px 14px;
+  background: linear-gradient(180deg, #FFFFFF 0%, #F6F7FB 100%);
+  border-radius: 18px;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, .32),
+              inset 0 1px 0 rgba(255, 255, 255, .9);
+  animation: scPop .22s var(--ease) both;
+}
+/* 舱顶六赛道渐变发丝：评分舱的签名条，颜色 = 六条赛道（与 board.js TRACKS 同序）。
+ * 低透明度收着打 —— 是「签名」不是横幅。 */
+.sc-modal::before {
+  content: ''; position: absolute; left: 18px; right: 18px; top: 0; height: 3px;
+  border-radius: 0 0 3px 3px; pointer-events: none;
+  background: linear-gradient(90deg, #FF5A3C, #F5A524, #A855F7, #1E80FF, #454D57, #12A173);
+  opacity: .5;
+}
+@keyframes scPop {
+  from { transform: translate(-50%, -50%) scale(.96); opacity: 0; }
+  to   { transform: translate(-50%, -50%) scale(1); opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) { .sc-modal { animation: none; } }
+
+/* 头部：标题 + 动态副题 + 提前结束。副题 = 原「发牌台标题」的职责 */
+.sc-modal-hd { display: flex; align-items: center; gap: 12px; }
+.sc-modal-hd b {
+  display: flex; align-items: center; gap: 7px;
+  font-size: 15px; font-weight: 900; color: var(--ink);
+}
+/* 标题前的 AI 火花：蓝紫渐变 + 呼吸闪烁（减动效下静止） */
+.sc-modal-hd b::before {
+  content: '✦'; font-size: 13px; line-height: 1;
+  background: linear-gradient(135deg, #1E80FF, #A855F7);
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+  animation: scTwinkle 2.2s ease-in-out infinite;
+}
+@keyframes scTwinkle {
+  0%, 100% { opacity: .5; transform: scale(.88); }
+  50%      { opacity: 1;  transform: scale(1.12); }
+}
+html.motion-lite .sc-modal-hd b::before { animation: none; }
+.sc-modal-sub {
+  flex: 1 1 auto; min-width: 0;
+  font-size: 12px; font-weight: 600; color: var(--ink2);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+/* 提前结束（v1.3.1）：与「重新评分」同一套描边按钮语言，但收着一档
+ * —— 它是「止损」不是主操作，别跟发牌抢视觉。 */
+.sc-stop {
+  flex: 0 0 auto; display: flex; align-items: center; gap: 6px;
+  height: 30px; padding: 0 12px; border-radius: 999px;
+  border: 1px solid var(--line2); background: #fff; color: var(--ink2);
+  font-size: 12px; font-weight: 600; line-height: 1; cursor: pointer;
+  transition: border-color .15s, color .15s, background .15s;
+}
+.sc-stop:hover { border-color: #C9CDD4; color: var(--ink); background: #F7F8FA; }
 
 /* ---- 阶段条：把「抓取 → 筛选 → 分赛道 → 排名次」四步显式化 ----
  * 动机：730 条扫描在 45 页里发生，用户此前只知道「在转圈」。
@@ -392,168 +437,185 @@ html.embed .bd-refresh { height: 30px; padding: 0 11px; font-size: 11px; }
   flex: 0 0 auto;
   display: flex; align-items: center; justify-content: space-between;
   gap: 4px;
-  height: 44px; padding: 0 8px;
+  height: 40px; padding: 0 8px;
   background: #fff; border: 1px solid var(--line); border-radius: 12px;
 }
 .sc-step {
-  display: flex; align-items: center; gap: 10px;
-  height: 100%; padding: 0 14px;
+  display: flex; align-items: center; gap: 8px;
+  height: 100%; padding: 0 12px;
   border-radius: 8px;
-  font-size: 13px; font-weight: 600; color: var(--ink2);
+  font-size: 12px; font-weight: 600; color: var(--ink2);
   white-space: nowrap;
 }
-.sc-step.is-now { background: #F5F8FF; color: #1E80FF; font-weight: 700; }
+.sc-step.is-now {
+  background: linear-gradient(180deg, #EFF5FF, #F7FAFF);
+  color: #1E80FF; font-weight: 700;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, #1E80FF 22%, #fff);
+}
 .sc-dot {
   display: flex; align-items: center; justify-content: center;
-  width: 22px; height: 22px; flex: 0 0 auto;
-  border-radius: 11px;
+  width: 20px; height: 20px; flex: 0 0 auto;
+  border-radius: 10px;
   background: #E9EBEF; color: var(--ink3);
-  font-size: 12px; font-weight: 700;
+  font-size: 11px; font-weight: 700;
 }
 .sc-step.is-done .sc-dot { background: #12A173; color: #fff; }
-.sc-step.is-now  .sc-dot { background: #1E80FF; color: #fff; }
+.sc-step.is-now  .sc-dot { background: #1E80FF; color: #fff; animation: scPulse 1.6s ease-out infinite; }
+/* 当前步的呼吸光圈：四步里只有「正在发生的」会呼吸 */
+@keyframes scPulse {
+  0%   { box-shadow: 0 0 0 0 rgba(30, 128, 255, .38); }
+  70%  { box-shadow: 0 0 0 7px rgba(30, 128, 255, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(30, 128, 255, 0); }
+}
+html.motion-lite .sc-step.is-now .sc-dot { animation: none; }
 .sc-txt b { font-weight: 700; color: var(--ink); }
 .sc-step.is-now .sc-txt b { color: #1E80FF; }
 
-/* ---- 六摞：发牌过程中逐张长大 ----
- * ⚠️ 与 .deck 的摞不同：这里的牌**内容是实的**（名次/分/判词），
- *    而且只有「已发出的」那些有内容。牌宽用发牌视图自己的 --sc-w
- *    （不碰 --cover-w，那是成品态 + 飞行动画的尺寸源）。
- * ⚠️ 六摞区**顶部对齐、自身不拉伸**（align-items:flex-start + flex:0 0 auto）：
- *    .sc-deck 若写成 flex:1 会吃掉 .bd-body 的全部余量，
- *    牌只占一半高度、下面拖一大片死白（实测站点版空 220px）。
- *    余量交给**发牌台**（它才是该吃掉空间的那一块：手牌 + 统计在底部收口）。*/
-.sc-deck {
-  flex: 0 0 auto;
-  display: flex; align-items: flex-start; justify-content: center;
-  gap: var(--deck-gap);
+/* ---- 弹窗主体：左牌堆 + 右 3×2 分类堆 ---- */
+.sc-body {
+  flex: 1 1 auto; min-height: 0;
+  display: flex; align-items: stretch; gap: 12px;
+}
+
+/* 左：已读 / 待发牌堆。扫描期牌堆越摞越厚，分析期每发一手薄一层 */
+.sc-hall {
+  flex: 0 0 212px;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 10px; padding: 14px;
+  background: linear-gradient(180deg, #F5F8FF 0%, #FFFFFF 80%);
+  border: 1px solid #E4EAF6; border-radius: 14px;
+}
+/* 牌堆：一摞背面朝上的牌，向左上错开微旋 —— 「一摞读取的卡」
+ * 内描边一道浅蓝框 = 牌背纹样（错开露出的边上也能看到框线） */
+.sc-hand { position: relative; width: 128px; height: 172px; flex: 0 0 auto; }
+.sc-hand i {
+  position: absolute; inset: 0;
+  background: #fff; border: 1px solid var(--line); border-radius: 10px;
+  box-shadow: 0 2px 6px rgba(28, 31, 36, .08),
+              inset 0 0 0 4px #F2F6FC;
+  transform: translate(calc(var(--i) * -3px), calc(var(--i) * -3px))
+             rotate(calc(var(--i) * -1.6deg));
+}
+/* 堆顶那张亮蓝边 = 下一手要从这里飞出去；光晕呼吸 = 「这张马上要发」 */
+.sc-hand i.is-going {
+  background: #F5F8FF; border: 1.5px solid #1E80FF;
+  box-shadow: 0 4px 12px rgba(30, 128, 255, .28),
+              inset 0 0 0 4px rgba(30, 128, 255, .08);
+  animation: scGoing 1.6s ease-in-out infinite;
+}
+@keyframes scGoing {
+  0%, 100% { box-shadow: 0 4px 12px rgba(30, 128, 255, .22), inset 0 0 0 4px rgba(30, 128, 255, .08); }
+  50%      { box-shadow: 0 6px 20px rgba(30, 128, 255, .44), inset 0 0 0 4px rgba(30, 128, 255, .14); }
+}
+html.motion-lite .sc-hand i.is-going { animation: none; }
+.fm-count { font-size: 14px; font-weight: 800; color: var(--ink); }
+/* ⭐ 「正在落位」这行是**动态的**：顶牌一换就换名字与颜色，
+ *    否则用户只看到数字在跳，不知道这一手发去了哪个赛道。 */
+.sc-hall em {
+  max-width: 100%;
+  font-size: 12px; font-style: normal; font-weight: 600;
+  color: var(--sc-now, var(--ink2));
+  text-align: center; line-height: 16px;
+}
+.sc-hall span { font-size: 11px; color: var(--ink3); text-align: center; }
+
+/* 右：六个分类堆 3×2。--fm-w 是弹窗里的牌宽（1:1.4 照旧，缩宽不压扁），
+ * 不碰 --sc-w（扩展浮层旧档位还引用它）也不碰 --cover-w（成品态尺寸源）。 */
+.fm-grid {
+  flex: 1 1 auto; min-width: 0;
+  --fm-w: 126px;
+  --fm-card-h: calc(var(--fm-w) * 1.4);
+  display: grid; grid-template-columns: repeat(3, 1fr);
+  gap: 10px 12px; align-content: center;
 }
 .sc-col {
-  width: var(--sc-w); flex: 0 0 auto;
-  display: flex; flex-direction: column; align-items: center; gap: 6px;
+  display: flex; flex-direction: column; align-items: center; gap: 4px;
+  min-width: 0;
 }
 .sc-pile {
   position: relative;
-  /* 高度 = 牌高 + 错开余量。⚠️ 必须留出这段：牌往下叠（新的在上），
-   *    不留的话最后一张会溢出到 .sc-meta（赛道名 + 计数）上，
-   *    实测 5~6 张就压住了 —— 而且 .sc-pile 不裁剪，压上去是**静默**的。 */
-  width: var(--sc-w);
-  height: calc(var(--sc-card-h) + var(--sc-fan) * 4px);
+  /* 高度 = 牌高 + 错开余量（SC_FAN_MAX=6 → 24px）。不裁剪、不留会静默压到
+   * 赛道名上 —— 见 spec §6.8 那段踩坑记录。 */
+  width: 100%; max-width: var(--fm-w);
+  height: calc(var(--fm-card-h) + 24px);
 }
-/* 一张已发出的牌。绝对定位 + 递增的 --i → 错开 4px（与 .stack-face 同一种微散开）
- * ⚠️ 牌内是**三段分布**（头/中/尾），不是三行挤在顶端：
- *    牌高 283（1:1.4），三行 20/11/10px 的字只有 ~60px，
- *    顶端对齐会让下半张全空 —— 看着像没加载出来（实测空 200+px）。
- *    头部贴顶、判词贴底、中间用赛道符号撑住，正好把版式占满。
- * ⚠️ **底牌往下溢出容器会被看见**：.sc-pile 是固定高度且不裁剪，
- *    12 张牌 × 4px 错开 = 44px，最后一张会压到赛道名上（实测 10 张时就压了）。
- *    所以错开量在 **JS 侧封顶**（SC_FAN_MAX），CSS 只管画 —— min() in calc() 兼容性不稳。 */
+/* 一张已发出的牌。绝对定位 + 递增的 --i → 错开 4px。
+ * 牌内三段分布（头/中/尾）：头贴顶、判词贴底、中间赛道符号撑版式。 */
 .sc-card {
   position: absolute; left: 0; top: calc(var(--i) * 4px);
-  width: 100%; height: var(--sc-card-h);
-  display: flex; flex-direction: column; gap: 4px;
-  padding: 12px;
+  width: 100%; height: var(--fm-card-h);
+  display: flex; flex-direction: column; gap: 3px;
+  padding: 10px;
   background: #fff; border: 1px solid var(--line); border-radius: 10px;
-  animation: scDeal .34s var(--ease) both;
+  box-shadow: 0 2px 7px rgba(28, 31, 36, .06);
 }
-.sc-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
+/* ⭐ 入场动画只挂 .is-new（这屏第一次出现的牌，board.js 按 scSeen 标）。
+ *   起点 = 左侧牌堆中心 → 牌位的向量（JS 实测矩形写入 --flydx/--flydy）。
+ *   曾经挂在基类上：每次轮询重绘所有牌重播 → 整屏闪（spec §6.8 有记录）。 */
+.sc-card.is-new { animation: scDeal .4s var(--ease) both; }
+.sc-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 6px; }
 .sc-sym { display: flex; align-items: center; color: var(--sc-color, var(--ink3)); opacity: .55; }
 .sc-mid { flex: 1 1 auto; min-height: 0; display: flex; align-items: center; justify-content: center; }
-/* 顶牌（最新一张）吃赛道色 + 一道色边 —— 一眼能看出「刚落进哪一摞」 */
+/* 顶牌（最新一张）吃赛道色 + 一道色边 + 赛道色光晕 —— 一眼能看出「刚落进哪一摞」 */
 .sc-card.is-top {
   border-width: 1.5px;
   background: var(--sc-tint, #FFF);
   border-color: var(--sc-color, var(--line));
+  box-shadow: 0 5px 16px color-mix(in srgb, var(--sc-color, #1A1D21) 24%, transparent);
 }
-.sc-rank { font-size: 20px; font-weight: 800; line-height: 1; color: var(--sc-color, var(--ink)); }
-.sc-head { font-size: 11px; font-weight: 700; color: var(--sc-color, var(--ink2)); }
+.sc-rank { font-size: 17px; font-weight: 800; line-height: 1; color: var(--sc-color, var(--ink)); }
+.sc-head { font-size: 10px; font-weight: 700; color: var(--sc-color, var(--ink2)); }
 .sc-verdict {
-  font-size: 10px; line-height: 15px; color: var(--ink3);
-  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
+  font-size: 10px; line-height: 13px; color: var(--ink3);
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
   overflow: hidden;
 }
 @keyframes scDeal {
-  from { transform: translate(var(--flydx, 0), var(--flydy, 0)) scale(.86); opacity: 0; }
+  from { transform: translate(var(--flydx, 0), var(--flydy, 0)) scale(.7); opacity: 0; }
   to   { transform: translate(0, 0) scale(1); opacity: 1; }
 }
 /* 还没发到的赛道：虚线空堆 + 「等 AI 发牌」。
- * ⭐ 嘴硬榜常常是 0 张，这个空堆必须**看起来是「还没发」而不是「没有」**。 */
+ * ⭐ 嘴硬榜常常是 0 张，这个空堆必须**看起来是「还没发」而不是「没有」**。
+ * v1.5 起空堆跟赛道色淡染（--sc-color 由 .sc-col 继承下来）——
+ * 六个坑位一眼对得上六个赛道，不再是六个一样的灰框。 */
 .sc-pile.is-empty {
   display: flex; align-items: center; justify-content: center;
-  background: #FBFCFD; border: 1px dashed var(--line); border-radius: 10px;
-  font-size: 11px; color: #B6BCC6;
+  background: color-mix(in srgb, var(--sc-color, #8A9099) 4%, #FBFCFD);
+  border: 1px dashed color-mix(in srgb, var(--sc-color, #C9CDD4) 38%, #fff);
+  border-radius: 10px;
+  font-size: 11px; color: color-mix(in srgb, var(--sc-color, #B6BCC6) 60%, #fff);
 }
-.sc-meta { display: flex; align-items: center; gap: 8px; }
-.sc-name { font-size: 13px; font-weight: 700; color: var(--sc-color, var(--ink)); }
+.sc-meta { display: flex; align-items: center; gap: 6px; }
+.sc-name { font-size: 12px; font-weight: 700; color: var(--sc-color, var(--ink)); }
 .sc-num {
-  min-width: 34px; height: 20px; padding: 0 8px;
+  min-width: 30px; height: 18px; padding: 0 7px;
   display: flex; align-items: center; justify-content: center;
   border-radius: 6px;
   background: var(--sc-tint, #F0F2F5);
-  font-size: 12px; font-weight: 700; color: var(--sc-color, var(--ink2));
+  font-size: 11px; font-weight: 700; color: var(--sc-color, var(--ink2));
 }
 
-/* ---- 发牌台：待发手牌 + 归榜/落选统计 ----
- * ⚠️ **高度固定 96，不是 flex:1**。我试过让它吃掉 .bd-body 的全部余量，
- *    结果它涨到 365px 高、里面只有三行小字 + 一手牌 —— 一大片空白卡在中间，
- *    比之前的死白更难看。发牌台是**信息条**，不是主视觉：
- *    六摞才是主角，它只负责在底部收口。
- * 纵向预算：
- *   站点 1000（最松）：96+48+44+16+309+16+96+48 = 673 → 余 327
- *   浮层 722（最紧） ：56 +32+40+16+236+16+76+48 = 520 → 余 202
- * 余量全落在六摞与发牌台之间（margin-top:auto 的呼吸区），不溢出。 */
-.sc-hall {
-  flex: 0 0 auto;
-  /* margin-top:auto —— 余量全推给发牌台与六摞之间的这段（呼吸区），
-   * 六摞贴着阶段条、发牌台贴着底边。这样无论窗口多高，版式都稳定，
-   * 不会像flex:1 那样把发牌台撑成一大块空白。 */
-  margin-top: auto;
-  display: flex; align-items: center; justify-content: space-between; gap: 16px;
-  height: 96px; padding: 0 14px;
-  background: #fff; border: 1px solid var(--line); border-radius: 12px;
-}
-.sc-hall-l { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-/* ⭐ 「正在落位」这行是**动态的**：顶牌一换就换名字与颜色，
-   *    否则用户只看到数字在跳，不知道这一手发去了哪个赛道。 */
-.sc-hall-l b { font-size: 13px; font-weight: 700; color: var(--ink); }
-.sc-hall-l em {
-  display: block; margin-top: 2px;
-  font-size: 12px; font-style: normal; font-weight: 600;
-  color: var(--sc-now, var(--ink2));
-}
-.sc-hall-l span { font-size: 11px; color: var(--ink3); }
-/* 手牌：叠着的一手（要飞走的那张先亮蓝边 + 投影） */
-.sc-hand { position: relative; width: 190px; height: 66px; flex: 0 0 auto; }
-.sc-hand i {
-  position: absolute; top: 50%; margin-top: -30px; left: calc(var(--i) * 16px);
-  width: 60px; height: 60px;
-  background: #fff; border: 1px solid var(--line); border-radius: 8px;
-}
-.sc-hand i.is-going {
-  background: #F5F8FF; border: 1.5px solid #1E80FF;
-  box-shadow: 0 4px 10px rgba(30,128,255,.30);
-}
-
-/* 浮层 722：发牌视图收窄。⚠️ 改了这里必须重算上面那条纵向预算。
-   * ⚠️⚠️ **不许动 --cover-w / --cover-h**：那是成品态封面牌、摞、以及
-   * 「点一摞 → 发牌入场」飞行动画的尺寸源，改它会连带把六摞和飞牌一起改掉。
-   * 发牌视图有自己的 --sc-w，高度按 1:1.4 跟出来 —— 缩宽不压扁。 */
-html.embed .sc-phase { height: 40px; }
-html.embed .sc-step { padding: 0 10px; font-size: 12px; gap: 8px; }
-html.embed .sc-dot { width: 18px; height: 18px; font-size: 11px; }
-html.embed .sc-card { height: var(--sc-card-h); padding: 10px; }
-html.embed .sc-rank { font-size: 18px; }
-/* 浮层里省高度：判词先让位（中间那段赛道符号已经把版式撑住了） */
+/* 浮层 722：弹窗收窄一档。⚠️⚠️ **不许动 --cover-w / --cover-h**：
+ * 那是成品态封面牌、摞、以及「点一摞 → 发牌入场」飞行动画的尺寸源。 */
+html.embed .sc-modal { width: min(920px, 96vw); max-height: min(640px, 94vh); padding: 12px; gap: 8px; }
+html.embed .sc-modal-hd b { font-size: 13px; }
+html.embed .sc-modal-sub { font-size: 11px; }
+html.embed .sc-stop { height: 26px; padding: 0 10px; font-size: 11px; }
+html.embed .sc-phase { height: 34px; }
+html.embed .sc-step { padding: 0 8px; font-size: 11px; gap: 6px; }
+html.embed .sc-dot { width: 16px; height: 16px; font-size: 10px; }
+html.embed .sc-hall { flex-basis: 170px; padding: 10px; gap: 8px; }
+html.embed .sc-hand { width: 104px; height: 140px; }
+html.embed .fm-count { font-size: 12px; }
+html.embed .sc-hall em { font-size: 11px; line-height: 14px; }
+html.embed .sc-hall span { font-size: 10px; }
+html.embed .fm-grid { --fm-w: 96px; gap: 8px 9px; }
+html.embed .sc-card { padding: 8px; }
+html.embed .sc-rank { font-size: 14px; }
+html.embed .sc-head { font-size: 9px; }
 html.embed .sc-verdict { display: none; }
-/* 发牌台 76（不是 54）：54 会把手牌那60px 的牌切掉一半 ——
-   * ⚠️ .sc-hall 是固定 height、不滚动，被切掉的部分是**静默消失**的，
-   *   页面上看不出任何报错。纵向预算：56+32+40+16+236+16+76+48 = 520 < 722。 */
-html.embed .sc-hall { height: 76px; }
-html.embed .sc-hall-l b { font-size: 12px; }
-html.embed .sc-hall-l em { font-size: 11px; }
-html.embed .sc-hall-l span { font-size: 10px; }
-html.embed .sc-hand { width: 176px; height: 46px; }
-html.embed .sc-hand i { width: 44px; height: 44px; margin-top: -22px; left: calc(var(--i) * 16px); }
+html.embed .sc-name { font-size: 11px; }
+html.embed .sc-num { min-width: 24px; height: 16px; font-size: 10px; padding: 0 5px; }
 html.embed .sc-sym { opacity: .5; }
 html.embed .sc-hand i { width: 52px; height: 34px; }
 
@@ -600,9 +662,9 @@ html.embed .sc-hand i { width: 52px; height: 34px; }
   --fx-yield1: 7%;    /* 悬停：邻牌向外让 7% 牌宽 */
   --fx-yield2: 5%;    /* 悬停：第二圈再让 5%，递次散开 */
 }
-/* ⚠️ 与详情 .cx 分家（原先是同一组规则）：.cx 那边拖动跟手、opacity 必须
- *    立即跟随（check_extension.py 有断言）；首页扇面没有拖动，进出扇面
- *    的牌恰恰要靠 opacity 淡入淡出，所以 .fx 给 opacity 也挂过渡。 */
+/* ⚠️ 与详情 .cx 分家（原先是同一组规则）：.cx 那边拖拽跟手期间过渡全关
+ *    （.slot.dragging，check_extension.py 有断言），抽走那一下才挂动画；
+ *    首页扇面没有拖动，进出扇面的牌恰恰要靠 opacity 淡入淡出。 */
 .fx {
   position: absolute; inset: 0;
   transition: transform var(--fx-dur) var(--ease), opacity var(--fx-dur) ease;
@@ -735,52 +797,64 @@ html.embed .sc-hand i { width: 52px; height: 34px; }
   background-repeat: no-repeat; background-position: center bottom;
   background-size: contain;
 }
-/* 赛道名：贴纸字 = 实色字 + 八向白色 text-shadow 描边 + 一层下投影。
+/* 赛道名（v1.2 手写毛笔版）：马善政楷书 + 整体微倾 + 逐字跳动 + 硬偏移投影。
  * ⚠️ 不用 -webkit-text-stroke —— 它的描边画在字形**之上**，笔画会被吃掉一圈，
- *    40px 的字肉眼可见地变瘦；HTML 文本上的 paint-order 又不可靠。 */
+ *    毛笔字的枯笔细节会被描边直接抹平；HTML 文本上的 paint-order 又不可靠。
+ * ⚠️ 毛笔体**千万别配 font-weight:900** —— 它只有 400 一档，合成加粗会把
+ *    枯笔糊成一团。字号比 Noto 900 那版放大（.173 → .188）：同字号下手写体
+ *    视觉上偏小。 */
 .cover-name {
   position: relative;
   flex: 0 0 auto; margin-top: calc(var(--fw) * .007);
-  /* ⚠️ 字号给到 .173（站点 52px）：参考图里赛道名的**绝对字号**和角色一个量级，
-   *    是卡面最大的字。第一版按 .133（40px）出图后明显偏小、被角色压住了。
-   * ⚠️ 字距不能给负值：900 字重 + 40px 时相邻字本来就贴，再收字距会让
-   *    白描边互相咬合，三个字糊成一整块白（第一版就是这个病）。 */
-  font-size: calc(var(--fw) * .173); line-height: calc(var(--fw) * .19);
-  /* 字距 0（不要负值）：中文三个字本来就不挤，而 "emo 榜" 是拉丁字母混排，
-   * 负字距会把 e/m/o 压到一起、白描边互相咬合。 */
-  font-weight: 900; letter-spacing: 0;
+  font-family: 'Ma Shan Zheng', 'Noto Sans SC', sans-serif;
+  font-weight: 400;
+  font-size: calc(var(--fw) * .188); line-height: calc(var(--fw) * .20);
+  letter-spacing: 0;
   text-align: center; white-space: nowrap;
   color: var(--tc);
+  transform: rotate(-2deg);
   text-shadow:
     -2px -2px 0 #fff, 0 -2px 0 #fff, 2px -2px 0 #fff,
     -2px 0 0 #fff, 2px 0 0 #fff,
     -2px 2px 0 #fff, 0 2px 0 #fff, 2px 2px 0 #fff,
-    0 5px 0 rgba(28,31,36,.10);
+    3px 4px 0 rgba(28, 31, 36, .18);
 }
-/* 定义行：参考图里两侧各有一条小竖线，做出「夹注」的分隔感。 */
+/* 逐字跳动（board.js 把每个字包成 <i>）：偶数位右倾下沉放大、3 的倍数轻抬 ——
+ * 参考图里马克笔大字就是「每个字各有各的角度」，不是一排整齐的印刷体 */
+.cover-name i {
+  display: inline-block; font-style: normal;
+  transform: rotate(-3deg);
+}
+.cover-name i:nth-child(2n) { transform: rotate(2.5deg) translateY(2px) scale(1.06); }
+.cover-name i:nth-child(3n) { transform: rotate(-1deg) translateY(-1px); }
+/* 定义行（v1.2）：龙藏手写体 + 底部一条手绘波浪线（替代旧版两侧竖线），
+ * 与参考图「副题 = 手写小字 + squiggle 下划线」对齐。 */
 .cover-def {
   position: relative;
   flex: 0 0 auto; margin-top: calc(var(--fw) * .013);
-  font-size: max(11px, calc(var(--fw) * .04));
-  line-height: 1.35; color: #6B7280;
+  padding-bottom: calc(var(--fw) * .026);
+  font-family: 'Long Cang', 'Noto Sans SC', sans-serif;
+  font-weight: 400;
+  font-size: max(11px, calc(var(--fw) * .047)); line-height: 1.3; color: #6B7280;
   text-align: center; white-space: nowrap;
   overflow: hidden; text-overflow: ellipsis;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='36' height='8' viewBox='0 0 36 8'%3E%3Cpath d='M0 4q4.5-4 9 0t9 0t9 0t9 0' fill='none' stroke='%23C3CAD3' stroke-width='1.6' stroke-linecap='round'/%3E%3C/svg%3E");
+  background-repeat: repeat-x;
+  background-position: bottom center;
+  background-size: auto 6px;
 }
-.cover-def::before, .cover-def::after {
-  content: ''; display: inline-block;
-  width: 1px; height: 10px; margin: 0 calc(var(--fw) * .02);
-  background: #CBD2DA; vertical-align: -1px;
-}
-/* 入口：赛道色描边胶囊 */
+/* 入口（v1.2）：浅灰胶囊 + 赛道色小图标 —— 参考图的 CTA 是「灰底胶囊 +
+ * 彩色小图标 + 深灰字」，不再是赛道色描边的白胶囊（那版跟标题抢彩色）。 */
 .cover-go {
   position: relative;
   flex: 0 0 auto; margin-top: calc(var(--fw) * .03);
   height: calc(var(--fw) * .113);
   display: flex; align-items: center; justify-content: center; gap: calc(var(--fw) * .02);
-  border: 1.5px solid var(--tc, var(--line2)); border-radius: 999px;
+  border: 1.5px solid #E0E3E8; border-radius: 999px;
   font-size: max(11px, calc(var(--fw) * .04)); font-weight: 600; line-height: 1;
-  color: var(--tc, var(--ink2)); background: #fff;
+  color: var(--ink2); background: #F1F3F6;
 }
+.cover-go .cv-sym { color: var(--tc, var(--ink2)); }
 .cover-go svg { display: block; }
 /* 空榜：不另做占位图 —— 名次显 0、分数显 —、定义显「暂无上榜」即可。
  * 降一点不透明度提示「这条赛道今天没货」，仍然可点。 */
@@ -859,50 +933,73 @@ html.embed .crumbs { height: 32px; }
 }
 .table.dragging .round { opacity: 0; pointer-events: none; }
 
-/* 大牌槽（详情）：三张卡叠在同一格（prev / cur / next），靠 --dx 整体跟手位移。
+/* 大牌槽（详情）：三张牌以「摞」叠在同一格 —— v1.3 抽牌动效。
  * v1.1：首页 .fslot 已改为扇形牌阵（见视图 1 那块），不再复用这套机制，
- *   这组规则现在只属于详情翻牌。 */
+ *   这组规则现在只属于详情翻牌。
+ * ⭐ v1.3 切牌从「胶片平移」改成「抽牌」（用户选定方向）：
+ *   · 静止：cur 在顶（z:3）；prev/next 以 --under(.96) 缩在正底下，
+ *     同轴又小于牌面 → 完全被盖住，但补位零成本（不删 DOM）。
+ *   · 切换（.fly + data-dir）：顶牌换到「飞行变换」—— 横移 ±56%（写百分比，
+ *     相对牌宽，站点 396 / 浮层 300 自动适配）+ 抬升 + 顺抽牌方向微旋 8° +
+ *     缩到 .94 + 淡出；同时行进方向那张底牌 --under→1 长上来接位。
+ *     方向与手势同向：下一张（→键 / 往左扔）牌往**左**抽，上一张往右抽。
+ *   · 拖拽（.dragging）：顶牌跟手（JS 逐帧写 --px/--pr），底牌按进度 --under；
+ *     过渡全关（v0.8.1「跟手的东西不能挂过渡」的延续：从只禁 opacity 收紧成
+ *     全禁），松手才放开过渡 —— 从手指当前位置接着播。
+ *   · 旧机制的 --dx/--peek/--slidegap/.sliding 与 v1.2.1 的 clip-path 全部撤销：
+ *     抽牌要**飞出窗口**，裁剪反而碍事；底牌从不离格，也没有「飘出牌台压箭头」
+ *     的问题（拖拽中箭头本来就淡出让位）。 */
 .slot, .fslot { position: relative; flex: 0 0 auto; }
 .slot { width: var(--card-w); height: var(--card-h); }
 .fslot { width: var(--fw); height: var(--fh); }
 .cx {
   position: absolute; inset: 0;
-  /* ⚠️ **只有 transform 挂过渡，opacity 不挂** —— 这是本轮修的关键。
-   * 挂`opacity .32s linear` 会让「对侧那张牌」在位移全程半透明地追：
-   *   位置 267ms 就到位，透明度 328ms 才满 → 中间那60ms 牌停在终位不动、
-   *   还在慢慢变实（实测 skew ≈ 315ms，肉眼就是「啪一下到位然后缓一下」）。
-   * 拖动时更糟：--peek 每次 pointermove 都在变，但透明度有 .32s 过渡，
-   *   永远追不上 → 「拖得快、牌跟不上」的橡皮筋感。
-   * 正确分工：**位移走 easing 曲线，透明度立即跟随**（跟手就该是即时的）。
-   * 静止态两张牌opacity 恒为 0，不需要过渡；`.slot.peek` 给多少就是多少。
-   * （首页 .fx 是另一回事：没有拖动，进出扇面要 opacity 过渡 —— 规则在视图 1 块。） */
-  transition: transform .32s var(--ease);
+  /* opacity 允许挂过渡：它只在「抽走」那一下 1→0（一次性目标，不逐帧 retarget）；
+   * 拖拽跟手期间 --px/--pr/--under 全在 transform 上、且 .dragging 已全禁过渡
+   * —— v0.8.1 那条「opacity 橡皮筋」的前提（--peek 逐帧改 opacity）已不存在。 */
+  transition: transform .32s var(--ease), opacity .32s var(--ease);
   will-change: transform;
 }
-/* 静止时左右两张完全退到画外；拖动时从对侧露出牌边。
- * --dx 是「当前牌跟手位移的像素数」（无单位），由 board.js 写在 .slot 上。
- * ⚠️那个 16px 是**静止/拖动态**的呼吸位（露出下一张的牌边，暗示还有牌），
- *    切牌动画期间必须收成0 —— 否则两张牌隔着 16px 各自平移，
- *    看起来像「两张独立的卡在飘」而不是「一叠牌被抽走一张」。
- *    board.js 在切牌时给 .slot 加 .sliding，用 --slidegap 覆盖它。 */
-.cx[data-pos="cur"] { transform: translate3d(calc(var(--dx, 0) * 1px), 0, 0); }
-.cx[data-pos="next"] {
-  transform: translate3d(calc(100% + var(--slidegap, 16px) + var(--dx, 0) * 1px), 0, 0);
+/* 顶牌：静止在格心；--px/--py/--pr/--ps 由 JS 跟手写入、.fly 覆写成飞行终态。
+ * ⚠️ 各状态的 transform 函数列表必须完全一致（translate3d/rotate/scale），
+ *    列表不同 CSS 会退化成离散跳变 —— 飞行终态走「覆写变量」而不是另写
+ *    transform，就是为了保住这条插值前提。 */
+.cx[data-pos="cur"] {
+  z-index: 3;
+  transform: translate3d(var(--px, 0px), var(--py, 0px), 0)
+             rotate(var(--pr, 0deg)) scale(var(--ps, 1));
 }
-.cx[data-pos="prev"] {
-  transform: translate3d(calc(-100% - var(--slidegap, 16px) + var(--dx, 0) * 1px), 0, 0);
+/* 底牌：缩着躺在顶牌正下方（完全被盖住）；--under 在拖拽/切换中长大。
+ * 不接指针（对侧牌只是「摞在下面的下一张」）。 */
+.cx[data-pos="next"], .cx[data-pos="prev"] {
+  z-index: 1;
+  transform: scale(var(--under, .96));
+  pointer-events: none;
 }
-/* 静止时左右两张完全退到画外，且不接收指针（对侧牌只是「下一张的预览」） */
-.cx[data-pos="next"], .cx[data-pos="prev"] { opacity: 0; pointer-events: none; }
-/* --peek 拖动时按位移比例淡入，不要一上来就整张露出来 */
-.slot.peek .cx[data-pos="next"], .slot.peek .cx[data-pos="prev"] { opacity: var(--peek, 1); }
+/* 行进方向那张底牌抬到 z:2 —— 两张底牌同轴同缩放，不抬的话 DOM 靠后的
+ * next 永远压着 prev，「往回抽」时露脸/接位的会是错的那张（spec §6.3） */
+.slot[data-dir="next"] .cx[data-pos="next"],
+.slot[data-dir="prev"] .cx[data-pos="prev"] { z-index: 2; }
+/* 抽走：顶牌飞行 + 淡出（两个方向镜像），方向底牌长上来接位。
+ * 抬升 --py 用**相对牌高的百分比**（-4.7% ≈ 站点 -26px / 浮层 -20px）——
+ * board.css 由构建逐字节复制进扩展，档位差异只能走同一份文件里的变量。 */
+.slot.fly[data-dir="next"] .cx[data-pos="cur"] {
+  --px: -56%; --py: -4.7%; --pr: -8deg; --ps: .94;
+  opacity: 0;
+}
+.slot.fly[data-dir="prev"] .cx[data-pos="cur"] {
+  --px: 56%; --py: -4.7%; --pr: 8deg; --ps: .94;
+  opacity: 0;
+}
+.slot.fly[data-dir="next"] .cx[data-pos="next"],
+.slot.fly[data-dir="prev"] .cx[data-pos="prev"] { --under: 1; }
+/* 拖拽中：跟手优先，过渡全关（松手/抽走才挂动画） */
+.slot.dragging .cx { transition: none; }
 .slot.instant .cx, .fslot.instant .fx { transition: none; }
 /* 轻量档兜底：board.html 只引 board.css，app.css 那套 html.motion-lite 规则到不了这页，
  * 所以这里补一条 —— 类由 board.js 的 resolveMotion() 落（与首页三档同口径）。 */
 html.motion-lite .cx, html.motion-lite .fx { transition: none; }
-/* 切牌动画中：两牌贴紧（--slidegap:0）—— 见上面那个 16px 的说明 */
-.slot.sliding { --slidegap: 0px; }
-/* 没过阈值 → 弹回，比正式切牌短（160ms） */
+/* 没过阈值 → 弹回摞上，比抽牌短（160ms） */
 .slot.snapping .cx { transition-duration: var(--snapdur, 160ms); }
 
 /* ---------- 大牌本体（396x554 = 1:1.4） ---------- */
@@ -967,12 +1064,21 @@ html.embed .bc-rank, html.embed .bc-score { font-weight: 700; }
 .thumb {
   flex: 0 0 auto; border-radius: 4px; background: #D8DDE3;
   width: var(--thumb-w); height: var(--thumb-h);
-  transition: width .22s var(--ease), height .22s var(--ease), background .2s, border-color .2s;
+  /* 序号 = 名次（board.js 写在卡面上）：小卡是 1:1.4 的迷你牌，数字居中
+   * 就像牌面点数。padding 归零 + flex 居中，别让 UA 的按钮默认内边距顶歪。 */
+  display: flex; align-items: center; justify-content: center;
+  padding: 0; border: 0;
+  font-family: Inter, 'Noto Sans SC', sans-serif; font-weight: 700;
+  font-size: var(--thumb-fs, 10px); line-height: 1; color: var(--ink3);
+  transition: width .22s var(--ease), height .22s var(--ease), background .2s,
+    border-color .2s, color .2s;
 }
 .thumb.on {
   width: var(--thumb-cw); height: var(--thumb-ch); border-radius: 5px;
   background: #fff; border: 1px solid currentColor;
   box-shadow: 0 2px 6px rgba(28,31,36,.12);
+  /* 数字吃 currentColor = 赛道色（行内 color 写在 .on 那张上，与描边同源） */
+  font-size: calc(var(--thumb-fs, 10px) + 1px); color: inherit;
 }
 .ops { display: flex; flex-direction: column; gap: 5px; flex: 0 0 auto; }
 .ops-num { font-size: var(--d-num); font-weight: 500; color: var(--ink2); }
@@ -1113,6 +1219,265 @@ html.embed .mask { background: transparent; }
 }
 .toast.on { opacity: 1; transform: translate(-50%, 0); }
 
+/* ==========================================================================
+ * v1.4 重新评分三部件（确认条 / 取消出口 / 结果卡）
+ *
+ * ⚠️ 这些块**必须排在文件末尾**（在 html.embed .bd-refresh / .sc-stop 的档位覆盖之后）：
+ * .cf-go/.cf-no 要盖住 `html.embed .bd-refresh{height:30}`（第 295 行）与
+ * `html.embed .sc-stop{height:26}`（第 502 行）—— 写在前面会被反向压掉。
+ * 只有变量定义进 :root / html.embed .board 两个既有块，样式一律追加在这里。
+ *
+ * 两条项目硬规矩：
+ *   ① 动效只走 transform 与尺寸，**绝不给 opacity 加 transition**（会让元素
+ *      「先到位再变实」）—— 淡入淡出一律走 @keyframes；
+ *   ② 减动效档只认 html.motion-lite 一个类（board.js 的 resolveMotion() 落），
+ *      且只减动效、不改信息停留时长。
+ * ========================================================================== */
+
+/* ================= ① Header 内联确认条 =================
+ * 展开 = 按钮让位（visibility:hidden 保留盒子 ⇒ .rng 零位移），
+ * 确认条从按钮左缘向左生长。动效只走 max-width：
+ *   · 不用 scaleX —— 字形会被横向压扁，从 0→1 全程是拉伸的怪字；
+ *   · 用 overflow:hidden + 内部 flex:0 0 auto + nowrap ⇒ 零内部重排、零外部位移。
+ * 可见性用 visibility 的 0s 延迟切换接住（不是淡入淡出，不碰 opacity）。
+ *
+ * ◆「零位移」的真正实现（spec §1.1 的设计意图，team-lead v3 裁决）：
+ *   .bd-cf 用 **绝对定位脱离布局宽度** —— 只要它还占 .cf-slot 的 flex 空间，
+ *   .cf-slot 一变宽，右边是 space-between + .bd-hd-r 右锚定 ⇒ 左边整块被往左顶，
+ *   .rng 实测从 x=1197 滑到 743（左移 454px）。设计意图是「用 94px 空白买零跳动」，
+ *   骨架只是实现方式错了，所以改实现、不改意图：
+ *     .cf-slot { position: relative }  ← 定位父级，宽度恒 = #btnFresh 的 94px
+ *     .bd-cf   { position: absolute; right: 100%; top: 0 }
+ *   · right:100% ⇒ 右缘钉死在 slot 左缘、向左生长 ⇒ 擦除方向不变（仍是从右往左收）；
+ *   · top:0 ⇒ 脱离 .cf-slot 的 align-items:flex-start，高度自己撑 var(--cf-h)；
+ *   · shrink-to-fit 宽度（left:auto + right:100% ⇒ available=0 ⇒ 取 min-content）
+ *     被 nowrap 顶成「内容自然宽」，再被 max-width 裁 ⇒ 与在流内时同款尺寸行为。 */
+.cf-slot { position: relative; display: flex; align-items: flex-start; gap: 0; flex: 0 0 auto; }
+.cf-slot.is-open .bd-refresh { visibility: hidden; }
+
+.bd-cf {
+  position: absolute; right: 100%; top: 0;
+  /* 收起：宽 0 + 不可见。用 inset 阴影代替 border —— border 在 width:0 时会残留 2px 缝。
+   *
+   * ⚠️ 内距必须挂在 **.cf-in 上，不能挂在这里**：全局 `* { box-sizing: border-box }`
+   *    下，一个 `max-width: 0` 的盒子**撑不到 0** —— 内容宽被压成 0 之后，
+   *    border-box 仍然要装下 padding（实测收起态残留 22px），
+   *    于是 .rng 会被永久往左顶 22px，「零位移」当场失效。
+   *    挪到 .cf-in 之后：.bd-cf 无 padding、无 border ⇒ 收起态宽度**真为 0**，
+   *    视觉效果（内容距条边 12 / 10）一模一样。 */
+  max-width: 0; overflow: hidden; visibility: hidden;
+  display: flex; align-items: center;
+  height: var(--cf-h); padding: 0;
+  border-radius: var(--cf-r); background: #fff;
+  box-shadow: inset 0 0 0 1px var(--line2);
+  transition: max-width var(--cf-dur) var(--ease),
+              visibility 0s linear var(--cf-dur);
+}
+.cf-slot.is-open .bd-cf {
+  max-width: min(var(--cf-w, var(--cf-w-max)), var(--cf-w-max));
+  visibility: visible;
+  transition: max-width var(--cf-dur) var(--ease), visibility 0s linear 0s;
+}
+/* JS 展开后会 focus 这个容器（tabindex="-1"）。容器被 focus 时不画 outline，
+ * 但要给一条可见的「条已展开」反馈 —— 用 inset 阴影加深一档（不动布局）。 */
+.bd-cf:focus { outline: none; }
+.bd-cf:focus-visible { box-shadow: inset 0 0 0 1.5px var(--go); }
+/* 内距在**这里**（不在 .bd-cf 上 —— 见上面那条 border-box 的坑）。
+ * flex:0 0 auto + nowrap ⇒ 收起态（被 .bd-cf 的 overflow 裁掉）也能量到真实宽度，
+ * 且展开全程内部零重排。 */
+.cf-in {
+  display: flex; align-items: center; gap: 10px;
+  flex: 0 0 auto; white-space: nowrap;
+  padding: 0 10px 0 12px;
+}
+.cf-txt { flex: 0 0 auto; font-size: var(--cf-fs); font-weight: 600; color: var(--ink); }
+.cf-meta { flex: 0 0 auto; font-size: var(--cf-meta-fs); font-weight: 500; color: var(--ink3); }
+.cf-act { flex: 0 0 auto; margin-left: auto; display: flex; gap: 8px; }
+
+/* 属性照 .bd-refresh / .sc-stop 抄（沿用语言），但**不复用那两个类名** ——
+ * 会撞 html.embed 档位覆盖的特异性，写在前面盖不掉。 */
+.cf-go {
+  display: inline-flex; align-items: center; justify-content: center;
+  height: var(--cf-btn-h); padding: 0 12px; border-radius: var(--cf-btn-r);
+  background: var(--ink); color: #fff;
+  font-size: var(--cf-fs); font-weight: 600; line-height: 1;
+  box-shadow: 0 2px 6px rgba(0,0,0,.18);
+  transition: transform .15s var(--ease);
+}
+.cf-go:hover  { transform: translateY(-1px); }
+.cf-go:active { transform: translateY(0); }
+.cf-no {
+  display: inline-flex; align-items: center; justify-content: center;
+  height: var(--cf-btn-h); padding: 0 10px; border-radius: 999px;
+  border: 1px solid var(--line2); background: #fff; color: var(--ink2);
+  font-size: var(--cf-fs); font-weight: 600; line-height: 1;
+  transition: border-color .15s, color .15s, background .15s;
+}
+.cf-no:hover { border-color: #C9CDD4; color: var(--ink); background: #F7F8FA; }
+.cf-go:focus-visible, .cf-no:focus-visible { outline: 2px solid var(--go); outline-offset: 2px; }
+
+/* 减动效：只关过渡，可见性照切 */
+html.motion-lite .bd-cf { transition: none; }
+html.motion-lite .cf-go { transition: none; }
+
+/* 浮层档（必须排在 html.embed .bd-refresh / .sc-stop 之后） */
+html.embed .cf-in { gap: 8px; padding: 0 8px 0 10px; }
+html.embed .cf-go { padding: 0 10px; }
+html.embed .cf-no { padding: 0 8px; }
+
+/* ================= ② 弹窗两个出口：止损(描边) vs 撤销(纯文字) =================
+ * 层级：止损是描边 pill 在最右（好按，更常被想要）；撤销是纯文字在它左边
+ * （离边缘更远，更难点）—— 更强的动作更难看、也更难按。 */
+.sc-exits { flex: 0 0 auto; display: flex; align-items: center; gap: var(--exit-gap); }
+.sc-cancel {
+  display: inline-flex; align-items: center; justify-content: center;
+  height: var(--exit-h); padding: 0 8px; border-radius: 999px;
+  background: none; border: 0; color: var(--ink3);
+  font-size: 12px; font-weight: 600; line-height: 1; white-space: nowrap;
+  transition: color .15s;
+}
+.sc-cancel:hover { color: var(--ink); }
+.sc-cancel:focus-visible { outline: 2px solid var(--go); outline-offset: 2px; }
+/* arm = 第一次点击后。两段文案都是 6 字 ⇒ 零回流 */
+.sc-cancel.is-arm {
+  padding: 0 10px; color: var(--fail);
+  background: color-mix(in srgb, var(--fail) 10%, #fff);
+  box-shadow: inset 0 0 0 1px var(--fail);
+}
+.sc-cancel.is-arm:hover { color: var(--fail); }
+.sc-cancel.is-busy { color: var(--ink3); pointer-events: none; }
+.sc-cancel.is-busy::before {
+  content: ''; width: 10px; height: 10px; margin-right: 6px;
+  border: 1.5px solid currentColor; border-top-color: transparent; border-radius: 50%;
+  animation: cfSpin .7s linear infinite;
+}
+/* 禁用：用颜色表达，不用 opacity（与 .bd-refresh[disabled] 的 opacity:.5 是既有，本次不改） */
+.sc-stop[disabled], .sc-cancel[disabled] {
+  color: var(--ink3); border-color: var(--line); background: #FAFBFC; cursor: default;
+}
+html.embed .sc-cancel { font-size: 11px; padding: 0 6px; }
+html.embed .sc-cancel.is-arm { padding: 0 8px; }
+@keyframes cfSpin { to { transform: rotate(360deg); } }
+/* 减动效：spinner 不显示（不是冻住一个圈），只剩文案 */
+html.motion-lite .sc-cancel.is-busy::before { display: none; }
+
+/* ================= ③ 结束时结果卡（同容器内容切换）=================
+ * ⚠️ 高度由 JS 冻结（modal.style.height = 切换前 offsetHeight），
+ *    否则执行态 ~575/465 → 结果态 hug ~308/262 会往上跳 90~185px。 */
+.sc-modal.is-result .sc-phase,
+.sc-modal.is-result .sc-body,
+.sc-modal.is-result .sc-exits,
+.sc-modal.is-result .sc-modal-sub { display: none; }
+/* ⚠️ 头部**整行**隐藏（比 visual-spec §5.3 多隐藏了一个 .sc-modal-hd）：
+ * 那行只剩一个 <b id="scTitle">，而它此刻还写着「AI 正在分赛道」/「正在读取数据」
+ * —— 与结果卡自己的「评分完成」**同屏矛盾**（实测就是这样）。
+ * 结果卡有 .rs-hd（图标 + 标题 + 用时）顶替这一行，弹窗高度已被 JS 冻结，
+ * 隐藏头部只是把那 40px 让给 .sc-result（它 flex:1 + 居中），外框不动。 */
+.sc-modal.is-result .sc-modal-hd { display: none; }
+/* 结果态：舱顶六赛道发丝收成一条「完成绿」—— 发牌结束的信号 */
+.sc-modal.is-result::before {
+  background: linear-gradient(90deg, var(--ok), color-mix(in srgb, var(--ok) 55%, #7BD3AE));
+  opacity: .85;
+}
+
+.sc-result {
+  flex: 1 1 auto; min-height: 0;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: var(--rs-gap);
+}
+/* v1.5：入场从「整卡一起浮」改成「逐行接力浮」（图标 → 标题 → 规模 → 赛道 → 按钮），
+ * 时长仍吃 --rs-dur，只是每行错 45ms —— 结果卡内容比执行态稀疏，
+ * 一起浮会显得愣。⚠️ 别再给 .sc-result 本体挂 cfRise：父子叠加会双重位移。 */
+.sc-result > * { animation: cfRise var(--rs-dur) var(--ease) both; }
+.sc-result > *:nth-child(2) { animation-delay: 45ms; }
+.sc-result > *:nth-child(3) { animation-delay: 90ms; }
+.sc-result > *:nth-child(4) { animation-delay: 135ms; }
+.sc-result > *:nth-child(5) { animation-delay: 180ms; }
+.sc-result > *:nth-child(6) { animation-delay: 225ms; }
+@keyframes cfRise { from { transform: translateY(10px); opacity: 0; } to { transform: none; opacity: 1; } }
+html.motion-lite .sc-result > * { animation: none; }
+
+.rs-hd { display: flex; align-items: center; gap: 10px; width: 100%; max-width: 560px; }
+.rs-ico {
+  flex: 0 0 auto; width: var(--rs-ico); height: var(--rs-ico);
+  display: flex; align-items: center; justify-content: center; border-radius: 50%;
+  /* 完成 = 绿勾；提前结束 = 琥珀感叹号（不是 --fail 橙红：那是失败色）。
+   * v1.5 加一圈同色光晕 —— 结果卡唯一的「情绪点」，让它撑住整屏。 */
+  color: var(--ok); background: color-mix(in srgb, var(--ok) 12%, #fff);
+  box-shadow: 0 0 0 7px color-mix(in srgb, var(--ok) 7%, #fff),
+              0 0 0 14px color-mix(in srgb, var(--ok) 3%, #fff);
+}
+.rs-ico.is-stopped {
+  color: var(--warn); background: color-mix(in srgb, var(--warn) 14%, #fff);
+  box-shadow: 0 0 0 7px color-mix(in srgb, var(--warn) 8%, #fff),
+              0 0 0 14px color-mix(in srgb, var(--warn) 4%, #fff);
+}
+.rs-ico svg { display: block; }
+.rs-title { font-size: 17px; font-weight: 900; color: var(--ink); }
+.rs-time { margin-left: auto; font-size: 11px; font-weight: 500; color: var(--ink3); }
+.rs-scale {
+  margin: 0; font-size: 13px; font-weight: 600; color: var(--ink2); text-align: center;
+}
+.rs-scale b { font-size: 14px; font-weight: 800; color: var(--ink); }
+.rs-note {
+  margin: 0; max-width: 560px;
+  display: flex; align-items: center; justify-content: center;
+  padding: 8px 10px; border-radius: 10px;
+  background: color-mix(in srgb, var(--warn) 8%, #fff);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--warn) 34%, #fff);
+  font-size: 12px; font-weight: 600; color: var(--ink); line-height: 17px;
+  text-align: center;
+}
+.rs-pct { display: flex; align-items: center; gap: 10px; }
+/* 扫描期中断：没有分母，画不出来的进度条不要画（只留 txt） */
+.rs-pct.is-txtonly .rs-pct-bar { display: none; }
+.rs-pct-bar { display: block; width: 160px; height: 8px; border-radius: 4px; background: #EDEFF2; overflow: hidden; }
+.rs-pct-bar > i { display: block; height: 100%; width: var(--cf-pct, 0%); border-radius: 4px; background: var(--warn); }
+.rs-pct-txt { font-size: 11px; color: var(--ink3); }
+.rs-tracks { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
+.rs-tr {
+  display: inline-flex; align-items: center; gap: 5px;
+  height: 24px; padding: 0 10px; border-radius: 999px;
+  background: var(--sc-tint, #F0F2F5); color: var(--sc-color, var(--ink));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--sc-color, #8A9099) 30%, #fff);
+  font-size: 11px; font-weight: 700;
+}
+/* delta 一律中性色 —— 上榜张数变少不代表变差，红绿会暗示「减少 = 退化」 */
+.rs-delta { font-size: 11px; font-weight: 700; color: var(--ink3); }
+.rs-btn {
+  height: var(--rs-btn-h); padding: 0 18px; border-radius: 10px;
+  background: linear-gradient(180deg, #2B3038, #1A1D21);
+  color: #fff; font-size: 12px; font-weight: 600;
+  box-shadow: 0 6px 16px rgba(26, 29, 33, .26);
+  transition: transform .15s var(--ease), box-shadow .15s var(--ease);
+}
+.rs-btn:hover  { transform: translateY(-1px); box-shadow: 0 9px 22px rgba(26, 29, 33, .32); }
+.rs-btn:active { transform: translateY(0); box-shadow: 0 4px 12px rgba(26, 29, 33, .24); }
+/* 出现 400ms 内不可点：防「刚点了提前结束」的手指连点穿透。
+ * 用 pointer-events 不用 disabled —— disabled 会让元素失焦，而提前结束态焦点刚放在它上面。 */
+.sc-result.is-fresh .rs-btn { pointer-events: none; }
+html.motion-lite .rs-btn { transition: none; }
+
+/* 自动收起（keyframes，不是 transition） */
+.sc-modal.is-out { animation: scOut .24s var(--ease) forwards; }
+@keyframes scOut {
+  from { transform: translate(-50%, -50%) scale(1);   opacity: 1; }
+  to   { transform: translate(-50%, -50%) scale(.97); opacity: 0; }
+}
+html.motion-lite .sc-modal.is-out { animation: none; }
+
+html.embed .rs-hd { gap: 8px; }
+html.embed .rs-title { font-size: 13px; }
+html.embed .rs-time { font-size: 10px; }
+html.embed .rs-scale { font-size: 12px; }
+html.embed .rs-scale b { font-size: 13px; }
+html.embed .rs-note { padding: 6px 8px; font-size: 11px; line-height: 15px; }
+html.embed .rs-pct-bar { width: 130px; height: 6px; border-radius: 3px; }
+html.embed .rs-pct-bar > i { border-radius: 3px; }
+html.embed .rs-tr { height: 20px; padding: 0 7px; font-size: 10px; }
+html.embed .rs-delta { font-size: 10px; }
+html.embed .rs-btn { font-size: 11px; }
+
 /* ================= 窄屏：交给流式版式 =================
  * 与 app.js 的 fitStage 断点 760 必须一致（那边只写 --k，这边只改排版）。 */
 @media (max-width: 760px) {
@@ -1120,4 +1485,15 @@ html.embed .mask { background: transparent; }
   .bd-hd { height: auto; flex-direction: column; align-items: flex-start; gap: 12px; }
   .bd-ft { flex-direction: column; align-items: flex-start; }
   .switchbar { flex-direction: column; height: auto; }
+
+  /* v1.4 确认条：窄屏放弃展开动画，确认条变成 Header 下方的一整行
+   * （流式版式本来就不走 1440 坐标）；触控目标提到 36px（28/24 对手指太小）。 */
+  .cf-slot { flex-direction: column-reverse; align-items: stretch; width: 100%; --cf-btn-h: 36px; }
+  /* 回到文档流：窄屏是整行流式版式，绝对定位会把确认条甩出可视区（right:100% ⇒ 负 x）。 */
+  .bd-cf {
+    position: static; right: auto; top: auto;
+    max-width: none !important; height: auto; padding: 10px 12px; visibility: visible;
+  }
+  .cf-in { flex-wrap: wrap; white-space: normal; }
+  .cf-act { margin-left: 0; }
 }

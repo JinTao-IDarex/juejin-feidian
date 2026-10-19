@@ -1,0 +1,822 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>卡牌切换动效图鉴 · 设计系统 / 动效规范</title>
+<style>
+:root{
+  --bg:#0c0d11; --panel:#13151a; --panel2:#171a20; --line:rgba(255,255,255,.08);
+  --tx:#eceef2; --tx2:#a4abb6; --tx3:#6e7681;
+  --acc:#ff7a1a; --acc-soft:rgba(255,122,26,.13);
+  --ease:cubic-bezier(.22,1,.36,1);
+  --mono:"Cascadia Code","JetBrains Mono",Consolas,"Courier New",monospace;
+  --sans:"PingFang SC","Hiragino Sans GB","Microsoft YaHei","Segoe UI",system-ui,sans-serif;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{background:var(--bg);color:var(--tx);font-family:var(--sans);line-height:1.6;-webkit-font-smoothing:antialiased}
+.wrap{max-width:1200px;margin:0 auto;padding:0 32px}
+button{font-family:inherit}
+
+/* ---------- hero ---------- */
+.hero{padding:64px 0 40px;border-bottom:1px solid var(--line);
+  background:radial-gradient(720px 300px at 18% -40px,rgba(255,122,26,.09),transparent 70%)}
+.kicker{display:inline-flex;align-items:center;gap:8px;font-size:12px;letter-spacing:.18em;
+  color:var(--acc);border:1px solid rgba(255,122,26,.35);background:var(--acc-soft);
+  padding:6px 14px;border-radius:999px;font-weight:600}
+h1{font-size:44px;line-height:1.15;letter-spacing:-.01em;margin:20px 0 14px;font-weight:800}
+h1 .thin{color:var(--tx3);font-weight:600}
+.lede{max-width:66ch;color:var(--tx2);font-size:15px}
+.stats{display:flex;flex-wrap:wrap;gap:12px;margin-top:28px}
+.stat{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:12px 18px;min-width:150px}
+.stat b{display:block;font-size:20px;font-weight:800;color:var(--tx)}
+.stat i{font-style:normal;font-size:12px;color:var(--tx3)}
+.toolbar{display:flex;flex-wrap:wrap;align-items:center;gap:12px;margin-top:26px}
+.seg{display:inline-flex;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:3px}
+.seg button{border:0;background:transparent;color:var(--tx2);font-size:13px;padding:6px 14px;border-radius:8px;cursor:pointer}
+.seg button.on{background:var(--acc);color:#14161c;font-weight:700}
+.btn{border:1px solid var(--line);background:var(--panel);color:var(--tx);font-size:13px;
+  padding:8px 16px;border-radius:10px;cursor:pointer;transition:border-color .15s,color .15s}
+.btn:hover{border-color:var(--acc);color:var(--acc)}
+.btn.acc{background:var(--acc);border-color:var(--acc);color:#14161c;font-weight:700}
+.btn.acc:hover{background:#ff8c33}
+.chk{display:inline-flex;align-items:center;gap:8px;font-size:13px;color:var(--tx2);cursor:pointer;user-select:none}
+.chk input{accent-color:var(--acc);width:15px;height:15px;cursor:pointer}
+.badge-rm{display:none;font-size:12px;color:#ffd29b;background:rgba(255,122,26,.1);
+  border:1px dashed rgba(255,122,26,.4);padding:6px 12px;border-radius:8px}
+body.reduce .badge-rm{display:inline-block}
+
+/* ---------- demo grid ---------- */
+.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:20px;margin:40px 0}
+.demo{background:var(--panel);border:1px solid var(--line);border-radius:20px;overflow:hidden}
+.demo-hd{display:flex;align-items:flex-start;gap:14px;padding:18px 20px 14px;border-bottom:1px solid var(--line)}
+.idx{font-family:var(--mono);font-size:12px;color:var(--acc);border:1px solid rgba(255,122,26,.35);
+  border-radius:8px;padding:4px 8px;margin-top:2px;white-space:nowrap}
+.demo-hd h2{font-size:19px;font-weight:800;letter-spacing:-.01em}
+.demo-hd h2 .en{font-size:12px;color:var(--tx3);font-weight:600;margin-left:8px;letter-spacing:.04em}
+.demo-hd .use{font-size:12.5px;color:var(--tx2);margin-top:2px}
+.replay{margin-left:auto;border:1px solid var(--line);background:var(--panel2);color:var(--tx2);
+  font-size:12.5px;padding:7px 14px;border-radius:9px;cursor:pointer;white-space:nowrap;transition:.15s}
+.replay:hover{border-color:var(--acc);color:var(--acc)}
+.demo-bd{display:flex;gap:20px;padding:20px}
+.stage{position:relative;width:264px;height:352px;flex:none;border-radius:16px;overflow:hidden;
+  border:1px solid var(--line);cursor:pointer;user-select:none;touch-action:pan-y;
+  background:
+    radial-gradient(90px 90px at 50% 42%,rgba(255,122,26,.07),transparent 72%),
+    radial-gradient(rgba(255,255,255,.05) 1px,transparent 1px),
+    #0f1116;
+  background-size:auto,14px 14px,auto}
+.stage:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
+.stage-cap{font-size:11.5px;color:var(--tx3);text-align:center;margin-top:10px}
+.spec{flex:1;min-width:0}
+.spec table{width:100%;border-collapse:collapse;font-size:12.5px}
+.spec td{padding:6px 0;border-bottom:1px dashed rgba(255,255,255,.07);vertical-align:top}
+.spec td.k{color:var(--tx3);width:64px;white-space:nowrap}
+.spec td.v{color:var(--tx2)}
+.spec td.v b{color:var(--tx);font-weight:600}
+.ref{font-size:12px;color:var(--tx3);margin-top:10px}
+.ref b{color:var(--acc);font-weight:600}
+details{margin-top:10px}
+summary{font-size:12px;color:var(--tx3);cursor:pointer;list-style:none;display:inline-flex;align-items:center;gap:6px}
+summary::before{content:"";width:0;height:0;border-left:5px solid var(--tx3);border-top:4px solid transparent;border-bottom:4px solid transparent}
+details[open] summary::before{border-left-color:var(--acc);transform:rotate(90deg)}
+summary:hover{color:var(--tx2)}
+pre{margin-top:8px;background:#0a0b0e;border:1px solid var(--line);border-radius:10px;
+  padding:12px 14px;font-family:var(--mono);font-size:11px;line-height:1.65;color:#c9cfd8;
+  overflow-x:auto;white-space:pre}
+
+/* ---------- 卡牌（贴纸潮玩风，1:1.4 契约 180×252） ---------- */
+.card{position:absolute;left:50%;top:50%;width:180px;height:252px;margin:-126px 0 0 -90px;will-change:transform}
+.face{position:relative;width:100%;height:100%;border-radius:18px;background:#fff;overflow:hidden;
+  border:2px solid var(--tc);box-shadow:0 0 0 5px #fff,0 16px 30px rgba(0,0,0,.45);
+  display:flex;flex-direction:column;padding:13px 14px;color:#14161c}
+.cv-deco{position:absolute;inset:0;pointer-events:none}
+.cv-deco svg{width:100%;height:100%;color:var(--tc)}
+.cv-top{display:flex;justify-content:space-between;align-items:baseline;position:relative}
+.cv-sym{font-size:22px;font-weight:800;color:var(--tc);line-height:1}
+.cv-rank{font-size:11px;font-weight:700;color:var(--tx3,#8a93a0);letter-spacing:.06em}
+.cv-score{display:flex;align-items:baseline;gap:6px;margin-top:2px;position:relative}
+.cv-score b{font-size:34px;font-weight:800;letter-spacing:-.02em;line-height:1.05}
+.cv-score i{font-style:normal;font-size:10px;color:#8a93a0}
+.cv-fig{flex:1;display:grid;place-items:center;position:relative}
+.cv-fig svg{width:92px;height:92px;color:var(--tc)}
+.cv-name{font-size:23px;font-weight:800;letter-spacing:0;line-height:1.15;position:relative}
+.cv-def{font-size:10.5px;color:#77808c;margin-top:3px;position:relative}
+.cv-go{font-size:11.5px;font-weight:700;color:var(--tc);margin-top:8px;position:relative}
+.card.compact .cv-def,.card.compact .cv-go{display:none}
+.card.compact .cv-score b{font-size:30px}
+.card.compact .cv-name{font-size:21px}
+.card.compact .cv-fig svg{width:78px;height:78px}
+/* 牌背 */
+.face.back{background:#14161c;border-color:var(--acc);color:#fff;align-items:center;justify-content:center;gap:10px}
+.bk-rings{position:absolute;inset:0;display:grid;place-items:center;opacity:.9}
+.bk-rings svg{width:150px;height:150px;color:var(--acc)}
+.bk-brand{font-size:15px;font-weight:800;letter-spacing:.42em;text-indent:.42em;position:relative}
+.bk-sub{font-size:10.5px;color:#9aa3af;letter-spacing:.14em;position:relative}
+
+/* ---------- flip ---------- */
+.flip3d{position:absolute;inset:0;perspective:1000px;display:grid;place-items:center}
+.flip-in{width:180px;height:252px;position:relative;transform-style:preserve-3d;
+  transition:transform var(--dur,640ms) cubic-bezier(.2,.7,.2,1)}
+.flip-in .face{position:absolute;inset:0;backface-visibility:hidden;-webkit-backface-visibility:hidden}
+.flip-in .face.back{transform:rotateY(180deg)}
+.flip-in.open{transform:rotateY(180deg)}
+
+/* ---------- deal 牌垛 ---------- */
+.deckstack{position:absolute;right:12px;top:12px;width:34px;height:46px;z-index:0}
+.deckstack i{position:absolute;inset:0;border-radius:7px;background:#20242c;
+  border:1.5px solid rgba(255,122,26,.75);box-shadow:0 4px 10px rgba(0,0,0,.4)}
+
+/* ---------- matrix / rules ---------- */
+section.blk{margin:56px 0}
+.blk-hd{display:flex;align-items:baseline;gap:14px;margin-bottom:20px}
+.blk-hd h2{font-size:24px;font-weight:800;letter-spacing:-.01em}
+.blk-hd span{font-size:12px;color:var(--tx3);font-family:var(--mono)}
+.tablewrap{background:var(--panel);border:1px solid var(--line);border-radius:16px;overflow-x:auto}
+table.matrix{width:100%;border-collapse:collapse;font-size:12.5px;min-width:860px}
+.matrix th{font-size:11px;color:var(--tx3);text-align:left;font-weight:600;letter-spacing:.08em;
+  padding:12px 14px;border-bottom:1px solid var(--line);background:var(--panel2);white-space:nowrap}
+.matrix td{padding:11px 14px;border-bottom:1px solid rgba(255,255,255,.05);color:var(--tx2);white-space:nowrap}
+.matrix tr:last-child td{border-bottom:0}
+.matrix td.nm{color:var(--tx);font-weight:700}
+.matrix td.nm i{font-style:normal;color:var(--acc);font-family:var(--mono);font-size:11px;margin-right:8px}
+.cost-lo{color:#5ec48a}.cost-mid{color:#f5c542}.cost-hi{color:#ff8a5c}
+.rules{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+.rule{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px 18px}
+.rule b{display:block;font-size:13.5px;margin-bottom:6px}
+.rule b em{font-style:normal;color:var(--acc);font-family:var(--mono);margin-right:8px}
+.rule p{font-size:12.5px;color:var(--tx2)}
+.pick{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+.pick .rule b{color:var(--tx)}
+.pick .rule b em{color:var(--acc)}
+footer{border-top:1px solid var(--line);padding:28px 0 48px;color:var(--tx3);font-size:12px}
+footer p{max-width:80ch}
+
+@media (max-width:1080px){
+  .grid,.rules,.pick{grid-template-columns:1fr}
+  .demo-bd{flex-direction:column;align-items:center}
+  .spec{width:100%}
+  h1{font-size:34px}
+}
+</style>
+</head>
+<body>
+
+<header class="hero">
+  <div class="wrap">
+    <span class="kicker">MOTION ATLAS · 设计系统 / 动效规范</span>
+    <h1>卡牌切换动效图鉴 <span class="thin">/ 8 种切卡效果</span></h1>
+    <p class="lede">卡牌页面最常用的 8 种切卡 / 换卡动画，全部实时可播、可暂停、可调速。每种标注了时长、缓动、动画属性与中断恢复策略——可直接作为魔鬼榜单切牌迭代的选型依据。卡牌形象为贴纸潮玩示意资产（1:1.4 契约、双包边、三赛道色）。</p>
+    <div class="stats">
+      <div class="stat"><b>8 种</b><i>常用切卡 / 换卡模式</i></div>
+      <div class="stat"><b>100%</b><i>只动 transform + opacity</i></div>
+      <div class="stat"><b>0 依赖</b><i>纯 CSS + JS，无图片字体</i></div>
+      <div class="stat"><b>180×252</b><i>卡牌 1:1.4 契约演示尺寸</i></div>
+    </div>
+    <div class="toolbar">
+      <div class="seg" id="speedSeg">
+        <button data-spd="0.5">0.5×</button>
+        <button data-spd="1" class="on">1×</button>
+        <button data-spd="2">2×</button>
+      </div>
+      <button class="btn acc" id="playAll">播放全部</button>
+      <label class="chk"><input type="checkbox" id="autoChk" checked> 自动轮播（进入视口时）</label>
+      <span class="badge-rm">已检测到 prefers-reduced-motion：不自动播放，仅手动触发且直落终态</span>
+    </div>
+  </div>
+</header>
+
+<main class="wrap">
+  <section class="grid" id="grid"></section>
+
+  <section class="blk">
+    <div class="blk-hd"><h2>选型对比矩阵</h2><span>COMPARISON</span></div>
+    <div class="tablewrap">
+      <table class="matrix">
+        <thead><tr>
+          <th>模式</th><th>单次时长</th><th>缓动</th><th>触发方式</th><th>占用空间</th><th>实现成本</th><th>打断后恢复</th><th>典型参考</th>
+        </tr></thead>
+        <tbody id="matrixBody"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="blk">
+    <div class="blk-hd"><h2>选用决策</h2><span>DECISION</span></div>
+    <div class="pick" id="pickList"></div>
+  </section>
+
+  <section class="blk">
+    <div class="blk-hd"><h2>性能与无障碍红线</h2><span>GUARDRAILS</span></div>
+    <div class="rules" id="ruleList"></div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <p>本页所有演示均为纯 CSS / JS 实现：无外部图片、无第三方库、无网络请求，可整章搬入设计系统的动效规范章节。卡牌形象（土星虫）为示意资产，正式版请替换为 assets/board-cards 下的抠图素材。动效档位与魔鬼榜单一致：默认 full，html.motion-lite 下全部直落终态。</p>
+  </div>
+</footer>
+
+<!-- ======= 代码片段（text/plain，避免转义问题） ======= -->
+<script type="text/plain" id="code-slide">/* 旧牌左出、新牌右进；切牌期间两牌贴紧，gap 归零 */
+.slot{ position:absolute; inset:0;
+  transition:transform .43s cubic-bezier(.22,1,.36,1); }
+.slot.cur { transform:translateX(0); }
+.slot.next{ transform:translateX(104%); }
+.slot.out { transform:translateX(-104%); }
+
+function slideTo(el, dist){
+  el.classList.add('sliding');        /* 先加类（--slidegap:0）再量宽度 */
+  const d = el.offsetWidth;           /* 距离现算，不写死 */
+  el.style.transform = 'translateX(' + dist*d + 'px)';
+}</script>
+
+<script type="text/plain" id="code-flip">/* 双面卡：preserve-3d + backface-visibility，
+   内容在 90° 中点换，即可变成「A 面切 B 面」 */
+.flip   { perspective:1000px; }
+.flip-in{ transform-style:preserve-3d;
+  transition:transform .64s cubic-bezier(.2,.7,.2,1); }
+.flip-in .face{ position:absolute; inset:0;
+  backface-visibility:hidden; }
+.flip-in .back{ transform:rotateY(180deg); }
+.flip.open .flip-in{ transform:rotateY(180deg); }</script>
+
+<script type="text/plain" id="code-cover">/* 深度 i → 下沉 13px、缩小 6%、层级 10-i；
+   播放 = 队尾牌出列到头位，整栈下沉一级 */
+.order .card{ transition:transform .46s cubic-bezier(.22,1,.36,1); }
+
+function layout(){
+  order.forEach((c,i)=>{
+    c.style.transform = 'translateY(' + i*13 + 'px) scale(' + (1-i*.06) + ')';
+    c.style.zIndex   = 10 - i;
+  });
+}
+play(){ order.unshift(order.pop()); layout(); }</script>
+
+<script type="text/plain" id="code-deal">/* 从牌垛逐张飞入槽位：位移 + 落地回弹，stagger 95ms */
+const DECK  = 'translate(92px,-116px) rotate(12deg) scale(.58)';
+const SLOTS = ['translate(-36px,54px) rotate(-7deg) scale(.58)',
+               'translate(0,62px)   rotate(0deg)  scale(.58)',
+               'translate(36px,54px) rotate(7deg)  scale(.58)'];
+
+cards.forEach((c,i)=>{
+  c.animate([
+    { transform: DECK },
+    { transform: SLOTS[i], easing:'cubic-bezier(.34,1.56,.64,1)' }
+  ], { duration:520, delay:i*95, fill:'forwards' });
+});</script>
+
+<script type="text/plain" id="code-drag">/* 跟手：位移 + 旋转系数 0.05deg/px；松手过阈值甩出 */
+function onMove(e){
+  const dx = e.clientX - sx, dy = e.clientY - sy;
+  card.style.transform =
+    'translate(' + dx + 'px,' + dy + 'px) rotate(' + dx*.05 + 'deg)';
+}
+function onUp(e){
+  const dx = e.clientX - sx;
+  if (Math.abs(dx) > 84) fling(Math.sign(dx));   /* 甩出：±130% + ±24deg */
+  else springBack();                             /* 回弹：cubic-bezier(.34,1.56,.64,1) */
+}</script>
+
+<script type="text/plain" id="code-peek">/* 次牌停在右缘探出 16px；推进时整行左移一级。
+   注意：translateX 百分比是自身宽度，探出量必须用 px */
+.p1{ transform:translateX(0); }
+.p2{ transform:translateX(206px); }              /* 264-42-16 = 206 */
+.p3{ transform:translateX(216px) scale(.95); }
+.z{ z-index:3/2/1 }   /* 探出牌压在当前牌之上 */
+
+play(){ order.push(order.shift()); layout(); }</script>
+
+<script type="text/plain" id="code-fan">/* 扇形：transform-origin 放到舞台下方，
+   rotate + translateX 自然成弧；中心牌层级最高 */
+.fan .card{ transform-origin:50% 460px;
+  transition:transform .72s var(--ease); }
+.fan .card:nth-child(1){ transform:translateX(-60px) rotate(-10deg) scale(.72); }
+.fan .card:nth-child(3){ transform:translateX(0)     rotate(0deg)   scale(.72); }
+.fan .card:nth-child(5){ transform:translateX(60px)  rotate(10deg)  scale(.72); }
+/* stagger: transition-delay: calc(var(--i) * 50ms) */</script>
+
+<script type="text/plain" id="code-shuffle">/* 跳起 → 空中换位 → 落定，一段关键帧搞定 */
+c.animate([
+  { transform: from, offset: 0    },   /* 原槽位 */
+  { transform: up,   offset: .34  },   /* 跳起 -52px，带侧倾 */
+  { transform: to,   offset: 1    }    /* 新槽位（半交错织） */
+], { duration:900, delay:i*26,
+     easing:'cubic-bezier(.3,.7,.3,1)', fill:'forwards' });
+
+/* 收尾：animation.cancel() + style.transform 提交终态，避免 fill 悬挂 */</script>
+
+<script>
+/* ================= 数据 ================= */
+var TRACKS = [
+  { sym:'?', name:'离谱', color:'#F5A524', score:92, rank:1, def:'一本正经地胡说八道' },
+  { sym:'~', name:'废话', color:'#454D57', score:87, rank:2, def:'听君一席话，如听一席话' },
+  { sym:'!', name:'emo',  color:'#12A173', score:81, rank:3, def:'深夜情绪周期性决堤' }
+];
+var TRACKS5 = TRACKS.concat(TRACKS.slice(0,2));
+
+var DECO = '<svg viewBox="0 0 100 140" aria-hidden="true"><g fill="currentColor" opacity=".38">'
+  + '<rect x="82" y="14" width="10" height="10" rx="2" transform="rotate(18 87 19)"/>'
+  + '<rect x="8" y="58" width="7" height="7" rx="1.5" transform="rotate(-24 11 61)"/>'
+  + '<circle cx="88" cy="96" r="3.4"/>'
+  + '<rect x="14" y="118" width="9" height="9" rx="2" transform="rotate(30 18 122)"/></g></svg>';
+
+var MASCOT = '<svg viewBox="0 0 120 120" aria-hidden="true">'
+  + '<g fill="currentColor"><rect x="33" y="90" width="7" height="13" rx="3.5"/>'
+  + '<rect x="49" y="93" width="7" height="13" rx="3.5"/>'
+  + '<rect x="65" y="93" width="7" height="13" rx="3.5"/>'
+  + '<rect x="81" y="90" width="7" height="13" rx="3.5"/>'
+  + '<ellipse cx="60" cy="68" rx="30" ry="25"/></g>'
+  + '<ellipse cx="60" cy="62" rx="45" ry="13" fill="none" stroke="currentColor" stroke-width="7" transform="rotate(-13 60 62)"/>'
+  + '<circle cx="49" cy="64" r="3.6" fill="#fff"/><circle cx="71" cy="64" r="3.6" fill="#fff"/>'
+  + '<path d="M53 77q7 6 14 0" stroke="#fff" stroke-width="3.2" fill="none" stroke-linecap="round"/></svg>';
+
+var BACK = '<div class="face back">'
+  + '<div class="bk-rings"><svg viewBox="0 0 200 200" aria-hidden="true" fill="none">'
+  + '<circle cx="100" cy="100" r="86" stroke="currentColor" stroke-opacity=".25"/>'
+  + '<circle cx="100" cy="100" r="64" stroke="currentColor" stroke-opacity=".45"/>'
+  + '<circle cx="100" cy="100" r="42" stroke="currentColor" stroke-opacity=".7"/>'
+  + '<circle cx="100" cy="100" r="7" fill="currentColor"/></svg></div>'
+  + '<div class="bk-brand">JOKER</div>'
+  + '<div class="bk-sub">魔鬼榜单 · 每日一刷</div></div>';
+
+function faceHTML(t, compact){
+  return '<div class="face" style="--tc:' + t.color + '">'
+    + '<div class="cv-deco">' + DECO + '</div>'
+    + '<div class="cv-top"><span class="cv-sym">' + t.sym + '</span>'
+    + '<span class="cv-rank">No.' + t.rank + '</span></div>'
+    + '<div class="cv-score"><b>' + t.score + '</b><i>最高分</i></div>'
+    + '<div class="cv-fig">' + MASCOT + '</div>'
+    + '<div class="cv-name">' + t.name + '</div>'
+    + (compact ? '' : '<div class="cv-def">' + t.def + '</div><div class="cv-go">查看赛道 &#8594;</div>')
+    + '</div>';
+}
+function card(t, compact){
+  var el = document.createElement('div');
+  el.className = 'card' + (compact ? ' compact' : '');
+  el.innerHTML = faceHTML(t, compact);
+  return el;
+}
+function div(cls){ var d = document.createElement('div'); d.className = cls; return d; }
+
+/* ================= 全局状态 ================= */
+var REDUCE = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+var ANIM = !REDUCE;
+var SPD = 1;
+function dur(ms){ return ANIM ? Math.round(ms / SPD) : 0; }
+if (REDUCE) document.body.classList.add('reduce');
+
+/* ================= 8 种演示构建器 ================= */
+var DEMOS = {
+
+  /* 01 滑切 */
+  slide: function(stage){
+    var a = card(TRACKS[0]), b = card(TRACKS[1]);
+    b.style.transform = 'translateX(104%)';
+    stage.appendChild(a); stage.appendChild(b);
+    var front = a, back = b, busy = false;
+    return { play: function(){
+      if (busy) return; busy = true;
+      var d = dur(430);
+      front.style.transition = 'transform ' + d + 'ms cubic-bezier(.22,1,.36,1)';
+      back.style.transition  = 'transform ' + d + 'ms cubic-bezier(.22,1,.36,1)';
+      front.style.transform = 'translateX(-104%)';
+      back.style.transform  = 'translateX(0)';
+      var out = front; front = back; back = out;
+      setTimeout(function(){
+        back.style.transition = 'none';
+        back.style.transform = 'translateX(104%)';
+        void back.offsetWidth;
+        back.style.transition = '';
+        busy = false;
+      }, d + 40);
+    }, gap: 1600 };
+  },
+
+  /* 02 3D 翻转 */
+  flip: function(stage){
+    stage.style.setProperty('--dur', dur(640) + 'ms');
+    var wrap = div('flip3d'), inner = div('flip-in');
+    inner.innerHTML = faceHTML(TRACKS[0]) + BACK;
+    wrap.appendChild(inner); stage.appendChild(wrap);
+    var open = false;
+    return { play: function(){ open = !open; inner.classList.toggle('open', open); },
+             gap: 1800, durBase: 640 };
+  },
+
+  /* 03 堆叠覆盖 */
+  cover: function(stage){
+    var cards = TRACKS.map(function(t){ var c = card(t); stage.appendChild(c); return c; });
+    var order = [0,1,2];
+    function layout(anim){
+      order.forEach(function(ci,i){
+        var c = cards[ci];
+        c.style.transition = anim ? 'transform ' + dur(460) + 'ms cubic-bezier(.22,1,.36,1)' : 'none';
+        c.style.transform = 'translateY(' + (i*13) + 'px) scale(' + (1 - i*.06) + ')';
+        c.style.zIndex = 10 - i;
+      });
+    }
+    layout(false);
+    return { play: function(){ order.unshift(order.pop()); layout(true); }, gap: 1500 };
+  },
+
+  /* 04 发牌入场 */
+  deal: function(stage){
+    var deck = div('deckstack');
+    deck.innerHTML = '<i style="transform:translate(5px,-5px)"></i><i style="transform:translate(2.5px,-2.5px)"></i><i></i>';
+    stage.appendChild(deck);
+    var cards = TRACKS.map(function(t){ var c = card(t, true); stage.appendChild(c); return c; });
+    var DECK = 'translate(92px,-116px) rotate(12deg) scale(.58)';
+    var SLOTS = ['translate(-36px,54px) rotate(-7deg) scale(.58)',
+                 'translate(0,62px) rotate(0deg) scale(.58)',
+                 'translate(36px,54px) rotate(7deg) scale(.58)'];
+    function set(el, v, mode){
+      var ms = mode === 1 ? 520 : 300;
+      var ez = mode === 1 ? 'cubic-bezier(.34,1.56,.64,1)' : 'cubic-bezier(.5,0,.75,.4)';
+      el.style.transition = mode ? 'transform ' + dur(ms) + 'ms ' + ez : 'none';
+      el.style.transform = v;
+    }
+    cards.forEach(function(c,i){ set(c, DECK, 0); c.style.zIndex = 5 + i; });
+    var busy = false;
+    return { play: function(){
+      if (busy) return; busy = true;
+      cards.forEach(function(c,i){ setTimeout(function(){ set(c, SLOTS[i], 1); }, i * 95); });
+      setTimeout(function(){
+        cards.forEach(function(c,i){ setTimeout(function(){ set(c, DECK, 2); }, i * 70); });
+      }, 1500);
+      setTimeout(function(){ busy = false; }, 2350);
+    }, gap: 2900 };
+  },
+
+  /* 05 拖拽甩牌 */
+  drag: function(stage){
+    var BEHIND = 'translateY(14px) scale(.94)';
+    var pair = [card(TRACKS[0]), card(TRACKS[1])];
+    pair[1].style.transform = BEHIND; pair[1].style.zIndex = 1;
+    pair[0].style.zIndex = 2;
+    stage.appendChild(pair[1]); stage.appendChild(pair[0]);
+    var busy = false, dragging = false, moved = false, sx = 0, sy = 0;
+
+    function fling(dir){
+      if (busy) return; busy = true;
+      var d = dur(400);
+      pair[0].style.transition = 'transform ' + d + 'ms cubic-bezier(.22,1,.36,1)';
+      pair[0].style.transform = 'translateX(' + (dir*130) + '%) rotate(' + (dir*24) + 'deg)';
+      setTimeout(function(){
+        pair[1].style.transition = 'transform ' + dur(430) + 'ms cubic-bezier(.34,1.56,.64,1)';
+        pair[1].style.transform = 'translateY(0) scale(1)';
+        pair[1].style.zIndex = 2;
+        pair[0].style.transition = 'none';
+        pair[0].style.transform = BEHIND;
+        pair[0].style.zIndex = 1;
+        void pair[0].offsetWidth;
+        pair[0].style.transition = '';
+        pair.reverse(); busy = false;
+      }, d + 50);
+    }
+    function down(e){
+      if (busy || e.currentTarget !== pair[0]) return;
+      dragging = true; moved = false;
+      sx = e.clientX; sy = e.clientY;
+      pair[0].setPointerCapture && pair[0].setPointerCapture(e.pointerId);
+      pair[0].style.transition = 'none';
+    }
+    function move(e){
+      if (!dragging) return;
+      var dx = e.clientX - sx, dy = e.clientY - sy;
+      if (Math.abs(dx) > 5 || Math.abs(dy) > 5) moved = true;
+      pair[0].style.transform =
+        'translate(' + dx + 'px,' + dy + 'px) rotate(' + (dx*.05) + 'deg)';
+    }
+    function up(e){
+      if (!dragging) return; dragging = false;
+      var dx = e.clientX - sx;
+      if (Math.abs(dx) > 84) fling(dx > 0 ? 1 : -1);
+      else {
+        pair[0].style.transition = 'transform ' + dur(380) + 'ms cubic-bezier(.34,1.56,.64,1)';
+        pair[0].style.transform = 'translateY(0) scale(1)';
+      }
+      setTimeout(function(){ moved = false; }, 0);
+    }
+    pair.forEach(function(c){
+      c.style.touchAction = 'none';
+      c.addEventListener('pointerdown', down);
+      c.addEventListener('pointermove', move);
+      c.addEventListener('pointerup', up);
+      c.addEventListener('pointercancel', up);
+    });
+    return { play: function(){ fling(1); }, gap: 2100,
+             noClick: function(){ return moved; } };
+  },
+
+  /* 06 窥视推进：当前牌左出，次牌补位，第三张进入窥视位 */
+  peek: function(stage){
+    var cards = TRACKS.map(function(t){ var c = card(t); stage.appendChild(c); return c; });
+    var order = [0,1,2];
+    var POS = ['translateX(0)', 'translateX(206px)', 'translateX(216px) scale(.95)'];
+    var Z = [3,2,1];
+    function layout(anim){
+      order.forEach(function(ci,i){
+        var c = cards[ci];
+        c.style.transition = anim ? 'transform ' + dur(470) + 'ms cubic-bezier(.22,1,.36,1)' : 'none';
+        c.style.transform = POS[i];
+        c.style.zIndex = Z[i];
+      });
+    }
+    layout(false);
+    var busy = false;
+    return { play: function(){
+      if (busy) return; busy = true;
+      var exiting = cards[order[0]];
+      var rest = order.slice(1);              /* [次牌, 第三张] */
+      exiting.style.transition = 'transform ' + dur(470) + 'ms cubic-bezier(.22,1,.36,1)';
+      exiting.style.transform = 'translateX(-112%)';
+      exiting.style.zIndex = 3;               /* 退出时压过次牌 */
+      rest.forEach(function(ci,i){            /* i=0 补中心位，i=1 进窥视位 */
+        var c = cards[ci];
+        c.style.transition = 'transform ' + dur(470) + 'ms cubic-bezier(.22,1,.36,1)';
+        c.style.transform = POS[i];
+        c.style.zIndex = Z[i];
+      });
+      order = [rest[0], rest[1], order[0]];
+      setTimeout(function(){
+        exiting.style.transition = 'none';
+        exiting.style.transform = POS[2];
+        exiting.style.zIndex = Z[2];
+        void exiting.offsetWidth;
+        exiting.style.transition = '';
+        busy = false;
+      }, dur(470) + 50);
+    }, gap: 1700 };
+  },
+
+  /* 07 扇形展开 */
+  fan: function(stage){
+    var cards = TRACKS5.map(function(t){ var c = card(t, true); stage.appendChild(c); return c; });
+    var open = false;
+    function layout(anim){
+      cards.forEach(function(c,i){
+        var k = i - 2;
+        c.style.transition = anim
+          ? 'transform ' + dur(open ? 720 : 520) + 'ms cubic-bezier(.22,1,.36,1)'
+          : 'none';
+        c.style.transitionDelay = anim ? (Math.abs(k) * 50) + 'ms' : '0ms';
+        c.style.transformOrigin = '50% 460px';
+        c.style.transform = open
+          ? 'translateX(' + (k*30) + 'px) rotate(' + (k*10) + 'deg) scale(.72)'
+          : 'translateX(' + (k*1.5) + 'px) rotate(' + (k*1.6) + 'deg)';
+        c.style.zIndex = 5 - Math.abs(k);
+      });
+    }
+    layout(false);
+    return { play: function(){ open = !open; layout(true); }, gap: 2300 };
+  },
+
+  /* 08 洗牌重排 */
+  shuffle: function(stage){
+    var cards = TRACKS5.map(function(t){ var c = card(t, true); stage.appendChild(c); return c; });
+    var N = cards.length;
+    function slotX(i){ return (i - (N-1)/2) * 40; }
+    function slotR(i){ return (i - (N-1)/2) * 4; }
+    function tf(i, dy, exR){
+      return 'translate(' + slotX(i) + 'px,' + (dy||0) + 'px) rotate(' + (slotR(i) + (exR||0)) + 'deg) scale(.6)';
+    }
+    var order = cards.map(function(_,i){ return i; });
+    function apply(anim){
+      order.forEach(function(ci,i){
+        var c = cards[ci];
+        c.style.transition = anim ? 'transform ' + dur(420) + 'ms cubic-bezier(.22,1,.36,1)' : 'none';
+        c.style.transform = tf(i);
+        c.style.zIndex = i;
+      });
+    }
+    apply(false);
+    var busy = false;
+    return { play: function(){
+      if (busy) return; busy = true;
+      var half = Math.ceil(N/2);
+      var top = order.slice(0,half), bot = order.slice(half);
+      var next = [];
+      for (var i = 0; i < Math.max(top.length, bot.length); i++){
+        if (i < top.length) next.push(top[i]);
+        if (i < bot.length) next.push(bot[i]);
+      }
+      if (!ANIM){ order = next; apply(false); busy = false; return; }
+      var D = dur(900);
+      order.forEach(function(ci,i){
+        var c = cards[ci];
+        var from = tf(i);
+        var up   = tf(i, -52, (i % 2 ? 6 : -6));
+        var to   = tf(next.indexOf(ci));
+        c.animate([
+          { transform: from, offset: 0 },
+          { transform: up,   offset: .34 },
+          { transform: to,   offset: 1 }
+        ], { duration: D, delay: i * 26, easing: 'cubic-bezier(.3,.7,.3,1)', fill: 'forwards' });
+      });
+      order = next;
+      setTimeout(function(){
+        cards.forEach(function(c){ c.getAnimations().forEach(function(a){ a.cancel(); }); });
+        apply(false); busy = false;
+      }, D + N * 26 + 80);
+    }, gap: 1800 };
+  }
+};
+
+/* ================= 图鉴配置 ================= */
+var SPEC = [
+  { key:'slide', idx:'01', name:'滑切', en:'SLIDE SWAP',
+    use:'双卡位平移交接，最经典、成本最低的换卡方式',
+    spec:[['时长','420–480ms'],['缓动','标准减速 cubic-bezier(.22,1,.36,1)'],['属性','仅 transform'],['中断','直接落位，不重放']],
+    ref:'魔鬼榜单现役切牌（v0.8）同款机制', code:'code-slide',
+    cap:'点击舞台重播 · 两卡贴紧无缝隙' },
+  { key:'flip', idx:'02', name:'3D 翻转', en:'FLIP',
+    use:'一张牌有正反两面时的标准切换语言',
+    spec:[['时长','550–700ms'],['缓动','平滑 in-out cubic-bezier(.2,.7,.2,1)'],['属性','transform（rotateY）'],['中断','允许反向续翻']],
+    ref:'Apple 卡包、Set 收集册', code:'code-flip',
+    cap:'点击舞台重播 · 中点换内容即可 A 面切 B 面' },
+  { key:'cover', idx:'03', name:'堆叠覆盖', en:'COVER STACK',
+    use:'强牌堆实体感：新卡从牌堆飞出盖住旧卡',
+    spec:[['时长','450–550ms'],['缓动','减速 + 轻回弹'],['属性','transform（Y 位移 + scale）'],['中断','接受穿透，重指层级']],
+    ref:'Apple Wallet 卡包', code:'code-cover',
+    cap:'点击舞台重播 · 队尾牌出列到头位' },
+  { key:'deal', idx:'04', name:'发牌入场', en:'DEAL IN',
+    use:'从牌垛逐张飞入槽位，仪式感最强的开场',
+    spec:[['时长','500–600ms/张'],['缓动','落地回弹 cubic-bezier(.34,1.56,.64,1)'],['属性','transform + stagger 95ms'],['中断','重新入场']],
+    ref:'炉石传说开局发牌', code:'code-deal',
+    cap:'点击舞台重播 · 错峰 95ms 逐张落位' },
+  { key:'drag', idx:'05', name:'拖拽甩牌', en:'DRAG & FLICK',
+    use:'跟手拖拽 + 松手甩出，唯一「可中断」的换卡',
+    spec:[['时长','跟手 + 380–420ms 甩出'],['缓动','弹簧 cubic-bezier(.34,1.56,.64,1)'],['属性','transform（位移 + 旋转 0.05deg/px）'],['中断','回弹归位']],
+    ref:'Tinder、探探卡片流', code:'code-drag',
+    cap:'可以直接用鼠标拖这张牌 · 点击舞台自动演示' },
+  { key:'peek', idx:'06', name:'窥视推进', en:'PEEK ADVANCE',
+    use:'下一张从右缘探出 16px，推进时整行左移一级',
+    spec:[['时长','450–500ms'],['缓动','标准减速'],['属性','transform（探出量用 px，不用 %）'],['中断','续推，不重放']],
+    ref:'Story 流、魔鬼榜单 peek 机制', code:'code-peek',
+    cap:'点击舞台重播 · 探出牌压在当前牌之上' },
+  { key:'fan', idx:'07', name:'扇形展开', en:'FAN OUT',
+    use:'多张牌收拢/展开，手持牌扇的物理直觉',
+    spec:[['时长','700–900ms'],['缓动','阶梯减速，stagger 50ms'],['属性','transform（origin 在舞台下方成弧）'],['中断','直落收起态']],
+    ref:'扑克手持牌、昆特牌', code:'code-fan',
+    cap:'点击舞台重播 · 中心牌层级最高' },
+  { key:'shuffle', idx:'08', name:'洗牌重排', en:'SHUFFLE',
+    use:'跳起 → 空中换位 → 落定，一整段编排动画',
+    spec:[['时长','800–1000ms'],['缓动','阶梯 + 落地'],['属性','WAAPI 关键帧（transform）'],['中断','重新入场']],
+    ref:'炉石传说洗牌', code:'code-shuffle',
+    cap:'点击舞台重播 · 半交错织换位' }
+];
+
+var MATRIX = [
+  ['01','滑切','420–480ms','标准减速','点击 · 键盘','单卡位','低','直接落位终态','信息流翻页'],
+  ['02','3D 翻转','550–700ms','平滑 in-out','点击','正反双面','低','允许反向续翻','卡包 / 收集册'],
+  ['03','堆叠覆盖','450–550ms','减速 + 轻回弹','点击 · 横扫','牌堆 ≥3 张','中','接受穿透，重指层级','Apple Wallet'],
+  ['04','发牌入场','500–600ms/张','落地回弹','自动','牌垛 + 多槽','中','重放入场','炉石开局'],
+  ['05','拖拽甩牌','跟手 + 380ms','弹簧','拖拽','单卡位','高','回弹归位','Tinder'],
+  ['06','窥视推进','450–500ms','标准减速','拖拽边缘','卡位 + 16px 窥视条','中','续推不重放','Story / 本项目 peek'],
+  ['07','扇形展开','700–900ms','阶梯减速','点击','手持牌扇','中','直落收起态','扑克 / 昆特牌'],
+  ['08','洗牌重排','800–1000ms','阶梯 + 落地','点击','一排多牌','高','重放入场','炉石洗牌']
+];
+
+var PICKS = [
+  ['单手连续刷信息流','05 拖拽甩牌 或 06 窥视推进——跟手、可中断、有物理反馈'],
+  ['一张牌有正反两面','02 3D 翻转——在 90° 中点换内容，就是一次「切卡」'],
+  ['强调牌堆实体感与入手仪式','03 堆叠覆盖 + 04 发牌入场组合使用'],
+  ['开场聚合多张牌','07 扇形展开 / 08 洗牌重排，配 stagger 读出编排感'],
+  ['低端机 / 性能敏感','01 滑切——成本最低，纯 translate，无合成层压力']
+];
+
+var RULES = [
+  ['01','只动 transform / opacity','width、height、top、left 会触发布局回流，是卡牌动画卡顿的第一来源。需要「变大」用 scale，需要「展开」用 clip-path。'],
+  ['02','transition 只声明 transform','把 opacity 混进同一条 transition，会出现「先到位再变实」；拖动时探出量每帧变化，过渡永远追不上，产生橡皮筋感。（魔鬼榜单 v0.8.1 实测教训）'],
+  ['03','切牌期间两卡贴紧','--slidegap 动画期归零。留 16px 缝会像两张独立的卡在飘，贴紧才像一张牌被推走。'],
+  ['04','will-change 只在动画期挂','常驻会白占合成层；prefers-reduced-motion 下所有动画直落终态，不播过程。']
+];
+
+/* ================= 渲染 ================= */
+var grid = document.getElementById('grid');
+var instances = [];
+
+SPEC.forEach(function(s){
+  var art = document.createElement('article');
+  art.className = 'demo';
+  art.dataset.demo = s.key;
+  art.innerHTML =
+    '<header class="demo-hd"><span class="idx">' + s.idx + '</span>'
+    + '<div><h2>' + s.name + '<span class="en">' + s.en + '</span></h2>'
+    + '<p class="use">' + s.use + '</p></div>'
+    + '<button class="replay">播放</button></header>'
+    + '<div class="demo-bd"><div class="stage" tabindex="0" role="button" aria-label="播放' + s.name + '演示"></div>'
+    + '<div class="spec"><table>' + s.spec.map(function(r){
+        return '<tr><td class="k">' + r[0] + '</td><td class="v"><b>' + r[1] + '</b></td></tr>';
+      }).join('') + '</table>'
+    + '<p class="ref">参考：<b>' + s.ref + '</b></p>'
+    + '<details><summary>核心代码</summary><pre></pre></details></div></div>'
+    + '<p class="stage-cap">' + s.cap + '</p>';
+  var pre = art.querySelector('pre');
+  pre.textContent = document.getElementById(s.code).textContent.trim();
+  grid.appendChild(art);
+
+  var stage = art.querySelector('.stage');
+  var inst = DEMOS[s.key](stage);
+  inst.el = stage; inst.art = art;
+  inst.timer = null; inst.visible = false;
+  instances.push(inst);
+
+  function trigger(){
+    if (inst.noClick && inst.noClick()) return;
+    inst.play();
+  }
+  stage.addEventListener('click', trigger);
+  stage.addEventListener('keydown', function(e){
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); inst.play(); }
+  });
+  art.querySelector('.replay').addEventListener('click', function(e){
+    e.stopPropagation(); inst.play();
+  });
+
+  inst.start = function(){
+    if (inst.timer || !AUTO) return;
+    inst.play();
+    (function loop(){
+      inst.timer = setTimeout(function(){
+        inst.play();
+        if (AUTO) loop();
+      }, inst.gap);
+    })();
+  };
+  inst.stop = function(){
+    if (inst.timer){ clearTimeout(inst.timer); inst.timer = null; }
+  };
+});
+
+var AUTO = !REDUCE;
+document.getElementById('autoChk').checked = AUTO;
+document.getElementById('autoChk').addEventListener('change', function(){
+  AUTO = this.checked;
+  instances.forEach(function(i){
+    if (AUTO && i.visible) i.start(); else i.stop();
+  });
+});
+
+/* 视口内才轮播 */
+if ('IntersectionObserver' in window){
+  var io = new IntersectionObserver(function(entries){
+    entries.forEach(function(en){
+      var inst = instances.filter(function(i){ return i.el === en.target; })[0];
+      if (!inst) return;
+      inst.visible = en.isIntersecting;
+      if (en.isIntersecting && AUTO && !document.hidden) inst.start();
+      else inst.stop();
+    });
+  }, { threshold: .35 });
+  instances.forEach(function(i){ io.observe(i.el); });
+}
+
+/* 标签页隐藏时全部暂停 */
+document.addEventListener('visibilitychange', function(){
+  instances.forEach(function(i){
+    if (document.hidden) i.stop();
+    else if (i.visible && AUTO) i.start();
+  });
+});
+
+/* 速度 */
+document.getElementById('speedSeg').addEventListener('click', function(e){
+  var b = e.target.closest('button'); if (!b) return;
+  this.querySelectorAll('button').forEach(function(x){ x.classList.remove('on'); });
+  b.classList.add('on');
+  SPD = Number(b.dataset.spd);
+  instances.forEach(function(i){
+    if (i.durBase) i.el.style.setProperty('--dur', dur(i.durBase) + 'ms');
+  });
+});
+
+/* 播放全部 */
+document.getElementById('playAll').addEventListener('click', function(){
+  instances.forEach(function(i, k){ setTimeout(function(){ i.play(); }, k * 140); });
+});
+
+/* 对比矩阵 */
+document.getElementById('matrixBody').innerHTML = MATRIX.map(function(r){
+  var costCls = r[6] === '低' ? 'cost-lo' : (r[6] === '中' ? 'cost-mid' : 'cost-hi');
+  return '<tr><td class="nm"><i>' + r[0] + '</i>' + r[1] + '</td>'
+    + '<td>' + r[2] + '</td><td>' + r[3] + '</td><td>' + r[4] + '</td><td>' + r[5] + '</td>'
+    + '<td class="' + costCls + '">' + r[6] + '</td>'
+    + '<td>' + r[7] + '</td><td>' + r[8] + '</td></tr>';
+}).join('');
+
+/* 决策 + 红线 */
+document.getElementById('pickList').innerHTML = PICKS.map(function(p){
+  return '<div class="rule"><b><em>&#8594;</em>' + p[0] + '</b><p>' + p[1] + '</p></div>';
+}).join('');
+document.getElementById('ruleList').innerHTML = RULES.map(function(r){
+  return '<div class="rule"><b><em>' + r[0] + '</em>' + r[1] + '</b><p>' + r[2] + '</p></div>';
+}).join('');
+
+window.__atlasReady = true;
+</script>
+</body>
+</html>

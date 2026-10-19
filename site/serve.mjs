@@ -651,6 +651,9 @@ async function handleApiComments(res, pinId) {
  *   GET /api/board?range=day&fresh=1    忽略内存与磁盘缓存，强制重建
  *   GET /api/board?range=day&wait=1     等这一轮跑完再回（脚本自测用，别在页面上用）
  *   GET /api/board?range=day&mock=1     用确定性假分数代替 AI（纯做前端联调，不烧 token）
+ *   GET /api/board?range=week&hold=1    只读现状：building 回进度、否则回缓存/none —— 周榜不自动评（v1.3.1）
+ *   GET /api/board?range=week&stop=1    提前结束：打断抓取/打分，以已读数据组榜（v1.3.1）
+ *   GET /api/board?range=week&cancel=1  撤销：整轮作废、不组榜不落盘，旧榜原地不动（v1.3.3）
  *
  * 结果落盘 data/board/{day-YYYY-MM-DD | week-YYYY-Www}.json：
  * 同一天重开直接读盘，不重复烧 token；日榜 TTL 6 小时、周榜活到本自然周结束。 */
@@ -690,15 +693,41 @@ async function handleApiBoard(res, u, body) {
    * ⚠️ 绝不能省掉这一步去走 ensure()：那会让「看一眼周榜」变成一次真评分
    * （翻 45 页 + 一两分钟 + 烧 token）。 */
   const peek = u.searchParams.get('peek') === '1' || (body && body.peek === true);
+  /* v1.3.1 hold=1 = 「只读这一档现状」：building 回进度快照，否则回缓存/none，
+   * **绝不 ensure** —— 给「周榜不自动评」用（前端进周榜先 hold，没算过就亮
+   * 「开始评分」，用户点了才真跑）。
+   * stop=1 = 提前结束：打断抓取/打分，以已读数据组榜（引擎里是协作式打断）。 */
+  const hold = u.searchParams.get('hold') === '1' || (body && body.hold === true);
+  const stop = u.searchParams.get('stop') === '1' || (body && body.stop === true);
+  /* v1.3.3 cancel=1 = **撤销本次评分**：整轮作废、不组榜、不落盘，旧榜原地不动。
+   * 与 stop 「提前结束」的区别：stop 是「按已读数据收尾并复用」，cancel 是「当没发生过」。
+   * ⚠️ 两个判断都必须在 peek/hold/ensure 之前吃掉 —— 它们漏到下面的 ensure() 里，
+   *    就变成「又起一轮新任务」：用户点的是停，结果又烧了一轮 token 还停不下来。 */
+  const cancel = u.searchParams.get('cancel') === '1' || (body && body.cancel === true);
   /* 前端交上来的 AI 配置（扩展版必带：它没有服务端配置文件）。站点版一般是空的，
    * 空着就走 serve.mjs 自己的四层配置。 */
   const ai = (body && typeof body.ai === 'object' && body.ai) ? body.ai : null;
   try {
-    if (peek) {
-      const got = await boardEngine.peek(range);
+    if (stop) {
+      boardEngine.stop(range);
+      res.writeHead(200, { 'Content-Type': MIME['.json'], 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify(boardResponse(range, boardEngine.snapshot(range))));
+      return;
+    }
+    /* 撤销与提前结束并排：两个都是「对正在跑的这一轮下指令」，回的是同一形状 ——
+     * 撤销成功 / 这一档压根没在跑，都只是回一份当前快照（幂等）。 */
+    if (cancel) {
+      boardEngine.cancel(range);
+      res.writeHead(200, { 'Content-Type': MIME['.json'], 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify(boardResponse(range, boardEngine.snapshot(range))));
+      return;
+    }
+    if (peek || hold) {
+      const got = await (hold ? boardEngine.hold(range) : boardEngine.peek(range));
       res.writeHead(200, { 'Content-Type': MIME['.json'], 'Cache-Control': 'no-store' });
       res.end(JSON.stringify(got
-        ? boardResponse(range, { status: got.status, payload: got.payload, stale: got.stale })
+        ? boardResponse(range, { status: got.status, progress: got.progress || null,
+                                 payload: got.payload, stale: got.stale })
         : { range, status: 'none', boards: [] }));
       return;
     }

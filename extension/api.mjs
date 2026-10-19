@@ -679,11 +679,28 @@ export async function apiBoard(body = {}) {
      * 榜期卡展开时用它对照「对面那一档」（spec §6.7）——
      * ⚠️ 走 ensure() 会把「看一眼周榜」变成一次真评分（翻 45 页 + 烧 token），
      * 所以这一步必须在这里短路掉。没缓存就回 status='none'。 */
-    if (body.peek) {
-      const got = await boardEngine.peek(range);
+    if (body.peek || body.hold) {
+      /* hold = 「只读这一档现状」（v1.3.1 周榜不自动评）：building 回进度快照，
+       * 否则等价 peek。与 peek 走同一条短路 —— 两个都不许 ensure。 */
+      const got = await (body.hold ? boardEngine.hold(range) : boardEngine.peek(range));
       return ok(got
-        ? boardResponse(range, { status: got.status, payload: got.payload, stale: got.stale })
+        ? boardResponse(range, { status: got.status, progress: got.progress || null,
+                                 payload: got.payload, stale: got.stale })
         : { range, status: 'none', boards: [] });
+    }
+    /* stop = 提前结束（v1.3.1）：打断抓取/打分，以已读数据组榜。
+     * 打断是协作式的 —— 正在飞的那一页/那一手让它落地，然后立刻收尾。 */
+    if (body.stop) {
+      boardEngine.stop(range);
+      return ok(boardResponse(range, boardEngine.snapshot(range)));
+    }
+    /* v1.3.3 cancel = **撤销本次评分**：整轮作废、不组榜、不落盘，旧榜原地不动。
+     * 与 stop（提前结束 = 用已读数据组榜并保留产物）是两件事，但同形：
+     * 都对 building 中的任务下指令、都回当前快照、对没在跑的档位都是幂等空操作。
+     * ⚠️ 必须紧挨 stop 且在 ensure 之前：漏到下面的 ensure() 就成了「又起一轮」。 */
+    if (body.cancel) {
+      boardEngine.cancel(range);
+      return ok(boardResponse(range, boardEngine.snapshot(range)));
     }
     await boardEngine.ensure(range, {
       fresh: !!body.fresh,

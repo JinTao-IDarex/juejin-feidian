@@ -8,7 +8,7 @@
 <meta name="description" content="每天/每周抓一次掘金沸点，AI 按 6 条互斥赛道打分，每条只进分最高的那个榜。">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Noto+Sans+SC:wght@400;500;700;900&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Noto+Sans+SC:wght@400;500;700;900&family=Ma+Shan+Zheng&family=Long+Cang&display=swap">
 <link rel="stylesheet" href="board.css">
 <link rel="stylesheet" href="embed.css">
 </head>
@@ -24,37 +24,48 @@
       <p>AI 给掘金沸点打分 · 6 大赛道 · 只评内容，不评人</p>
     </div>
     <div class="bd-hd-r">
-      <!-- 榜期卡 v2（2026-10-05 改版）：见 spec §6.7。
-           ⭐ 为什么不是分段控件：日榜=今天0点起、周榜=7天前这一刻（不是自然周），
-           实测 117 vs 730 条扫描、分布也差很多（嘴硬榜 2 vs 0）——
-           光写「日榜/周榜」四个字把这个全藏起来了。新版把「时间窗 + 规模 + 状态」摊开。 -->
+      <!-- 榜期切换（v1.3.2）：日榜 / 周榜直切分段按钮。
+           v0.7.0 的榜期卡 + 展开对照面板下线：周榜不自动评（v1.3.1 hold）之后
+           「切过去看看」零成本（没算过就亮开始屏），切换前对照的诉求消失。
+           状态没丢：rngCap 接过原卡片第二行的职责（扫描/评分进度、尚未评分、
+           提前结束、失败、演示标记），见 board.js paintRangeCard。 -->
       <div class="rng" id="rng">
-        <button class="rng-card" id="rngCard" aria-haspopup="true" aria-expanded="false" title="切换榜期">
-          <span class="rng-tag" id="rngTag">日榜</span>
-          <span class="rng-txt">
-            <b class="rng-l1" id="rngL1">今天 00:00 → 现在</b>
-            <span class="rng-l2" id="rngL2">正在取数…</span>
-          </span>
-          <span class="rng-ico" id="rngIco" aria-hidden="true"></span>
-        </button>
-
-        <!-- 展开态：两档时间窗 + 规模 + 同赛道两榜对照 -->
-        <div class="rng-pop" id="rngPop" hidden>
-          <div class="rng-pop-hd">
-            <span>赛道</span><span>日榜</span><span>周榜</span><span>差异</span>
-          </div>
-          <div class="rng-rows" id="rngRows"></div>
-          <div class="rng-pop-sum" id="rngSum"></div>
-          <p class="rng-pop-tip" id="rngTip">周榜需翻 45 页、约 100 秒完成首次评分</p>
+        <div class="rng-seg" id="rngSeg" data-on="day" role="tablist" aria-label="切换榜期">
+          <span class="rng-thumb" aria-hidden="true"></span>
+          <button class="rng-seg-btn on" data-range="day" role="tab" aria-selected="true">日榜</button>
+          <button class="rng-seg-btn" data-range="week" role="tab" aria-selected="false">周榜</button>
         </div>
+        <p class="rng-cap" id="rngCap">正在取数…</p>
       </div>
 
-      <button class="bd-refresh" id="btnFresh" title="忽略缓存，重新抓取并打分">
-        <svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-          <path d="M1.5 4.5h3l6 7h3.5m0 0l-2-2m2 2l-2 2M1.5 11.5h3l1.6-1.9m4.6-3.2l1.6-1.9h2.2m0 0l-2-2m2 2l-2 2"
-                stroke="#fff" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-        </svg>重新评分
-      </button>
+      <!-- v1.4 确认条槽位：确认条与「重新评分」按钮**互斥但不同时消失** ——
+           展开时按钮只 visibility:hidden（94px 盒子保留），确认条占的是 Header 中间
+           本来就空着的区域 ⇒ .rng（榜期开关 + 状态行）全程零位移。
+           ⚠️ 不要给 .bd-cf 加 hidden 属性：[hidden]{display:none!important} 会吃掉展开动画。
+           收起态靠 CSS（max-width:0 + visibility:hidden），visibility:hidden 自动把条内
+           按钮移出焦点顺序与无障碍树 —— 不需要 inert / tabindex="-1"。 -->
+      <div class="cf-slot" id="cfSlot">
+        <!-- tabindex="-1"：展开后 JS 把焦点落在**容器本身**（先读代价再决定），
+             不直接 focus 主按钮 —— 焦点在「开始重评」上会让顺手回车直接开跑。 -->
+        <div class="bd-cf" id="bdCf" role="group" aria-label="确认重新评分" tabindex="-1">
+          <!-- ⚠️ .cf-in 必须带 id：JS 靠它量「内容的自然宽度」写进 --cf-w
+               （写文案 → 量 cfIn.offsetWidth → 最后 add('is-open')，顺序反了动画起点就错） -->
+          <div class="cf-in" id="cfIn">
+            <span class="cf-txt" id="cfTxt">重新抓取并打分 · 约 1~2 分钟</span>
+            <span class="cf-meta num" id="cfMeta"></span>
+            <span class="cf-act">
+              <button class="cf-go" id="cfGo" aria-describedby="cfTxt cfMeta">开始重评</button>
+              <button class="cf-no" id="cfNo" aria-label="取消重新评分">取消</button>
+            </span>
+          </div>
+        </div>
+        <button class="bd-refresh" id="btnFresh" title="忽略缓存，重新抓取并打分">
+          <svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <path d="M1.5 4.5h3l6 7h3.5m0 0l-2-2m2 2l-2 2M1.5 11.5h3l1.6-1.9m4.6-3.2l1.6-1.9h2.2m0 0l-2-2m2 2l-2 2"
+                  stroke="#fff" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>重新评分
+        </button>
+      </div>
     </div>
   </header>
 
@@ -125,39 +136,86 @@
       </div>
     </section>
 
-    <!-- ============ 视图 3 · 评分中发牌（v0.8.0） ============
-         ⭐ 为什么单独一个视图而不是复用 .sys 那张居中卡片：
-         「把解析过程做成发牌」本身就是这一屏要展示的内容 ——
-         塞进一张 520px 的弹窗里，六摞牌根本没有落脚的地方。
-         扫描阶段（无分类信息）退化成阶段条第 1 步在转，
-         一旦 AI 返回第一批，六摞就长出来。 -->
-    <section class="view view-deal" id="viewScoring" hidden aria-label="评分中">
-      <div class="sc-phase" id="scPhase">
-        <div class="sc-step is-done">
-          <span class="sc-dot">✓</span><span class="sc-txt">抓取沸点 <b id="scScan">0</b> 条</span>
-        </div>
-        <div class="sc-step is-done">
-          <span class="sc-dot">✓</span><span class="sc-txt">按热度筛出 <b id="scCand">0</b> 条</span>
-        </div>
-        <div class="sc-step is-now" id="scStep3">
-          <span class="sc-dot">3</span><span class="sc-txt">AI 逐条分赛道 · <b id="scDone">0/0</b></span>
-        </div>
-        <div class="sc-step">
-          <span class="sc-dot">4</span><span class="sc-txt">按分数排名次</span>
-        </div>
-      </div>
+    <!-- ============ 视图 3 · 评分中发牌（v1.3.3：弹窗双栏） ============
+         用户交互口径：点「重新评分」（或日榜自动评分）弹出一个进度弹窗 ——
+         先「读取数据」（左侧牌堆随扫描页数长厚），再「分析」：
+         左侧 = 一摞已读的待发牌，右侧 = 六个分类牌堆，
+         AI 每回一手，牌就从左堆飞进右侧对应的分类堆。
+         v0.8.0 的整页发牌视图（阶段条在上、六摞横排、发牌台在下）收进弹窗：
+         六摞从「一横排」改成 3×2 网格，牌缩小但仍是 1:1.4（--fm-w 等比）。 -->
+    <section class="view" id="viewScoring" hidden aria-label="评分中">
+      <div class="sc-mask" aria-hidden="true"></div>
+      <!-- tabindex="-1"：showScoring(true) 时把焦点移进来（弹窗外内容靠 JS 加 inert 挡住 Tab） -->
+      <div class="sc-modal" id="scModal" role="dialog" aria-modal="true" aria-label="评分进度" tabindex="-1">
+        <header class="sc-modal-hd">
+          <b id="scTitle">正在评分</b>
+          <span class="sc-modal-sub" id="scHallT">正在取数…</span>
+          <!-- v1.4 两个出口并排。⚠️ 顺序固定：**纯文字（更狠的撤销）在左、
+               描边 pill（更常用的止损）在最右** —— 更强的动作更难看、也更难按。 -->
+          <div class="sc-exits" id="scExits">
+            <button class="sc-cancel" id="scCancel" title="撤销整轮，不落盘，旧榜原地不动">取消本次评分</button>
+            <!-- v1.3.1 提前结束：打断抓取/打分，以已读数据组榜（spec §6.8.1）
+                 ⚠️ 文案 / SVG / title 一行不改 —— 它只是从 .sc-modal-hd 的直接子元素
+                 变成 .sc-exits 的子元素。 -->
+            <button class="sc-stop" id="scStop" title="不再抓新数据，用已经读到的直接组榜">
+              <svg width="9" height="9" viewBox="0 0 10 10" aria-hidden="true">
+                <rect x="1.5" y="1.5" width="7" height="7" rx="1.5" fill="currentColor"/>
+              </svg>提前结束
+            </button>
+          </div>
+        </header>
 
-      <!-- 六摞：发牌过程中逐张长大。用赛道色，吃 TRACKS[].color -->
-      <div class="sc-deck" id="scDeck"></div>
-
-      <!-- 发牌台：待发的手牌 + 归榜/落选统计 -->
-      <div class="sc-hall" id="scHall">
-        <div class="sc-hall-l">
-          <b id="scHallT">第 0 条待发</b>
-          <em id="scHallNow">等 AI 发第一手</em>
-          <span id="scHallS">AI 每返回 8 条就发一手</span>
+        <div class="sc-phase" id="scPhase">
+          <div class="sc-step is-done">
+            <span class="sc-dot">✓</span><span class="sc-txt">抓取沸点 <b id="scScan">0</b> 条</span>
+          </div>
+          <div class="sc-step is-done">
+            <span class="sc-dot">✓</span><span class="sc-txt">按热度筛出 <b id="scCand">0</b> 条</span>
+          </div>
+          <div class="sc-step is-now" id="scStep3">
+            <span class="sc-dot">3</span><span class="sc-txt">AI 逐条分赛道 · <b id="scDone">0/0</b></span>
+          </div>
+          <div class="sc-step">
+            <span class="sc-dot">4</span><span class="sc-txt">按分数排名次</span>
+          </div>
         </div>
-        <div class="sc-hand" id="scHand"></div>
+
+        <div class="sc-body">
+          <!-- 左：已读牌堆（扫描期 = 已读的牌越摞越厚；分析期 = 待发的牌） -->
+          <div class="sc-hall" id="scHall">
+            <div class="sc-hand" id="scHand"></div>
+            <b class="fm-count" id="fmCount">已读 0 条</b>
+            <em id="scHallNow">等 AI 发第一手</em>
+            <span id="scHallS">AI 每返回 8 条就发一手</span>
+          </div>
+
+          <!-- 右：六个分类牌堆（3×2）。发牌过程中逐堆长大，用赛道色 -->
+          <div class="sc-deck fm-grid" id="scDeck"></div>
+        </div>
+
+        <!-- ============ v1.4 结果卡（同容器内容切换）============
+             执行态 ~465/575 → 结果态 hug 只有 ~278/308 ⇒ 必须由 JS 在切之前
+             `modal.style.height = modal.offsetHeight` 冻结高度，否则弹窗往上跳 90~185px。
+             切结果态时 .sc-phase / .sc-body / .sc-exits / .sc-modal-sub 由 CSS display:none，
+             .sc-result 以 flex:1 撑满冻结后的高度 ⇒ 外框一像素不动。
+             ⚠️ aria-live 的内容必须在「容器已可见」之后写入（下一帧），见 ux-spec §3.3。 -->
+        <div class="sc-result" id="scResult" hidden aria-live="polite">
+          <div class="rs-hd">
+            <span class="rs-ico" id="rsIco" aria-hidden="true"></span>
+            <b class="rs-title" id="rsTitle">评分完成</b>
+            <span class="rs-time num" id="rsTime" hidden></span>
+          </div>
+          <p class="rs-scale" id="rsScale"></p>
+          <!-- 琥珀横幅：只有「提前结束」会显示，且永远那一句（不分叉） -->
+          <p class="rs-note" id="rsNote" hidden></p>
+          <!-- is-txtonly = 扫描期中断：没有分母，只显示 txt，不画条（画了是假信息） -->
+          <div class="rs-pct" id="rsPct" hidden>
+            <span class="rs-pct-bar" aria-hidden="true"><i id="rsPctIn"></i></span>
+            <span class="rs-pct-txt num" id="rsPctTxt"></span>
+          </div>
+          <div class="rs-tracks" id="rsTracks"></div>
+          <div class="rs-act"><button class="rs-btn" id="rsBtn">查看榜单</button></div>
+        </div>
       </div>
     </section>
 
